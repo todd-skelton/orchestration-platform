@@ -307,7 +307,7 @@ it.each([
     if (expected) await expect(context).resolves.toMatchObject({ acceptanceCriteria: expected });
     else await expect(context).rejects.toMatchObject({ reason: "selected-issue-criteria-missing" });
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   }
 });
 
@@ -341,7 +341,7 @@ export const afterMerge=()=>{};\n`,
       reason: "park-unavailable",
     });
   } finally {
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   }
 });
 
@@ -366,6 +366,6 @@ it.skipIf(process.platform === "win32")("parks self work by removing ready", asy
     );
   } finally {
     vi.unstubAllEnvs();
-    await rm(root, { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   }
 });

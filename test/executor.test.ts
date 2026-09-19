@@ -1,5 +1,5 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { createServer, get, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -118,7 +118,7 @@ it("starts one bridge per missing port before launching the loop", async (contex
   const shell = await powershell();
   if (!shell) return context.skip();
   const root = await mkdtemp(resolve(tmpdir(), "start-loop-"));
-  cleanup.push(() => rm(root, { recursive: true, force: true }));
+  cleanup.push(() => rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }));
   const log = resolve(root, "calls.log");
   const script = resolve(executor, "start-loop.ps1");
   // Cmdlet doubles: functions win over cmdlets by name, so the script sees a
@@ -161,7 +161,7 @@ it.skipIf(process.platform !== "linux")(
   "exports the provider and pool status URLs into the detached supervisor",
   async () => {
     const root = await mkdtemp(resolve(tmpdir(), "run-loop-"));
-    cleanup.push(() => rm(root, { recursive: true, force: true }));
+    cleanup.push(() => rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }));
     const taskRoot = resolve(root, "task");
     const binDir = resolve(taskRoot, "tools/cli/node_modules/.bin");
     const fakes = resolve(root, "fakes");
@@ -210,5 +210,42 @@ it.skipIf(process.platform !== "linux")(
       'base_url = "http://10.9.8.7:8317/v1"\n',
     );
     expect(await readFile(resolve(root, "supervisor.log"), "utf8")).toBe("");
+  },
+);
+
+// ISS-193: the retried fixture-root cleanup is bounded and never swallows a
+// genuinely held root. Only a child's working directory pins a directory on
+// Windows; libuv opens this process's own handles with FILE_SHARE_DELETE.
+it.skipIf(process.platform !== "win32")(
+  "fixture-root cleanup still fails on a persistently held Windows directory",
+  async () => {
+    const root = await mkdtemp(resolve(tmpdir(), "held-root-"));
+    const held = resolve(root, "executor");
+    await mkdir(held);
+    const holder = resolve(root, "holder.mjs");
+    await writeFile(holder, 'process.stdout.write("holding\\n");\nsetInterval(() => {}, 1000);\n');
+    const child = spawn(process.execPath, [holder], {
+      cwd: held,
+      windowsHide: true,
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const done = exited(child);
+    try {
+      const banner = await Promise.race([
+        new Promise<string>((ok) => child.stdout!.once("data", (chunk) => ok(String(chunk)))),
+        done.then(({ code, stderr }) => {
+          throw new Error(`holder exited ${code}: ${stderr}`);
+        }),
+      ]);
+      expect(banner.trim()).toBe("holding");
+      await expect(
+        rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }),
+      ).rejects.toMatchObject({ code: expect.stringMatching(/^(EBUSY|EPERM)$/) });
+      expect((await stat(held)).isDirectory()).toBe(true);
+    } finally {
+      child.kill();
+      await done;
+      await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+    }
   },
 );

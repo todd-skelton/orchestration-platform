@@ -31,7 +31,11 @@ async function symlinkFixture(target: string, path: string, type: "file" | "dire
 
 afterEach(async () => {
   await Promise.all(
-    temporaryRoots.splice(0).map((directory) => rm(directory, { recursive: true, force: true })),
+    temporaryRoots
+      .splice(0)
+      .map((directory) =>
+        rm(directory, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }),
+      ),
   );
 });
 

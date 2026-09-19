@@ -1451,7 +1451,8 @@ it.each([
 const cleanup: string[] = [];
 afterEach(async () => {
   vi.unstubAllEnvs();
-  for (const root of cleanup.splice(0)) await rm(root, { recursive: true, force: true });
+  for (const root of cleanup.splice(0))
+    await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
 });
 it("filters the actual controller-to-observer child environment", async () => {
   const root = await realpath(await mkdtemp(resolve(tmpdir(), "dogfood-process-")));

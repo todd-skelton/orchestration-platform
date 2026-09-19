@@ -399,7 +399,8 @@ it.each(["sibling", "untracked", "rename"])(
 );
 
 afterEach(async () => {
-  for (const path of cleanup.splice(0)) await rm(path, { recursive: true, force: true });
+  for (const path of cleanup.splice(0))
+    await rm(path, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
 });
 async function fixture() {
   const root = await realpath(await mkdtemp(resolve(tmpdir(), "dogfood-test-")));

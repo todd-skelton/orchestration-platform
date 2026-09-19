@@ -60,7 +60,11 @@ const exec = promisify(execFile);
 const gateAuthority = "https://github.com/fixture/repository/issues/494#issuecomment-5687186310";
 const roots: string[] = [];
 afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+  await Promise.all(
+    roots
+      .splice(0)
+      .map((root) => rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 })),
+  );
   vi.clearAllMocks();
   vi.unstubAllEnvs();
 });
