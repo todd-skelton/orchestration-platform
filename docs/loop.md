@@ -376,6 +376,9 @@ the original base, attempt number and historical review identity/findings, recov
 participants, and clears the accepted stage and directory. Source, review,
 refresh, worker, stop and completed-stop records and the old worktree remain
 unchanged. Nonfailed and in-flight authors do not establish this transition (ISS-160).
+Composition also advances a parked delivery-phase refresh-review failure once,
+at its reviewed refresh head and with the reviewer's findings, before scanning
+failed attempts (ISS-195).
 
 Completed stops still skip their cycle, and pending notes reconcile before
 composition. Only explicit planning unpark can select the issue again in the
