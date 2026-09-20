@@ -486,10 +486,23 @@ blocked_by: [ISS-120, ISS-121]
 
 ## Why
 
+## Decision
+
 ## Done when
 
 ## Out of scope
 ```
+
+The optional `## Decision` section sits between Why and Done when and contains
+one paragraph of exactly five sentences, in order: the constraint, the simplest
+viable alternative, the option chosen, the downside accepted, and the observation
+that would show the choice was wrong (ISS-174). It is expected for changes to
+persisted records, published names, prompts or process rules; `planning:check`
+does not validate it.
+
+A `QUALITY_PROFILE` line or Quality Packet belongs to the Chase Sets delivery
+skill; self drafts do not carry it, and a platform reviewer verifies every
+packet claim independently and never adopts one as evidence.
 
 `## Done when` accepts unordered `-`, `*`, or `+` items or ordinary top-level
 `N.` ordered items, with indented continuation lines. The self adapter consumes
