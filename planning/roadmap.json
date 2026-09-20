@@ -654,6 +654,12 @@
       "file": "planning/drafts/ISS-195.md",
       "milestone": "M2",
       "blockedBy": []
+    },
+    {
+      "key": "ISS-196",
+      "file": "planning/drafts/ISS-196.md",
+      "milestone": "M2",
+      "blockedBy": []
     }
   ]
 }
