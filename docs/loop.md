@@ -13,7 +13,10 @@ capability is added only when a real cycle records a blocker.
    in its draft is closed, and it belongs to the earliest open milestone.
 3. Authors run `pnpm typecheck`, `pnpm format:check` and `pnpm test` in their
    worktree before handing off. The hosted three-OS `bootstrap` workflow is
-   the only required check on a PR.
+   the only required check on a PR. The loop observes its own
+   `REQUIRED_CHECKS` before merging, unchanged;
+   `node scripts/planning/require-bootstrap-checks.mjs check` reports whether
+   GitHub currently requires those same three contexts on `main` (ISS-175).
 4. Review is a verdict (PASS or FAIL), findings with `file:line`, and a G0
    answer: "Is there a simpler shape that still satisfies every acceptance
    criterion and every stated not-built reason? Answer No with one reason, or
@@ -54,7 +57,19 @@ including any nested JSON objects. Trailing prose, multiple objects, missing obj
 invalid verdicts remain malformed; key, identity, head, enum and findings
 checks remain unchanged. An otherwise valid over-length verdict remains
 malformed with its measured length and cap in the terminal summary and the
-existing single automatic retry context. Author prompts and parsing are unchanged (ISS-150).
+existing single automatic retry context (ISS-150). Authors share this extraction
+rule (ISS-177), retaining their JSON-only prompts, five-key schema and
+2000-character summary cap; the whole author message has no summary cap.
+An oversized author summary reports its measured length and the 2000 limit.
+Completed malformed authors use the same single transient retry, retaining
+staged, unstaged and untracked partial work at the recorded base rather than
+the dead-author reset. The retry receives the diagnostic, prior trace and
+attempt/terminal context, inspects and verifies the work, and returns its own
+verdict. Malformed launches remain charged failures; a spent retry stops as
+`author-malformed` with ordinary parking, without another attempt (ISS-183).
+Completion, identity and head checks remain unchanged. Parsing grants no
+acceptance: independent exact-head review, native local gates and final-head
+Ubuntu/Windows/macOS bootstrap green remain required before landing.
 
 Initial and delta reviewers receive the selected author's captured trace
 and existing attempt, terminal and candidate record paths, including on resume
@@ -137,6 +152,29 @@ cannot fail a live candidate, while candidate omissions, malformed planning,
 incorrect board bodies and missing project membership still fail. The ordinary
 `pnpm planning:board-check` and selection retain their full-board validation.
 
+ISS-178 fixes ISS-174's six sibling body mismatches before publication. After
+refresh and exact-head review, self delivery adds changed registered open sibling
+drafts to its existing mirror plan, using candidate versus refreshed-main bodies.
+Sibling mirroring changes only the body: registration, frontmatter and project
+changes refuse. Independent review must authorize the prose under the selected
+brief; a changed path alone grants no authority. The selected issue retains its
+seed and full-draft behavior.
+
+Each sibling is observed again before applying or replaying the saved plan.
+Missing, duplicate, reopened or retargeted identities refuse with the sibling key;
+the issue census includes the latest reopening event for this comparison. Closed
+siblings receive no writes and remain ignored by the scoped board gate. Open
+title or milestone drift refuses even when the body matches. A target body is a
+no-op, a main-base body permits one body-only edit, and any other body refuses.
+Existing draft receipts reconcile lost responses; replay reobserves completed
+drafts too. No new receipt format or migration is involved. Unchanged siblings
+are never repaired. Later closure does not remove the candidate's authored hunk.
+
+Ahead-of-main mirrored bodies still fail fresh full-board selection. The single
+writer finishes delivery, then selection pins published main. Saved selections
+keep their pinned brief and identity. Abandonment requires a separate host
+decision authorizing restoration; there is no rollback or selection overlay.
+
 A reviewed delivery candidate's conflict consumes one resolution in its
 existing `native-refresh.json`. After aborting the conflicting integration, the
 executor merges the reviewed head with that same current main and pins the
@@ -181,13 +219,20 @@ are unchanged (ISS-155).
 Native delivery captures the complete gate output and terminal execution before
 considering correction.
 The candidate terminal records the exact executable, arguments, working directory
-and reviewed head. Recognized compiler, formatter or completed test assertion
-diagnostics must name committed candidate files. The same command runs in an
+and reviewed head. Recognized compiler, formatter, completed test assertion or
+Chase Sets scoped static generated-artifact staleness diagnostics
+(`<repo-relative path> is stale|missing` from a `generate-*.mjs --check`
+producer, wholly accounting for the final `[VERIFY_STATIC_RUN]` block) must
+name committed candidate files. The same command runs in an
 isolated committed tree at the recorded delivery main base, with an offline,
 frozen dependency install. Changed manifests or lockfiles remain unknown.
 The candidate and base logs and terminal records remain in the delivery runtime (ISS-152).
 
-Only a passing base control admits candidate attribution. Base reproduction
+Only a passing base control admits candidate attribution. The scoped static
+base control receives the candidate's derived changed-file set as
+`CHANGED_FILES_JSON`, and its pass counts only when the failing link's
+`[VERIFY_STATIC_RUN]` marker appears in the base log; a vacuous base selection
+stays unknown (ISS-192). Base reproduction
 stops as `gate-base-failed:<gate>`. Startup, install, log I/O and cleanup failures
 stop as `gate-host-failed:<gate>`; drift retains its workspace stop. Missing or
 incomplete diagnostics, unsupported gates, timeouts, resource failures and mixed
@@ -252,20 +297,44 @@ This recovery requires the previous publication to remain on the recorded head
 and GitHub to retain its logs until capture. Once captured, resumed worker
 launches use the runtime file without refetching.
 
-When all required checks and all workflow runs are absent, the checks adapter
+ISS-185 binds hosted decisions and failed logs to Actions' structured repository,
+PR, source/base and head association. It selects the latest run within each
+owning workflow and that run's current effective jobs, including failed-only
+reruns; shared-SHA rollup rows supply no authority. Logs pin the selected attempt
+and recheck it after acquisition. Unknown attribution stops observation without
+parking or spending another attempt; old unattributed logs remain unchanged.
+Same-selection lifecycle status changes keep ordinary observation pending when
+either validated workflow snapshot is non-completed; immutable workflow/run/attempt
+identity and publication/job validation still apply. Terminal non-success retains
+its existing handling, with no extra polling or retry allowance (ISS-188).
+When the current publication's workflow runs are absent, the checks adapter
 waits ten seconds and reobserves, at most twelve times in that observation
-call (two minutes of waits, plus API request time). Advisory check rows do not
+call (two minutes of waits, plus API request time). Foreign and advisory rows do not
 prevent this startup retry. Each poll revalidates exact publication identity.
-Any visible workflow run or required-check row leaves startup retry and follows
+An attributed current workflow run leaves startup retry and follows
 the existing validation; wrong-head/PR, malformed, duplicate, failed or skipped
 required evidence is not converted into success. Persistent absence still
-stops at the existing missing-check error. A linked pending workflow follows
+stops through the non-parking hosted-observation path. A current pending workflow follows
 ordinary observation until actual required green, with no republishing or
 worker/implementation retry budget consumed. A host interruption can repeat
 this bounded in-flight observation under rule 9; no new runtime schema or
 migration is required (ISS-143).
 
 ### Saved-cycle recovery
+
+ISS-187 permits one self prerequisite detour declared by `prerequisite` on the
+existing 64-launch/four-attempt run: `blockedCycle`, `blockedKey`, `blockedNumber`,
+completed run-scoped `stop`, prerequisite `key`/`number`, and `authorityUrl`.
+Admission requires ordinary current eligibility, a retained pinned source FAIL
+at attempt 1, and no live or uncertain competing owner. Its supervision records
+live under `prerequisite/`; ordinary same-run queue paths retain the charges and
+enter attempt 2, including native repair/advance through the existing ceiling.
+Keep that executor installed throughout the detour. Delivery, parking and host
+stops yield; restart resumes the same lineage. Terminal replay holds the saved
+cycle until the operator removes the declaration and supplies
+`blockedCycleResume: { cycle, authorityUrl }` with a different host grant, after
+separately landing and installing its repair. Neither the declaration nor this
+capability authorizes installation, readiness or preserved-run execution.
 
 Native resume observes an unfinished saved selection's issue before
 reconstructing its source workspace or replaying a pending stop. When that
@@ -296,11 +365,14 @@ unfinished authors and non-FAIL results cannot establish this transition.
 Source pilot/configuration checks and executor drift refusals remain in force.
 Parking leaves the self issue open and unready; only explicit planning unpark
 can admit it again.
+Terminal repair-author FAIL likewise parks through matching retained evidence; explicit same-run planning unpark admits only the next unused implementation attempt within the existing ceiling, preserving history and charged allowances (ISS-181).
 
 Before scanning failed attempts, composition observes the matching failed
-author terminal at the pinned conflict seed and
-advances the stale delivery projection to failed once. It retains the original
-base, attempt number and historical review identity/findings, recovers native
+author terminal at the pinned conflict seed or a parked source-author failure
+at its matching pinned configuration and base, and advances the attempt to failed
+once (ISS-179). A source failure retains its history and author failure count,
+with its base as head, an empty review identity and no findings. A conflict retains
+the original base, attempt number and historical review identity/findings, recovers native
 participants, and clears the accepted stage and directory. Source, review,
 refresh, worker, stop and completed-stop records and the old worktree remain
 unchanged. Nonfailed and in-flight authors do not establish this transition (ISS-160).
@@ -534,6 +606,24 @@ hosted CI only.
   mismatch stops the run with `selected-milestone-mismatch` and a host note;
   it does not park or complete the selected issue.
 
+ISS-176 adds optional `opsAdmission: { issueNumber, authorityUrl }` only for
+`chase-sets` on `chase-sets/chase-sets` with a positive `targetMilestone`.
+The exact two-field object names one positive safe integer issue number and a
+canonical HTTPS issue-comment URL in that repository (positive issue/comment
+IDs, at most 500 characters, no query, credentials or whitespace). Invalid
+admission stops as `invalid-ops-admission` before selection. The operator supplies
+the ruled issue/target reference; URL shape is not approval.
+Omission excludes all `kind:ops`. Admission relaxes only that exclusion for the
+named issue in the target, preserving refinement, executable window, blockers,
+needs labels, routing and ordinary priority order. Current ops context is checked
+again before setup, including saved selections with admission removed; membership
+is checked without displacing saved work with a higher-priority sibling.
+`selected-ops-not-admitted` and `selected-ops-not-runnable` are non-parking host
+stops; milestone drift retains `selected-milestone-mismatch`. Incomplete authority
+cannot admit work. Existing records and fingerprints are not migrated. This
+supplies no pilot readiness, installation or start authority; independent review,
+local gates and final-head three-OS bootstrap remain required.
+
 ISS-135 recovery for `m2-payout-fees-replanned-20260913`: with supervisors and
 the interrupted #4382 author stopped, the host first preserves the runtime and
 uses the reviewed stable executor with `targetMilestone: 155`. Restart with
@@ -556,7 +646,9 @@ Payout Fees remains incomplete until its operator-blocked work is resolved.
 New ordinary attempts use the local source branch
 `codex/run-<sha256(run)>/<issue-key>-attempt-<attempt>`; the hash keeps every
 accepted run name valid in a Git ref. Pilot and review remain detached.
-Resume reads the branch from the existing setup plan, including legacy names.
+Resume reads the branch and pilot revision from the existing setup plan, including
+legacy names; matched same-checkout replay validates the live repository against
+the current executor without repinning the pilot (ISS-180).
 Published branch names, PR identity and forward-only refresh rules stay the same;
 delivery publishes the candidate to that existing name and cleans up its own
 local branch. A preserved worktree is never removed, moved or reused by a fresh

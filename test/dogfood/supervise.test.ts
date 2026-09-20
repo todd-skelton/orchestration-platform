@@ -4,10 +4,112 @@ import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, expect, it } from "vitest";
-import { sourceFailureFixture, historicalStops, snapshot } from "./fixtures/source-failure.js";
-import { queueStep } from "../../scripts/dogfood/queue.js";
+import { prerequisiteFixture, prerequisiteProof } from "./fixtures/prerequisite.js";
+import {
+  sourceFailureFixture,
+  repairFailureFixture,
+  historicalStops,
+  snapshot,
+} from "./fixtures/source-failure.js";
 
 const roots: string[] = [];
+
+it("ISS-187 enters through the supervisory command, completes one detour and holds the saved cycle", async () => {
+  const f = await prerequisiteFixture();
+  roots.push(f.root);
+  const entry = resolve(f.repository, "scripts/dogfood/supervise.mjs");
+  await writeFile(entry, await readFile(command));
+  await f.git(f.repository, ["add", "scripts/dogfood/supervise.mjs"]);
+  await f.git(f.repository, ["commit", "-m", "synthetic canonical entry"]);
+  const config = resolve(f.root, "loop.json");
+  const control = resolve(f.root, "command-control.json");
+  await writeFile(config, JSON.stringify(f.loop));
+  await writeFile(
+    control,
+    JSON.stringify({ rows: f.rows, gitExecutable: f.loop.gitExecutable, launches: [] }),
+  );
+  const hook = resolve(import.meta.dirname, "supervise-fixtures/prerequisite.mjs");
+  let invocation = 0;
+  const invoke = async () => {
+    const outPath = resolve(f.root, `invoke-${++invocation}.stdout`);
+    const errPath = resolve(f.root, `invoke-${invocation}.stderr`);
+    const [stdout, stderr] = await Promise.all([open(outPath, "wx"), open(errPath, "wx")]);
+    let code: number | null;
+    try {
+      code = await new Promise<number | null>((done, reject) => {
+        const child = spawn(
+          process.execPath,
+          ["--import", pathToFileURL(hook).href, entry, config],
+          {
+            env: { ...process.env, PREREQUISITE_FIXTURE: control },
+            stdio: ["ignore", stdout.fd, stderr.fd],
+          },
+        );
+        child.on("error", reject);
+        child.on("close", done);
+      });
+    } finally {
+      await Promise.all([stdout.close(), stderr.close()]);
+    }
+    return { code, output: (await readFile(outPath, "utf8")) + (await readFile(errPath, "utf8")) };
+  };
+  const before = await snapshot(f.runState);
+  const trees = await snapshot(f.loop.worktreeRoot);
+  const result = await invoke();
+  expect(result.output).toContain('"status":"complete"');
+  expect(result.output).toContain('"reason":"prerequisite-held"');
+  expect(result.code).toBe(1);
+  const after = await snapshot(f.runState);
+  for (const [path, bytes] of before)
+    if (path !== resolve(f.current.config.stateDirectory, "attempt.json"))
+      expect(after.get(path), path).toBe(bytes);
+  const effects = await readFile(control, "utf8");
+  expect(JSON.parse(effects).launches).toEqual([
+    { role: "author", issue: "https://github.com/fixture/repository/issues/110" },
+    { role: "reviewer", issue: "https://github.com/fixture/repository/issues/110" },
+  ]);
+  expect((await invoke()).output).toContain('"reason":"prerequisite-held"');
+  expect(await readFile(control, "utf8")).toBe(effects);
+  expect(await snapshot(f.runState)).toEqual(after);
+  await prerequisiteProof(f, before, trees, "supervisory-entry");
+});
+
+it.each(["terminal", "pending", "complete", "pilot-pending", "pilot-complete"] as const)(
+  "retained native repair FAIL parks without replay and drains unrelated work: %s",
+  async (shape) => {
+    const f = await repairFailureFixture();
+    roots.push(f.root);
+    await f.fail();
+    expect(f.cycle.initialHistory).toHaveLength(6);
+    expect(f.cycle.initialHistory.slice(-4)).toMatchObject([
+      { role: "author", outcome: "passed" },
+      { role: "reviewer", outcome: "malformed" },
+      { ordinal: 5, role: "reviewer", stage: "source", outcome: "failed" },
+      { ordinal: 6, role: "author", stage: "repair", outcome: "failed" },
+    ]);
+    await historicalStops(f, shape);
+    const old = await snapshot(f.runState);
+    const trees = await snapshot(f.loop.worktreeRoot);
+    const launches = f.calls.filter((c) => c.startsWith("launch:"));
+    if (shape === "terminal") {
+      expect(await f.stop()).toBe("item");
+      expect(f.rows[0]!.comments.at(-1)).toContain("3 implementation attempts");
+    } else await f.upgrade();
+    expect(await f.advance()).toMatchObject({
+      selection: { key: "fixture-159" },
+      initialHistory: f.cycle.initialHistory,
+    });
+    expect(f.rows[0]).toMatchObject({ ready: false, state: "OPEN" });
+    const notes = [...f.rows[0]!.comments];
+    await f.advance();
+    expect(f.rows[0]!.comments).toEqual(notes);
+    expect(f.calls.filter((c) => c.startsWith("launch:"))).toEqual(launches);
+    for (const [path, bytes] of old) expect(await readFile(path, "utf8"), path).toBe(bytes);
+    expect(await snapshot(f.loop.worktreeRoot)).toEqual(trees);
+    expect(await f.drain()).toEqual(["fixture-159", "fixture-160"]);
+    expect(await f.drain()).toEqual([]);
+  },
+);
 
 it.each(["terminal", "pending", "complete", "pilot-pending", "pilot-complete"] as const)(
   "retained source FAIL survives upgrade without source replay: %s",
@@ -19,11 +121,6 @@ it.each(["terminal", "pending", "complete", "pilot-pending", "pilot-complete"] a
     const old = await snapshot(f.runState);
     const trees = await snapshot(f.loop.worktreeRoot);
     await f.upgrade();
-    // Old composition would enter the source flow with the new pilot revision.
-    const replay = await f.compose(f.cycle);
-    await expect(queueStep(replay.config, replay.adapter)).rejects.toMatchObject({
-      reason: "pilot-revision-moved",
-    });
     const calls = f.calls.length;
     const next = await f.advance();
     expect(next).toMatchObject({

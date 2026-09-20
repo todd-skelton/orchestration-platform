@@ -13,17 +13,159 @@ import {
   repositoryDeliveryPolicy,
   type RepositoryAdapter,
 } from "../../scripts/dogfood/repository-adapter.js";
-import { parseTrace, waitForProvider } from "../../scripts/dogfood/dispatch-adapter.js";
+import {
+  codexAdapter,
+  parseTrace,
+  waitForProvider,
+} from "../../scripts/dogfood/dispatch-adapter.js";
 import { stopCycle } from "../../scripts/dogfood/supervision.js";
 import type { LoopConfig } from "../../scripts/dogfood/queue.js";
 import { reviewedRepairAdapter } from "../../scripts/dogfood/repair-adapter.js";
 import { SELF_ROUTING } from "../../scripts/dogfood/routing.mjs";
+import { resolveConflict } from "../../scripts/dogfood/conflict.js";
 import { evidenceDescriptor, writeEvidence } from "./fixtures/continuation.js";
 
 const base = "a".repeat(40),
   head = "b".repeat(40),
   pilotRevision = "c".repeat(40);
 const cleanup: string[] = [];
+
+it.each(["source", "repair", "gate", "conflict-boundary"])(
+  "retains malformed-author retry context and continuation fences for %s",
+  async (caller) => {
+    const f = await fixture();
+    f.config.mainBase = pilotRevision;
+    f.config.allowedPaths = ["."];
+    const handoff = {
+      mainBase: pilotRevision,
+      correctiveBase: base,
+      failedReview: {
+        findings: [
+          {
+            file: "scripts/repair.mjs",
+            line: 1,
+            severity: "blocking" as const,
+            text: "Synthetic prescribed repair.",
+          },
+        ],
+      },
+      predecessorCompleteSweep: "synthetic-predecessor-review",
+      sourceRecords: resolve(f.config.stateDirectory, "predecessor"),
+      implementation: { attempts: 2, ceiling: 4 },
+      sourcePaths: ["scripts/repair.mjs"],
+      acceptanceCriteria: ["Preserve the original criterion."],
+    };
+    if (caller === "gate") f.config.correctionPaths = ["scripts/repair.mjs"];
+    let validations = 0;
+    f.adapter.validateAuthorChanges = async () => {
+      validations++;
+    };
+    const run = () =>
+      caller === "repair"
+        ? reviewedRepairAdapter(f.adapter, f.pilot).dispatch(f.config, handoff)
+        : caller === "gate"
+          ? correctGate(
+              f.config,
+              f.adapter,
+              f.pilot,
+              "test",
+              "Synthetic failing assertion artifact.",
+            )
+          : caller === "conflict-boundary"
+            ? resolveConflict(
+                f.config,
+                f.adapter,
+                f.pilot,
+                pilotRevision,
+                head,
+                {
+                  seed: base,
+                  files: {
+                    "scripts/repair.mjs":
+                      "prefix\n<<<<<<< HEAD\na\n=======\nb\n>>>>>>> main\nsuffix\n",
+                  },
+                },
+                async () => {
+                  throw new Error("saved conflict seed must be reused");
+                },
+              )
+            : f.run();
+    await expect(run()).resolves.toMatchObject({ status: "observing-author" });
+    f.setCached("scripts/repair.mjs\0");
+    f.setUntracked("scripts/new.mjs\0");
+    f.statuses.author = "malformed";
+    f.summarize("author", "Author summary length is 2079 characters; maximum is 2000.");
+    await expect(run()).resolves.toMatchObject({ status: "observing-author", retries: 1 });
+    const saved = await readFile(resolve(f.config.stateDirectory, "author-attempt.json"), "utf8");
+    await expect(run()).resolves.toMatchObject({ status: "observing-author", retries: 1 });
+    expect(await readFile(resolve(f.config.stateDirectory, "author-attempt.json"), "utf8")).toBe(
+      saved,
+    );
+    expect(f.launches).toEqual(["author", "author"]);
+    expect(f.resets).toEqual([]);
+    expect(f.cleans).toEqual([]);
+    expect(f.launchPrompts[1]).toContain("2079");
+    expect(f.launchPrompts[1]).toContain("author-1.jsonl");
+    expect(f.launchPrompts[1]).toContain("verify the retained work");
+    if (caller === "repair") {
+      expect(f.launchPrompts[1]).toContain("Synthetic prescribed repair.");
+      expect(f.launchPrompts[1]).toContain("Preserve the original criterion.");
+      expect(f.launchPrompts[1]).toContain(JSON.stringify(handoff.sourceRecords));
+    }
+    if (caller === "gate") expect(f.launchPrompts[1]).toContain("Correct only the test failure");
+    f.retry("passed");
+    if (caller === "conflict-boundary") {
+      await expect(run()).rejects.toThrow("conflict-resolution-scope-escape");
+      expect(f.commits).toEqual([]);
+      expect(f.launches).toEqual(["author", "author"]);
+    } else if (caller === "gate") {
+      await expect(run()).rejects.toThrow("outside-footprint");
+      expect(f.commits).toEqual([]);
+    } else {
+      await expect(run()).resolves.toMatchObject({ status: "observing-reviewer" });
+      f.reviewerDone();
+      await expect(run()).resolves.toMatchObject({ status: "awaiting-publication", retries: 1 });
+      await expect(run()).resolves.toMatchObject({ status: "awaiting-publication", retries: 1 });
+      expect(f.launches).toEqual(["author", "author", "reviewer"]);
+      expect(f.commits).toHaveLength(1);
+      expect(f.launchPrompts[2]).toContain("author-2.jsonl");
+      expect(f.launchPrompts[2]).toContain(pilotRevision);
+    }
+    if (caller !== "conflict-boundary") expect(validations).toBeGreaterThan(0);
+  },
+);
+
+it("still refuses unrelated dirty work before an initial author launch", async () => {
+  const f = await fixture();
+  const git = f.adapter.git;
+  f.adapter.git = (tree, args) =>
+    tree === f.config.worktree && args[0] === "status"
+      ? Promise.resolve("?? unrelated.txt")
+      : git(tree, args);
+  await expect(f.run()).rejects.toThrow("dirty-author");
+  expect(f.launches).toEqual([]);
+  expect(f.resets).toEqual([]);
+  expect(f.cleans).toEqual([]);
+});
+
+it.each(["dead", "malformed"] as const)(
+  "does not renew the malformed author's retry for %s",
+  async (failure) => {
+    const f = await fixture();
+    f.statuses.author = "malformed";
+    f.summarize("author", "Synthetic invalid verdict.");
+    f.retry("running");
+    await f.run();
+    f.retry(failure, "Synthetic second failure.");
+    for (let i = 0; i < 2; i++)
+      await expect(f.run()).rejects.toMatchObject({
+        reason: failure === "dead" ? "launcher-failed" : "author-malformed",
+        retries: 1,
+      });
+    expect(f.launches).toEqual(["author", "author"]);
+    expect(f.commits).toEqual([]);
+  },
+);
 
 it("FAIL requires matching terminal and stable executor: source identity has no exemption", async () => {
   const f = await fixture();
@@ -161,6 +303,64 @@ it.each([
   expect(f.launches).toEqual(["author"]);
 });
 
+it.each([
+  ["wrong-head", "author-wrong-head"],
+  ["FAIL", "author-failed"],
+  ["trailing-prose", "author-malformed"],
+])("refuses a completed prefixed author at the flow boundary: %s", async (mode, reason) => {
+  const f = await fixture();
+  const attempt = {
+    id: "01a048fe-90c8-7cb3-8da5-938c1f5cb5f0",
+    pid: 999_999,
+    trace: resolve(f.config.stateDirectory, "author.jsonl"),
+    launchedAt: 1,
+    retries: 1,
+  };
+  await writeFile(resolve(f.config.stateDirectory, "author-attempt.json"), JSON.stringify(attempt));
+  const verdict = {
+    run: f.config.run,
+    role: "author",
+    head: mode === "wrong-head" ? head : base,
+    verdict: mode === "FAIL" ? "FAIL" : "PASS",
+    summary: "Unfinished.",
+  };
+  await writeFile(
+    attempt.trace,
+    [
+      { type: "thread.started", thread_id: attempt.id },
+      {
+        type: "item.completed",
+        item: {
+          type: "agent_message",
+          text: `Work complete.\n${JSON.stringify(verdict)}${mode === "trailing-prose" ? "\nDone." : ""}`,
+        },
+      },
+      { type: "turn.completed" },
+    ]
+      .map((event) => JSON.stringify(event))
+      .join("\n") + "\n",
+  );
+  await writeFile(
+    resolve(f.config.stateDirectory, "author.exit.json"),
+    JSON.stringify({ code: 0 }),
+  );
+  f.adapter.observe = (role, config, attempt) =>
+    codexAdapter().observe(
+      role,
+      {
+        ...config,
+        worktree: resolve(import.meta.dirname, "../.."),
+      },
+      attempt,
+    );
+  for (let replay = 0; replay < 2; replay++) await expect(f.run()).rejects.toThrow(reason);
+  expect(f.launches).toEqual([]);
+  expect(f.commits).toEqual([]);
+  await expect(readFile(resolve(f.config.stateDirectory, "candidate.json"))).rejects.toMatchObject({
+    code: "ENOENT",
+  });
+});
+
 it("reconciles an interrupted final author commit without another author", async () => {
   const f = await fixture();
   f.config.correctionPaths = ["scripts/repair.mjs"];
@@ -199,7 +399,8 @@ it.each(["sibling", "untracked", "rename"])(
 );
 
 afterEach(async () => {
-  for (const path of cleanup.splice(0)) await rm(path, { recursive: true, force: true });
+  for (const path of cleanup.splice(0))
+    await rm(path, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
 });
 async function fixture() {
   const root = await realpath(await mkdtemp(resolve(tmpdir(), "dogfood-test-")));

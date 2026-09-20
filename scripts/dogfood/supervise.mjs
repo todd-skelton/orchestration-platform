@@ -100,6 +100,10 @@ try {
           break;
         }
         if (pending?.scope === "item") {
+          if (active.prerequisite) {
+            blocked(new QueueBlocked("prerequisite-held"));
+            break;
+          }
           active = undefined;
           validatedExecutor = undefined;
           continue;
@@ -137,13 +141,17 @@ try {
         continue;
       }
       await completeCycle(loop, active, await queueAdapter.history(), supervisor);
+      if (active.prerequisite) {
+        blocked(new QueueBlocked("prerequisite-held"));
+        break;
+      }
       active = undefined;
       config = undefined;
       queueAdapter = undefined;
       validatedExecutor = undefined;
     } catch (error) {
       const outcome = await stop(error);
-      if (outcome.scope === "item" && !loop.acceptedReplan) {
+      if (outcome.scope === "item" && !loop.acceptedReplan && !active?.prerequisite) {
         active = undefined;
         config = undefined;
         queueAdapter = undefined;

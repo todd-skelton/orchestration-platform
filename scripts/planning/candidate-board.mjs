@@ -37,21 +37,21 @@ export function candidatePlanningKeys(base, candidate) {
   return keys;
 }
 
-export async function checkCandidateBoard(worktree, head, gitExecutable = "git") {
+export async function candidatePlanningBase(worktree, head, gitExecutable = "git") {
   const git = async (args) =>
     (
       await exec(gitExecutable, ["-C", worktree, ...args], { maxBuffer: 32 * 1024 * 1024 })
     ).stdout.trimEnd();
   const base = await git(["merge-base", "refs/remotes/origin/main", head]);
-  const roadmap = JSON.parse(await git(["show", `${base}:planning/roadmap.json`]));
-  const issueDrafts = Object.fromEntries(
-    await Promise.all(
-      roadmap.issues.map(async (row) => [row.key, await git(["show", `${base}:${row.file}`])]),
-    ),
-  );
+  return loadPlanningSnapshot(worktree, { revision: base, git });
+}
+
+export async function checkCandidateBoard(worktree, head, gitExecutable = "git") {
+  const base = await candidatePlanningBase(worktree, head, gitExecutable);
+  const { roadmap } = base;
   const candidate = await loadPlanningSnapshot(worktree);
   validatePlanningSnapshot(candidate);
-  const keys = candidatePlanningKeys({ roadmap, issueDrafts }, candidate);
+  const keys = candidatePlanningKeys(base, candidate);
   const planning = {
     ...candidate,
     roadmap: {

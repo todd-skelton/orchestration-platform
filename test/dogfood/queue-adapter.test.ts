@@ -28,6 +28,8 @@ import type { RepositoryAdapter } from "../../scripts/dogfood/repository-adapter
 import type { SetupAdapter, SetupRole } from "../../scripts/dogfood/setup.js";
 import {
   isItemStopReason,
+  completeCycle,
+  startCycle,
   persistCycle,
   stopCycle,
   reconcilePendingStop,
@@ -38,6 +40,7 @@ import { gitSetupAdapter } from "../../scripts/dogfood/setup-adapter.js";
 import { codexAdapter } from "../../scripts/dogfood/dispatch-adapter.js";
 import { SELF_ROUTING } from "../../scripts/dogfood/routing.mjs";
 import { sourceFailureFixture, historicalStops, snapshot } from "./fixtures/source-failure.js";
+import { prerequisiteFixture, prerequisiteProof } from "./fixtures/prerequisite.js";
 import {
   type QueueConfig,
   type QueueAdapter,
@@ -46,6 +49,177 @@ import {
 } from "../../scripts/dogfood/queue.js";
 
 const roots: string[] = [];
+
+it("ISS-187 retains a saved run's source failure through native absolute-2 entry and replay", async () => {
+  const f = await prerequisiteFixture();
+  roots.push(f.root);
+  const { history } = f;
+  const old = await snapshot(f.runState);
+  const oldTrees = await snapshot(f.loop.worktreeRoot);
+  const next = (await f.advance())!;
+  expect(next.selection).toMatchObject({ cycle: 5, key: "fixture-110" });
+  expect(next.initialHistory).toEqual(history);
+  await persistCycle(f.loop, next);
+  await startCycle(f.loop, next, f.host);
+  const q = await f.compose(next);
+  expect(q.config.items[0]!.implementationAttempt).toBe(2);
+  expect(q.config.items[0]!.source.authorFailures).toEqual({ count: 1, ids: [history[5]!.id] });
+  expect(q.config.items[0]!.source.author.rung).toBe(1);
+  f.setAuthorStatus("running");
+  expect(await queueStep(q.config, q.adapter)).toMatchObject({ status: "observing-author" });
+  const replay = await f.compose((await f.advance())!);
+  expect(await queueStep(replay.config, replay.adapter)).toMatchObject({
+    status: "observing-author",
+  });
+  const after = await snapshot(f.runState);
+  for (const [path, bytes] of old) {
+    if (path === resolve(f.current.config.stateDirectory, "attempt.json")) continue;
+    expect(after.get(path), path).toBe(bytes);
+  }
+  for (const [path, bytes] of oldTrees) expect(await readFile(path, "utf8"), path).toBe(bytes);
+  expect(await replay.adapter.history()).toEqual(history);
+  expect(
+    f.calls.filter(
+      (call) => call === "launch:author:https://github.com/fixture/repository/issues/110",
+    ),
+  ).toHaveLength(2);
+  await prerequisiteProof(f, old, oldTrees, "interrupted-worker-resume");
+});
+
+it.each(["source2", "probe", "source4", "ceiling"])(
+  "ISS-187 uses native accounting and terminal hold: %s",
+  async (scenario) => {
+    const f = await prerequisiteFixture();
+    roots.push(f.root);
+    const old = await snapshot(f.runState);
+    const trees = await snapshot(f.loop.worktreeRoot);
+    const next = (await f.advance())!;
+    await persistCycle(f.loop, next);
+    await startCycle(f.loop, next, f.host);
+    const launch = f.native.launch;
+    const observe = f.native.observe;
+    let refused = false;
+    f.native.launch = async (role, config, prompt) => {
+      if (role === "author" && config.issue.endsWith("/110")) {
+        if (scenario === "probe" && !refused) {
+          refused = true;
+          expect(config.author.rung).toBe(1);
+          throw new QueueBlocked("provider-model-refused");
+        }
+        await writeFile(
+          resolve(config.worktree, "product.txt"),
+          `synthetic change ${config.stateDirectory}\n`,
+        );
+      }
+      return launch(role, config, prompt);
+    };
+    f.native.observe = async (role, config, attempt) => {
+      const result = await observe(role, config, attempt);
+      if (role === "author") return { ...result, status: "passed", summary: "" };
+      const fail =
+        ["source4", "ceiling"].includes(scenario) &&
+        (scenario === "ceiling" || !config.stateDirectory.includes("attempt-4"));
+      return {
+        ...result,
+        status: fail ? "failed" : "passed",
+        summary: JSON.stringify({
+          run: config.run,
+          role,
+          head: result.head,
+          verdict: fail ? "FAIL" : "PASS",
+          findings: fail
+            ? [
+                {
+                  file: "product.txt",
+                  line: 1,
+                  severity: "blocking",
+                  text: "Use the required synthetic result.",
+                },
+              ]
+            : [],
+          g0: "No; the synthetic invariant is required.",
+        }),
+      };
+    };
+    let q = await f.compose(next);
+    if (["source4", "ceiling"].includes(scenario)) {
+      expect(await queueStep(q.config, q.adapter)).toMatchObject({
+        status: "advancing-attempt",
+        cursor: 3,
+      });
+      expect(await f.json(resolve(q.config.stateDirectory, "attempt.json"))).toMatchObject({
+        phase: "failed",
+        candidateAttempt: 3,
+        authorFailures: { count: 3 },
+      });
+      q = await f.compose((await f.advance())!);
+      expect(q.config.items[0]!.implementationAttempt).toBe(4);
+      expect(q.config.items[0]!.source.author.rung).toBe(2);
+    }
+    if (scenario === "ceiling") {
+      await expect(queueStep(q.config, q.adapter)).rejects.toMatchObject({
+        reason: "implementation-attempt-ceiling-exhausted",
+      });
+      expect(
+        await stopCycle(
+          f.loop,
+          { ...next, initialHistory: await q.adapter.history() },
+          "implementation-attempt-ceiling-exhausted",
+          4,
+          f.host,
+          f.policy,
+        ),
+      ).toBe("item");
+    } else {
+      expect(await queueStep(q.config, q.adapter)).toMatchObject({ status: "complete" });
+      await completeCycle(f.loop, next, await q.adapter.history(), f.host);
+    }
+    const charged = await q.adapter.history();
+    expect(charged.slice(0, 12)).toEqual(f.history);
+    expect(charged).toHaveLength(["source4", "ceiling"].includes(scenario) ? 18 : 14);
+    const saved = await f.json(resolve(q.config.stateDirectory, "attempt.json"));
+    expect(saved.authorFailures.count).toBe(
+      scenario === "probe" ? 2 : scenario === "source4" ? 3 : scenario === "ceiling" ? 4 : 1,
+    );
+    if (scenario === "probe")
+      expect(saved.authorFailures.ids).toEqual([
+        f.history[5]!.id,
+        `${q.config.items[0]!.source.stateDirectory}:probe:1`,
+      ]);
+    const after = await snapshot(f.runState);
+    for (const [path, bytes] of old) {
+      if (path !== resolve(f.current.config.stateDirectory, "attempt.json"))
+        expect(after.get(path), path).toBe(bytes);
+    }
+    const oldAttempt = JSON.parse(
+      old.get(resolve(f.current.config.stateDirectory, "attempt.json"))!,
+    );
+    const projected = await f.json(resolve(f.current.config.stateDirectory, "attempt.json"));
+    expect(projected).toEqual({
+      ...oldAttempt,
+      phase: "failed",
+      reviewId: "",
+      rebasedBase: projected.rebasedBase,
+      rebasedMainBase: projected.rebasedMainBase,
+    });
+    for (const [path, bytes] of trees) expect(await readFile(path, "utf8"), path).toBe(bytes);
+    await expect(f.advance()).rejects.toMatchObject({ reason: "prerequisite-held" });
+    const authorityUrl = f.loop.prerequisite!.authorityUrl;
+    delete f.loop.prerequisite;
+    await expect(f.advance()).rejects.toMatchObject({ reason: "prerequisite-held" });
+    f.loop.blockedCycleResume = { cycle: 5, authorityUrl };
+    await expect(f.advance()).rejects.toMatchObject({ reason: "prerequisite-held" });
+    expect(await snapshot(f.runState)).toEqual(after);
+    f.loop.blockedCycleResume.authorityUrl =
+      "https://github.com/fixture/repository/issues/1#issuecomment-2";
+    expect(await f.advance()).toMatchObject({
+      selection: f.blocked.selection,
+      initialHistory: charged,
+    });
+    expect(await snapshot(f.runState)).toEqual(after);
+    await prerequisiteProof(f, old, trees, scenario);
+  },
+);
 
 it("FAIL requires matching terminal and stable executor: terminal match", async () => {
   const f = await sourceFailureFixture();
@@ -124,8 +298,8 @@ it("FAIL requires matching terminal and stable executor: live executor", async (
   await f.git(f.repository, ["restore", "product.txt"]);
   await f.upgrade();
   // A changed queue executor binding is still rejected before source observation.
-  const queue = await f.compose(f.cycle);
-  queue.config.items[0]!.setup.controllerRevision = f.base;
+  const queue = f.current;
+  queue.config.controllerRevision = await f.git(f.repository, ["rev-parse", "HEAD"]);
   await expect(queueStep(queue.config, queue.adapter)).rejects.toMatchObject({
     reason: "queue-executor-drift",
   });
@@ -146,6 +320,16 @@ it("FAIL requires matching terminal and stable executor: live author retains sou
   expect(f.calls.filter((call) => call.startsWith("launch:"))).toHaveLength(1);
   await f.upgrade();
   const q = await f.compose(f.cycle);
+  await expect(queueStep(q.config, q.adapter)).resolves.toMatchObject({
+    status: "observing-author",
+  });
+  expect(f.calls.filter((call) => call.startsWith("launch:"))).toHaveLength(1);
+  // An executor upgrade retains the saved pilot; moving that worktree still refuses.
+  await f.git(q.config.items[0]!.setup.pilotWorktree, [
+    "checkout",
+    "--detach",
+    await f.git(f.repository, ["rev-parse", "HEAD"]),
+  ]);
   await expect(queueStep(q.config, q.adapter)).rejects.toMatchObject({
     reason: "pilot-revision-moved",
   });
@@ -260,7 +444,11 @@ async function fixture(history: QueueParticipant[] = []) {
 
 afterEach(async () => {
   vi.restoreAllMocks();
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+  await Promise.all(
+    roots
+      .splice(0)
+      .map((root) => rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 })),
+  );
 });
 
 async function planningSource(
@@ -502,7 +690,7 @@ it.each([
     },
   };
   const adapter = () => repositoryQueueAdapter(f.config, f.paths.controller, { native });
-  if (["failed", "malformed"].includes(failure)) {
+  if (failure === "failed") {
     await expect(adapter().source(f.item)).rejects.toThrow(`author-${failure}`);
     await expect(adapter().source(f.item)).rejects.toThrow(`author-${failure}`);
     f.item.source.stateDirectory = resolve(f.paths.queue, "next-author");
@@ -532,6 +720,15 @@ it.each([
     placement: SELF_ROUTING.author[Math.min(count, 2)],
   });
   if (failure.startsWith("refused")) expect(JSON.parse(saved).retries).toBeUndefined();
+  if (failure === "malformed") {
+    expect(JSON.parse(saved)).toMatchObject({
+      retries: 1,
+      retryContext: expect.stringContaining("could not be parsed"),
+    });
+    expect(await adapter().history()).toMatchObject([
+      { id: "author-1", role: "author", outcome: "malformed", rung: 0 },
+    ]);
+  }
   if (failure === "dead-after-work") {
     expect(partialWork).toBe(false);
     expect(
@@ -736,6 +933,12 @@ it.each([
       name,
       bucket: "fail" as const,
       link: `https://github.com/fixture/repository/actions/runs/${index === 3 ? 34818999246 : 34818999245}/job/${index + 1}`,
+      actions: {
+        run: index === 3 ? 34818999246 : 34818999245,
+        attempt: 1,
+        job: index + 1,
+        workflow: index === 3 ? 2 : 1,
+      },
     }));
     let fetches = 0;
     const delivery = {
@@ -746,8 +949,13 @@ it.each([
         expect(observedPublication).toEqual(publication);
         return { head: base, checks };
       },
-      async failedCheckLog(config: DeliveryConfig, check: { name: string }) {
+      async failedCheckLog(
+        config: DeliveryConfig,
+        check: { name: string },
+        observedPublication: PublicationEvidence,
+      ) {
         expect(config.candidateHead).toBe(base);
+        expect(observedPublication).toEqual(publication);
         fetches++;
         if (mode === "failed fetch") throw new Error("hosted logs unavailable");
         return `${(check.name === "E2E" ? ["E2E"] : ["PR Required", "Static Checks", "Unit Tests"]).map((name) => `${name}: actual underlying diagnostic`).join("\n")}\n${"PR Required aggregate boilerplate\n".repeat(200)}`;

@@ -31,4 +31,5 @@ export function selfPlanFromSnapshots(
   planning: unknown,
   board: unknown,
   lineChanges: Awaited<ReturnType<typeof candidateLineChanges>>,
+  base: unknown,
 ): DeliveryPlan;

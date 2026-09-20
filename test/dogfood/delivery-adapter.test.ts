@@ -1,6 +1,16 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  open,
+  readdir,
+  readFile,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -40,7 +50,264 @@ const authorId = "11111111-1111-1111-1111-111111111111";
 const reviewId = "22222222-2222-2222-2222-222222222222";
 const roots: string[] = [];
 
+// Synthetic structured Actions response for the existing delivery lifecycle tests.
+function hostedResponse(
+  config: DeliveryConfig,
+  publication: PublicationEvidence,
+  args: string[],
+  pending = false,
+) {
+  if (args[0] !== "api" || !args[1]?.includes("/actions/runs")) return undefined;
+  const repo = { id: 10, full_name: config.repository };
+  const run = {
+    id: 123,
+    workflow_id: 7,
+    run_number: 1,
+    run_attempt: 1,
+    path: ".github/workflows/bootstrap.yml",
+    event: "pull_request",
+    repository: repo,
+    head_repository: repo,
+    head_sha: config.candidateHead,
+    head_branch: publication.sourceBranch,
+    status: pending ? "in_progress" : "completed",
+    pull_requests: [
+      {
+        number: publication.number,
+        url: `https://api.github.com/repos/${config.repository}/pulls/${publication.number}`,
+        head: { ref: publication.sourceBranch, sha: config.candidateHead, repo: { id: 10 } },
+        base: { ref: publication.baseBranch, repo: { id: 10 } },
+      },
+    ],
+  };
+  if (args[1].includes("/jobs?"))
+    return [
+      {
+        jobs: config.requiredChecks.map((name, index) => ({
+          id: 456 + index,
+          run_id: 123,
+          run_attempt: 1,
+          head_sha: config.candidateHead,
+          name,
+          html_url: `https://github.com/${config.repository}/actions/runs/123/job/${456 + index}`,
+          status: pending ? "in_progress" : "completed",
+          conclusion: pending ? null : "success",
+        })),
+      },
+    ];
+  if (args[1].endsWith("/123")) return run;
+  return [{ workflow_runs: [run] }];
+}
+
+// ISS-188: entirely synthetic identities; no Git, provider or mutation calls.
+function statusObservation(beforeStatus = "in_progress", afterStatus = "completed") {
+  const current = { ...config(tmpdir()), repository: "fixture/repository" };
+  const publication = {
+    ...publicationEvidence(current),
+    repository: current.repository,
+    url: "https://github.com/fixture/repository/pull/44",
+  };
+  const response = hostedResponse(current, publication, ["api", "/actions/runs?"]);
+  if (!Array.isArray(response) || !("workflow_runs" in response[0]!))
+    throw new Error("expected synthetic workflow response");
+  const run = response[0].workflow_runs[0]!;
+  const before = [{ ...run, status: beforeStatus }];
+  const after = [{ ...structuredClone(run), status: afterStatus }];
+  const jobResponse = hostedResponse(current, publication, ["api", "/actions/runs/123/jobs?"]);
+  if (!Array.isArray(jobResponse) || !("jobs" in jobResponse[0]!))
+    throw new Error("expected synthetic jobs response");
+  const state = {
+    before,
+    after,
+    jobs: jobResponse[0].jobs,
+    publicationAfter: publicationRow(publication),
+    failAfter: false,
+  };
+  const requests: string[][] = [];
+  const mutations = vi.fn(async () => {
+    throw new Error("unexpected mutation");
+  });
+  const pause = vi.fn(async () => {});
+  let workflowReads = 0;
+  let publicationReads = 0;
+  const adapter = githubDeliveryAdapter(
+    {
+      gh: mutations,
+      async ghJson(_config, args) {
+        requests.push(args);
+        if (args[0] === "pr" && args[1] === "view")
+          return ++publicationReads === 1 ? publicationRow(publication) : state.publicationAfter;
+        expect(args[0]).toBe("api");
+        if (args[1]!.includes("/jobs?")) return structuredClone([{ jobs: state.jobs }]);
+        expect(args[1]).toContain("/actions/runs?");
+        if (++workflowReads === 2 && state.failAfter) throw new Error("synthetic API failure");
+        return structuredClone([
+          { workflow_runs: workflowReads === 1 ? state.before : state.after },
+        ]);
+      },
+    },
+    "unused-git",
+    pause,
+  );
+  const assertCalls = (count: number) => {
+    expect(requests).toHaveLength(count);
+    expect(workflowReads).toBe(count >= 4 ? 2 : 1);
+    expect(publicationReads).toBe(count === 5 ? 2 : 1);
+    expect(pause).not.toHaveBeenCalled();
+    expect(mutations).not.toHaveBeenCalled();
+  };
+  return { current, publication, state, adapter, assertCalls };
+}
+
+it.each([
+  ["in_progress", "in_progress", "pending", true],
+  ["completed", "completed", "success", false],
+  ["completed", "completed", "failure", false],
+  ["completed", "completed", "cancelled", false],
+  ["completed", "completed", "skipped", false],
+  ["queued", "in_progress", "missing", true],
+  ["queued", "in_progress", "pending", true],
+  ["in_progress", "completed", "missing", true],
+  ["in_progress", "completed", "pending", true],
+  ["in_progress", "completed", "success", true],
+  ["in_progress", "completed", "failure", true],
+  ["completed", "in_progress", "success", true],
+] as const)(
+  "SYNTHETIC %s to %s with %s jobs preserves pending=%s",
+  async (before, after, jobs, pending) => {
+    const f = statusObservation(before, after);
+    if (jobs === "missing") f.state.jobs = [];
+    else
+      for (const job of f.state.jobs) {
+        job.status = jobs === "pending" ? "in_progress" : "completed";
+        job.conclusion = jobs === "pending" ? null : jobs;
+      }
+    const result = await f.adapter.checks(f.current, f.publication);
+    expect(result.workflowPending ?? false).toBe(pending);
+    expect(result.head).toBe(f.publication.head);
+    expect(result.checks).toEqual(
+      jobs === "missing"
+        ? []
+        : f.current.requiredChecks.map((name, index) => ({
+            name,
+            bucket: {
+              pending: "pending",
+              success: "pass",
+              failure: "fail",
+              cancelled: "cancel",
+              skipped: "skipping",
+            }[jobs],
+            link: `https://github.com/fixture/repository/actions/runs/123/job/${456 + index}`,
+            actions: { run: 123, attempt: 1, job: 456 + index, workflow: 7 },
+          })),
+    );
+    f.assertCalls(5);
+  },
+);
+
+it.each(["workflow_id", "id", "run_number", "run_attempt", "path", "addition", "removal"] as const)(
+  "SYNTHETIC status progress cannot admit changed selection: %s",
+  async (field) => {
+    const f = statusObservation();
+    const after = f.state.after[0]!;
+    if (field === "path") after.path = ".github/workflows/other.yml";
+    else if (field === "addition")
+      f.state.after.push({
+        ...after,
+        id: 124,
+        workflow_id: 8,
+        path: ".github/workflows/other.yml",
+      });
+    else if (field === "removal") f.state.after = [];
+    else after[field]++;
+    await expect(f.adapter.checks(f.current, f.publication)).rejects.toMatchObject({
+      reason: "hosted-observation-unavailable",
+      diagnostics: "applicable workflow changed during observation; reobserve checks",
+    });
+    f.assertCalls(4);
+  },
+);
+
+it.each(["before", "after"] as const)(
+  "SYNTHETIC %s association is independently checked despite status progress",
+  async (snapshot) => {
+    for (const field of [
+      "repository",
+      "PR",
+      "head",
+      "source",
+      "base",
+      "status",
+      "duplicate",
+      "malformed",
+    ] as const) {
+      const f = statusObservation();
+      const run = f.state[snapshot][0]!;
+      if (field === "repository") run.repository.full_name = "foreign/repository";
+      if (field === "PR")
+        run.pull_requests[0]!.url = "https://api.github.com/repos/fixture/repository/pulls/45";
+      if (field === "head") run.head_sha = "f".repeat(40);
+      if (field === "source") run.pull_requests[0]!.head.ref = "other-source";
+      if (field === "base") run.pull_requests[0]!.base.ref = "other-base";
+      if (field === "status") run.status = "invalid";
+      if (field === "duplicate") f.state[snapshot].push(run);
+      if (field === "malformed") run.run_attempt = 0;
+      await expect(f.adapter.checks(f.current, f.publication)).rejects.toMatchObject({
+        reason: "hosted-observation-unavailable",
+      });
+      f.assertCalls(snapshot === "before" ? 2 : 4);
+    }
+  },
+);
+
+it.each([
+  "head",
+  "run",
+  "attempt",
+  "old failure",
+  "duplicate",
+  "duplicate name",
+  "malformed",
+  "acquisition",
+  "publication",
+] as const)("SYNTHETIC status progress cannot hide invalid %s evidence", async (field) => {
+  const f = statusObservation();
+  const job = f.state.jobs[0]!;
+  if (field === "head") job.head_sha = "f".repeat(40);
+  if (field === "run") job.run_id++;
+  if (field === "attempt") job.run_attempt++;
+  if (field === "old failure") {
+    f.state.before[0]!.run_attempt = f.state.after[0]!.run_attempt = 2;
+    job.conclusion = "failure";
+  }
+  if (field === "duplicate") f.state.jobs.push(job);
+  if (field === "duplicate name") f.state.jobs[1]!.name = job.name;
+  if (field === "malformed") job.status = "invalid";
+  if (field === "acquisition") f.state.failAfter = true;
+  if (field === "publication") f.state.publicationAfter.headRefOid = "f".repeat(40);
+  await expect(f.adapter.checks(f.current, f.publication)).rejects.toMatchObject({
+    reason: "hosted-observation-unavailable",
+  });
+  f.assertCalls(
+    field === "publication" ? 5 : ["acquisition", "duplicate name"].includes(field) ? 4 : 3,
+  );
+});
+
+it("SYNTHETIC stable completion still refuses a missing terminal required job", async () => {
+  const f = statusObservation("completed", "completed");
+  f.state.jobs.pop();
+  await expect(f.adapter.checks(f.current, f.publication)).rejects.toMatchObject({
+    reason: "hosted-observation-unavailable",
+    diagnostics: "missing or duplicate current job: Node 24 / macos-latest",
+  });
+  f.assertCalls(4);
+});
+
 const gateFaults = vi.hoisted(() => ({ cleanup: false }));
+const workspaceGit = vi.hoisted(() => vi.fn<(args: string[], cwd: string) => string>());
+const workspaceCommands = vi.hoisted(() => ({
+  observe: undefined as ((args: string[], cwd: string) => void) | undefined,
+}));
 vi.mock("node:child_process", async (original) => {
   const actual = await original<typeof import("node:child_process")>();
   const { promisify } = await import("node:util");
@@ -52,8 +319,11 @@ vi.mock("node:child_process", async (original) => {
       args: string[],
       options: import("node:child_process").ExecFileOptions,
     ) => {
+      if (executable === "workspace-git")
+        return Promise.resolve({ stdout: workspaceGit(args, String(options.cwd)), stderr: "" });
       if (gateFaults.cleanup && args[0] === "worktree" && args[1] === "remove")
         return Promise.reject(new Error("fixture control cleanup failed"));
+      if (executable === "git") workspaceCommands.observe?.(args, String(options.cwd));
       return execute(executable, args, options);
     },
   });
@@ -233,6 +503,271 @@ it("recognizes complete assertion identities but rejects incomplete and mixed te
   ).toEqual(["feature.ts"]);
 });
 
+// ISS-192: the Chase Sets scoped static gate's generated-artifact staleness throws.
+function staticBlock(producer: string, artifact: string, state: "stale" | "missing") {
+  return [
+    "[VERIFY_STATIC_RUN] check:synthetic-artifact-index",
+    `$ node ./scripts/${producer} --check`,
+    `file:///synthetic/scripts/${producer}:90`,
+    "    throw new Error(`${relative} is " + state + "`);",
+    "          ^",
+    "",
+    `Error: ${artifact} is ${state}`,
+    `    at checkExpectedFile (file:///synthetic/scripts/${producer}:90:11)`,
+    `    at async main (file:///synthetic/scripts/${producer}:122:18)`,
+    "",
+    "Node.js v24.15.0",
+    "[ELIFECYCLE] Command failed with exit code 1.",
+    "[ELIFECYCLE] Command failed with exit code 1.",
+    "",
+  ].join("\n");
+}
+
+const staticPrefix =
+  "[SKIPPED-BY-SCOPE] check:synthetic-budget: packages/synthetic/**\n[VERIFY_STATIC_SCOPE] scanned=2/3; skipped=1; excluded=0; changed=4; source=git merge-base.\n[VERIFY_STATIC_RUN] check:synthetic-inventory\n$ node ./scripts/check-synthetic-inventory.mjs\nSynthetic inventory covers all modules.\n";
+
+it("recognizes generated-artifact staleness only when the failing static block is wholly accounted for", () => {
+  const stale =
+    staticPrefix +
+    staticBlock("generate-synthetic-alpha-index.mjs", "docs/SYNTHETIC_INDEX.md", "stale");
+  expect(gateDiagnostics("verify:static:scoped", stale)).toEqual([
+    "docs/SYNTHETIC_INDEX.md is stale",
+  ]);
+  expect(
+    gateDiagnostics(
+      "verify:static:scoped",
+      staticPrefix +
+        staticBlock(
+          "generate-synthetic-beta-manifest.mjs",
+          "docs/SYNTHETIC_MANIFEST.md",
+          "missing",
+        ),
+    ),
+  ).toEqual(["docs/SYNTHETIC_MANIFEST.md is missing"]);
+  expect(
+    gateDiagnostics(
+      "verify:static:scoped",
+      staticPrefix +
+        "[VERIFY_STATIC_RUN] check:synthetic-artifact-index\n$ node ./scripts/generate-synthetic-beta-manifest.mjs --check\ndocs/SYNTHETIC_MANIFEST.md is missing\ndocs/SYNTHETIC_INDEX.md is stale\n[ELIFECYCLE] Command failed with exit code 1.\n",
+    ),
+  ).toEqual(["docs/SYNTHETIC_MANIFEST.md is missing", "docs/SYNTHETIC_INDEX.md is stale"]);
+  // The retained cs-3779:1 shape.
+  expect(
+    gateDiagnostics(
+      "verify:static:scoped",
+      staticPrefix +
+        staticBlock(
+          "generate-design-system-component-index.mjs",
+          "packages/design-system/COMPONENT_INDEX.md",
+          "stale",
+        ),
+    ),
+  ).toEqual(["packages/design-system/COMPONENT_INDEX.md is stale"]);
+  expect(gateDiagnostics("verify:static:scoped", "\u001b[31m" + stale + "\u001b[0m")).toEqual([
+    "docs/SYNTHETIC_INDEX.md is stale",
+  ]);
+  for (const unknown of [
+    // An additional failing check inside the final block.
+    stale.replace(
+      "Node.js v24.15.0",
+      "Node.js v24.15.0\nSynthetic budget exceeded: 3 raw elements",
+    ),
+    // An unrecognized tail after the lifecycle lines.
+    stale + "unexpected trailing runner text\n",
+    // A later block that is not a generated-artifact throw.
+    stale +
+      "[VERIFY_STATIC_RUN] check:synthetic-budget\n$ node ./scripts/check-synthetic-budget.mjs\n[ELIFECYCLE] Command failed with exit code 1.\n",
+    // No `generate-*.mjs --check` producer echoed the diagnostic.
+    stale.replace(
+      "$ node ./scripts/generate-synthetic-alpha-index.mjs --check",
+      "$ node ./scripts/check-synthetic-index.mjs",
+    ),
+    // A throw frame without its caret.
+    stale.replace("          ^\n", ""),
+    // Producer prose after the shape, an absolute path, and no marker at all.
+    stale.replace("is stale\n", "is stale. Run pnpm run generate:synthetic-alpha-index.\n"),
+    stale.replace("Error: docs/SYNTHETIC_INDEX.md", "Error: /synthetic/docs/SYNTHETIC_INDEX.md"),
+    stale.replaceAll("[VERIFY_STATIC_RUN] ", ""),
+    // Timeouts, resource failures and fatal runner errors keep the existing guard.
+    stale.replace(
+      "Node.js v24.15.0",
+      "Error: check:synthetic-artifact-index timed out after 30000ms",
+    ),
+    stale + "FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory\n",
+    stale + "[ELIFECYCLE] Command failed with signal SIGKILL.\n",
+  ])
+    expect(gateDiagnostics("verify:static:scoped", unknown)).toEqual([]);
+  for (const other of ["typecheck", "format:check", "test"])
+    expect(gateDiagnostics(other, stale)).toEqual([]);
+});
+
+it.each([
+  ["candidate", "candidate"],
+  ["vacuous", "unknown"],
+  ["base", "base"],
+  ["extra", "unknown"],
+  ["tail", "unknown"],
+  ["timeout", "unknown"],
+  ["resource", "unknown"],
+  ["uncommitted", "unknown"],
+])(
+  "attributes scoped static generated-artifact staleness %s through a non-vacuous base control",
+  async (mode, expected) => {
+    const { current, git } = await repositoryFixture(
+      "https://github.com/todd-skelton/orchestration-platform.git",
+    );
+    const commit = async () => {
+      await git(["add", "-A"], current.worktree);
+      await git(
+        [
+          "-c",
+          "user.name=fixture",
+          "-c",
+          "user.email=fixture@example.test",
+          "commit",
+          "-m",
+          "static gate fixture",
+        ],
+        current.worktree,
+      );
+      return git(["rev-parse", "HEAD"], current.worktree);
+    };
+    await writeFile(
+      resolve(current.worktree, "package.json"),
+      JSON.stringify({
+        scripts: { "verify:static:scoped": "node ./scripts/verify-static-scoped.mjs" },
+      }),
+    );
+    await writeFile(resolve(current.worktree, "pnpm-lock.yaml"), "fixture lock\n");
+    await writeFile(resolve(current.worktree, "feature.ts"), "base\n");
+    await mkdir(resolve(current.worktree, "docs"));
+    await writeFile(
+      resolve(current.worktree, "docs/SYNTHETIC_INDEX.md"),
+      "| Synthetic | index |\n",
+    );
+    await writeFile(
+      resolve(current.worktree, "docs/SYNTHETIC_OLD.md"),
+      "renamed synthetic document\n",
+    );
+    const main = await commit();
+    await writeFile(resolve(current.worktree, "feature.ts"), "candidate\n");
+    await git(["mv", "docs/SYNTHETIC_OLD.md", "docs/SYNTHETIC_NEW.md"], current.worktree);
+    current.candidateHead = await commit();
+    await git(["checkout", "--detach", current.candidateHead], current.reviewWorktree);
+    const launcher = resolve(current.stateDirectory, "static-gate-tool.mjs");
+    await writeFile(
+      launcher,
+      `
+    import { readFileSync } from "node:fs";
+    const mode = ${JSON.stringify(mode)};
+    if (process.argv[2] === "install") process.exit(0);
+    const candidate = readFileSync("feature.ts", "utf8").includes("candidate");
+    const scope = process.env.CHANGED_FILES_JSON;
+    const artifact = mode === "uncommitted" ? "docs/SYNTHETIC_ABSENT.md is missing" : "docs/SYNTHETIC_INDEX.md is stale";
+    const block = () => {
+      console.log("[VERIFY_STATIC_RUN] check:synthetic-artifact-index");
+      console.log("$ node ./scripts/generate-synthetic-alpha-index.mjs --check");
+      console.log("file:///synthetic/scripts/generate-synthetic-alpha-index.mjs:90");
+      console.log("    throw new Error(relative + \\" is stale\\");");
+      console.log("          ^");
+      console.log("");
+      if (mode === "timeout") console.log("Error: check:synthetic-artifact-index timed out after 30000ms");
+      else if (mode === "resource") console.log("FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory");
+      else console.log("Error: " + artifact);
+      console.log("    at checkExpectedFile (file:///synthetic/scripts/generate-synthetic-alpha-index.mjs:90:11)");
+      console.log("");
+      console.log("Node.js v24.15.0");
+      if (mode === "extra") console.log("Synthetic budget exceeded: 3 raw elements");
+      console.log("[ELIFECYCLE] Command failed with exit code 1.");
+      if (mode === "tail") console.log("unexpected trailing runner text");
+    };
+    if (!candidate) {
+      // The base tree's own merge-base selects nothing; only the supplied scope runs the link.
+      if (mode === "vacuous" || scope === undefined) {
+        console.log("[SKIPPED-BY-SCOPE] check:synthetic-artifact-index: empty derived diff");
+        console.log("[VERIFY_STATIC_SCOPE] scanned=0/1; skipped=1; excluded=0; changed=0; source=git merge-base.");
+        process.exit(0);
+      }
+      console.log("[VERIFY_STATIC_SCOPE] scanned=1/1; skipped=0; excluded=0; changed=" + JSON.parse(scope).length + "; source=CHANGED_FILES_JSON.");
+      console.log("[VERIFY_STATIC_CHANGED] " + scope);
+      if (mode === "base") { block(); process.exit(1); }
+      console.log("[VERIFY_STATIC_RUN] check:synthetic-artifact-index");
+      console.log("$ node ./scripts/generate-synthetic-alpha-index.mjs --check");
+      console.log("Synthetic artifact index is current.");
+      process.exit(0);
+    }
+    console.log("[VERIFY_STATIC_SCOPE] scanned=2/2; skipped=0; excluded=0; changed=3; source=" + (scope === undefined ? "git merge-base" : "CHANGED_FILES_JSON") + ".");
+    console.log("[VERIFY_STATIC_RUN] check:synthetic-inventory");
+    console.log("$ node ./scripts/check-synthetic-inventory.mjs");
+    console.log("retained output".repeat(1000));
+    block();
+    process.exit(1);
+  `,
+    );
+    vi.stubEnv("npm_execpath", launcher);
+    const adapter = githubDeliveryAdapter();
+    const result = await adapter.runGate(current, "verify:static:scoped", current.candidateHead);
+    if (typeof result !== "object" || result.status !== "failed" || !result.evidence)
+      throw new Error("missing gate evidence");
+    const failure = result.evidence;
+    expect(failure.command).toEqual({
+      executable: process.execPath,
+      argv: [launcher, "run", "verify:static:scoped"],
+      cwd: current.worktree,
+    });
+    const bytes = await readFile(failure.log, "utf8");
+    expect(bytes.length).toBeGreaterThan(4000);
+    expect(bytes).toContain("source=git merge-base.");
+    if (expected === "unknown" && mode !== "vacuous") {
+      expect(failure.cause).toBe("unknown");
+      expect(failure.diagnostics).toEqual(
+        mode === "uncommitted" ? ["docs/SYNTHETIC_ABSENT.md is missing"] : [],
+      );
+    } else {
+      expect(failure).toMatchObject({
+        cause: "diagnostic",
+        diagnostics: ["docs/SYNTHETIC_INDEX.md is stale"],
+      });
+      const control = await adapter.attributeGate!(current, "verify:static:scoped", failure, main);
+      expect(control).toMatchObject({ cause: expected, main });
+      const terminal = JSON.parse(
+        await readFile(resolve(control.log, "../base-terminal.json"), "utf8"),
+      );
+      expect(terminal).toEqual({
+        head: main,
+        command: { ...failure.command, cwd: terminal.command.cwd },
+        code: expected === "base" ? 1 : 0,
+        signal: null,
+      });
+      expect(terminal.command.cwd).not.toBe(current.worktree);
+      const base = await readFile(control.log, "utf8");
+      if (mode === "vacuous") {
+        expect(base).toContain(
+          "[SKIPPED-BY-SCOPE] check:synthetic-artifact-index: empty derived diff",
+        );
+        expect(base).not.toContain("[VERIFY_STATIC_RUN] check:synthetic-artifact-index");
+      } else {
+        expect(base).toContain("[VERIFY_STATIC_RUN] check:synthetic-artifact-index");
+        expect(base).toContain("source=CHANGED_FILES_JSON.");
+        expect(JSON.parse(base.match(/^\[VERIFY_STATIC_CHANGED\] (.+)$/m)![1]!)).toEqual([
+          "docs/SYNTHETIC_OLD.md",
+          "docs/SYNTHETIC_NEW.md",
+          "feature.ts",
+        ]);
+      }
+      expect(await git(["rev-parse", "HEAD"], current.worktree)).toBe(current.candidateHead);
+      await expect(
+        adapter.attributeGate!(current, "verify:static:scoped", failure, main),
+      ).resolves.toEqual(control);
+    }
+    expect(await git(["status", "--porcelain"], current.worktree)).toBe("");
+    expect(await readFile(failure.log, "utf8")).toBe(bytes);
+    await expect(
+      adapter.runGate(current, "verify:static:scoped", current.candidateHead),
+    ).resolves.toEqual(result);
+  },
+);
+
 function reviewerReport(
   current: DeliveryConfig,
   verdict: "PASS" | "FAIL" = "PASS",
@@ -400,8 +935,10 @@ async function cleanController(root: string) {
 
 afterEach(async () => {
   gateFaults.cleanup = false;
+  workspaceCommands.observe = undefined;
   vi.unstubAllEnvs();
-  for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
+  for (const root of roots.splice(0))
+    await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
 });
 
 async function repositoryFixture(remote: string) {
@@ -531,6 +1068,330 @@ function publicationRow(current: PublicationEvidence, values: Record<string, unk
 }
 
 it.each([
+  "common-directory",
+  "HEAD",
+  "dirty",
+  "fetch",
+  "push",
+  "controller-revision",
+  "controller-dirty",
+  "root-dirty",
+  "root-branch",
+  "review-HEAD",
+  "review-dirty",
+] as const)(
+  "SYNTHETIC reuses only the call-local root common directory and refuses later %s drift",
+  async (drift) => {
+    const root = await realpath(await mkdtemp(resolve(tmpdir(), "delivery-reads-")));
+    roots.push(root);
+    const current = config(root);
+    if (drift === "root-dirty") current.controllerRoot = resolve(root, "external-controller");
+    const remote = `https://github.com/${current.repository}.git`;
+    const reads: [string[], string, string][] = [];
+    for (const cwd of [current.repositoryRoot, current.worktree, current.reviewWorktree]) {
+      reads.push(
+        [["rev-parse", "--git-common-dir"], cwd, root],
+        [["remote", "get-url", "--all", "origin"], cwd, remote],
+        [["remote", "get-url", "--push", "--all", "origin"], cwd, remote],
+      );
+    }
+    // One `status --porcelain=v2 --branch` per distinct working directory serves the head, the
+    // branch and cleanliness; the coincident controller/repository root reads once.
+    const status = (oid: string, branch: string, ...entries: string[]) =>
+      [`# branch.oid ${oid}`, `# branch.head ${branch}`, ...entries].join("\n") + "\n";
+    const statusArgs = ["status", "--porcelain=v2", "--branch"];
+    const distinct = current.controllerRoot !== current.repositoryRoot;
+    reads.push([statusArgs, current.controllerRoot, status(current.controllerRevision, "main")]);
+    if (distinct)
+      reads.push([statusArgs, current.repositoryRoot, status(current.controllerRevision, "main")]);
+    reads.push(
+      [statusArgs, current.worktree, status(current.candidateHead, "codex/iss-074-delivery")],
+      [statusArgs, current.reviewWorktree, status(current.candidateHead, "(detached)")],
+    );
+    expect(distinct).toBe(drift === "root-dirty");
+    const changed = {
+      "common-directory": [current.reviewWorktree, "rev-parse --git-common-dir", dirname(root)],
+      HEAD: [
+        current.worktree,
+        statusArgs.join(" "),
+        status("b".repeat(40), "codex/iss-074-delivery"),
+      ],
+      dirty: [
+        current.worktree,
+        statusArgs.join(" "),
+        status(current.candidateHead, "codex/iss-074-delivery", "? uncommitted.txt"),
+      ],
+      fetch: [current.worktree, "remote get-url --all origin", "https://github.com/foreign/repo"],
+      push: [
+        current.reviewWorktree,
+        "remote get-url --push --all origin",
+        "https://github.com/foreign/repo",
+      ],
+      "controller-revision": [
+        current.controllerRoot,
+        statusArgs.join(" "),
+        status("b".repeat(40), "main"),
+      ],
+      "controller-dirty": [
+        current.controllerRoot,
+        statusArgs.join(" "),
+        status(current.controllerRevision, "main", "? controller.txt"),
+      ],
+      "root-dirty": [
+        current.repositoryRoot,
+        statusArgs.join(" "),
+        status(current.controllerRevision, "main", "? root.txt"),
+      ],
+      "root-branch": [
+        current.repositoryRoot,
+        statusArgs.join(" "),
+        status(current.controllerRevision, "not-main"),
+      ],
+      "review-HEAD": [
+        current.reviewWorktree,
+        statusArgs.join(" "),
+        status("b".repeat(40), "(detached)"),
+      ],
+      "review-dirty": [
+        current.reviewWorktree,
+        statusArgs.join(" "),
+        status(current.candidateHead, "(detached)", "? review.txt"),
+      ],
+    }[drift]!;
+    let drifted = false;
+    workspaceGit.mockReset();
+    workspaceGit.mockImplementation((args, cwd) => {
+      const read = reads.find(
+        ([command, directory]) => directory === cwd && command.join(" ") === args.join(" "),
+      );
+      if (!read) throw new Error(`unexpected Git command: ${args.join(" ")}`);
+      return drifted && cwd === changed[0] && args.join(" ") === changed[1] ? changed[2]! : read[2];
+    });
+    const commands = { gh: vi.fn(), ghJson: vi.fn() };
+    const adapter = githubDeliveryAdapter(commands, "workspace-git");
+    await expect(adapter.verifyWorkspace(current, current.candidateHead)).resolves.toBe(true);
+    expect(workspaceGit).toHaveBeenCalledTimes(distinct ? 13 : 12);
+    expect(workspaceGit.mock.calls).toEqual(reads.map(([args, cwd]) => [args, cwd]));
+
+    drifted = true;
+    workspaceGit.mockClear();
+    await expect(adapter.verifyWorkspace(current, current.candidateHead)).resolves.toBe(false);
+    await expect(
+      adapter.publish(
+        current,
+        {
+          sourceBranch: "codex/iss-074-delivery",
+          baseBranch: "main",
+          title: "fixture",
+          body: "fixture",
+          draft: true,
+        },
+        "absent",
+      ),
+    ).rejects.toThrow("candidate-workspace-drift");
+    expect(workspaceGit.mock.calls).toContainEqual([changed[1]!.split(" "), changed[0]]);
+    for (const call of workspaceGit.mock.calls)
+      expect(reads.map(([args, cwd]) => [args, cwd])).toContainEqual(call);
+    expect(commands.gh).not.toHaveBeenCalled();
+    expect(commands.ghJson).not.toHaveBeenCalled();
+    expect(await readdir(root)).toEqual([]);
+  },
+);
+
+// The per-call read vector: nine family/target reads, then one live status per distinct
+// working directory in controller, repository root, worktree, review worktree order.
+function workspaceReads(current: DeliveryConfig): [string[], string][] {
+  const reads: [string[], string][] = [];
+  for (const cwd of [current.repositoryRoot, current.worktree, current.reviewWorktree])
+    reads.push(
+      [["rev-parse", "--git-common-dir"], cwd],
+      [["remote", "get-url", "--all", "origin"], cwd],
+      [["remote", "get-url", "--push", "--all", "origin"], cwd],
+    );
+  for (const cwd of new Set([
+    current.controllerRoot,
+    current.repositoryRoot,
+    current.worktree,
+    current.reviewWorktree,
+  ]))
+    reads.push([["status", "--porcelain=v2", "--branch"], cwd]);
+  return reads;
+}
+
+it.each(["same", "separate"] as const)(
+  "reads the full per-call set on a fresh %s-controller workspace whose main is ahead of its upstream",
+  async (shape) => {
+    const { current, git } = await repositoryFixture(
+      "https://github.com/todd-skelton/orchestration-platform.git",
+    );
+    const repositoryRoot = current.repositoryRoot;
+    const base = current.controllerRevision;
+    await writeFile(resolve(repositoryRoot, "ahead.txt"), "ahead\n");
+    await git(["add", "ahead.txt"]);
+    await git([
+      "-c",
+      "user.name=fixture",
+      "-c",
+      "user.email=fixture@example.test",
+      "commit",
+      "--quiet",
+      "-m",
+      "ahead",
+    ]);
+    await git(["update-ref", "refs/remotes/origin/main", base]);
+    await git(["config", "branch.main.remote", "origin"]);
+    await git(["config", "branch.main.merge", "refs/heads/main"]);
+    current.controllerRevision = await git(["rev-parse", "HEAD"]);
+    expect(current.controllerRevision).not.toBe(base);
+    if (shape === "separate") {
+      const controller = resolve(repositoryRoot, "..", "external-controller");
+      await git(["clone", "--local", repositoryRoot, controller], repositoryRoot);
+      current.controllerRoot = controller;
+      expect(await git(["rev-parse", "HEAD"], controller)).toBe(current.controllerRevision);
+    }
+    // A clean tree ahead of its upstream reports `# branch.ab` while `status --porcelain` is empty.
+    expect(
+      (await git(["status", "--porcelain=v2", "--branch"], repositoryRoot)).split(/\r?\n/),
+    ).toEqual([
+      `# branch.oid ${current.controllerRevision}`,
+      "# branch.head main",
+      "# branch.upstream origin/main",
+      "# branch.ab +1 -0",
+    ]);
+    expect(await git(["status", "--porcelain"], repositoryRoot)).toBe("");
+    const expected = workspaceReads(current);
+    expect(expected).toHaveLength(shape === "same" ? 12 : 13);
+    const reads: [string[], string][] = [];
+    workspaceCommands.observe = (args, cwd) => reads.push([args, cwd]);
+    const commands = { gh: vi.fn(), ghJson: vi.fn() };
+    const adapter = githubDeliveryAdapter(commands);
+    await expect(adapter.verifyWorkspace(current, current.candidateHead)).resolves.toBe(true);
+    expect(reads).toEqual(expected);
+    reads.length = 0;
+    await expect(adapter.verifyWorkspace(current, current.candidateHead)).resolves.toBe(true);
+    expect(reads).toEqual(expected);
+    expect(commands.gh).not.toHaveBeenCalled();
+    expect(commands.ghJson).not.toHaveBeenCalled();
+  },
+);
+
+it.each(["detached", "unborn"] as const)(
+  "refuses a %s repository root HEAD through the shared status read",
+  async (state) => {
+    const { current, git } = await repositoryFixture(
+      "https://github.com/todd-skelton/orchestration-platform.git",
+    );
+    const adapter = githubDeliveryAdapter({ gh: vi.fn(), ghJson: vi.fn() });
+    await expect(adapter.verifyWorkspace(current, current.candidateHead)).resolves.toBe(true);
+    if (state === "detached") await git(["checkout", "--quiet", "--detach"]);
+    else await git(["checkout", "--quiet", "--orphan", "unborn"]);
+    const headers = (await git(["status", "--porcelain=v2", "--branch"]))
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith("# branch."));
+    expect(headers).toEqual(
+      state === "detached"
+        ? [`# branch.oid ${current.controllerRevision}`, "# branch.head (detached)"]
+        : ["# branch.oid (initial)", "# branch.head unborn"],
+    );
+    const reads: [string[], string][] = [];
+    workspaceCommands.observe = (args, cwd) => reads.push([args, cwd]);
+    await expect(adapter.verifyWorkspace(current, current.candidateHead)).resolves.toBe(false);
+    expect(reads).toEqual(workspaceReads(current).slice(0, 10));
+    expect(reads.at(-1)).toEqual([
+      ["status", "--porcelain=v2", "--branch"],
+      current.controllerRoot,
+    ]);
+  },
+);
+
+it("derives nothing across calls: every mutated fact is reread live by the next call", async () => {
+  const authorized = "https://github.com/todd-skelton/orchestration-platform.git";
+  const { current, git } = await repositoryFixture(authorized);
+  const repositoryRoot = current.repositoryRoot;
+  await git(["config", "extensions.worktreeConfig", "true"]);
+  const perCall = workspaceReads(current);
+  expect(perCall).toHaveLength(12);
+  const reads: [string[], string][] = [];
+  workspaceCommands.observe = (args, cwd) => reads.push([args, cwd]);
+  const commands = { gh: vi.fn(), ghJson: vi.fn() };
+  const adapter = githubDeliveryAdapter(commands);
+  await expect(adapter.verifyWorkspace(current, current.candidateHead)).resolves.toBe(true);
+  expect(reads).toEqual(perCall);
+  // Each mutation drifts a fact owned by an earlier read than the previous one, so the exact
+  // read prefix proves which live command refused and that no earlier read was skipped.
+  const owner = async (mutate: () => Promise<void>, read: [string[], string]) => {
+    await mutate();
+    reads.length = 0;
+    await expect(adapter.verifyWorkspace(current, current.candidateHead)).resolves.toBe(false);
+    const index = perCall.findIndex(
+      ([args, cwd]) => cwd === read[1] && args.join(" ") === read[0].join(" "),
+    );
+    expect(index).toBeGreaterThanOrEqual(0);
+    expect(reads).toEqual(perCall.slice(0, index + 1));
+    expect(reads.at(-1)).toEqual(read);
+  };
+  const status = ["status", "--porcelain=v2", "--branch"];
+  await owner(async () => {
+    await git(
+      [
+        "-c",
+        "user.name=fixture",
+        "-c",
+        "user.email=fixture@example.test",
+        "commit",
+        "--quiet",
+        "--allow-empty",
+        "-m",
+        "moved",
+      ],
+      current.reviewWorktree,
+    );
+    expect(await git(["rev-parse", "HEAD"], current.reviewWorktree)).not.toBe(
+      current.candidateHead,
+    );
+    expect(await git(["status", "--porcelain"], current.reviewWorktree)).toBe("");
+  }, [status, current.reviewWorktree]);
+  await owner(async () => {
+    await writeFile(resolve(current.worktree, "uncommitted.txt"), "drift\n");
+  }, [status, current.worktree]);
+  await owner(async () => {
+    await git(["checkout", "--quiet", "-b", "not-main"], repositoryRoot);
+    expect(await git(["rev-parse", "HEAD"], repositoryRoot)).toBe(current.controllerRevision);
+    expect(await git(["status", "--porcelain"], repositoryRoot)).toBe("");
+  }, [status, current.controllerRoot]);
+  await owner(async () => {
+    await git(
+      [
+        "config",
+        "--worktree",
+        "remote.origin.pushurl",
+        "https://github.com/foreign/repository.git",
+      ],
+      current.reviewWorktree,
+    );
+    expect(await git(["remote", "get-url", "--push", "--all", "origin"], current.worktree)).toBe(
+      authorized,
+    );
+  }, [["remote", "get-url", "--push", "--all", "origin"], current.reviewWorktree]);
+  await owner(async () => {
+    const foreign = resolve(repositoryRoot, "..", "foreign-review");
+    await git(["clone", "--quiet", "--local", repositoryRoot, foreign], repositoryRoot);
+    // Git for Windows creates the gitfile hidden, so it is truncated in place rather than
+    // recreated: `writeFile` would fail there with EPERM.
+    const gitfile = await open(resolve(current.reviewWorktree, ".git"), "r+");
+    try {
+      await gitfile.truncate(0);
+      await gitfile.writeFile(`gitdir: ${resolve(foreign, ".git").replaceAll("\\", "/")}\n`);
+    } finally {
+      await gitfile.close();
+    }
+  }, [["rev-parse", "--git-common-dir"], current.reviewWorktree]);
+  expect(commands.gh).not.toHaveBeenCalled();
+  expect(commands.ghJson).not.toHaveBeenCalled();
+  expect(await readdir(current.stateDirectory)).toEqual([]);
+});
+
+it.each([
   "https://github.com/todd-skelton/orchestration-platform.git",
   "git@github.com:todd-skelton/orchestration-platform.git",
   "ssh://git@github.com/todd-skelton/orchestration-platform.git",
@@ -597,6 +1458,279 @@ it.each(["foreign-fetch", "foreign-push", "extra-push"] as const)(
   },
 );
 
+it.each([
+  ["same", "worktree", "fetch", "wrong"],
+  ["separate", "reviewWorktree", "push", "wrong"],
+  ["same", "reviewWorktree", "fetch", "multiple"],
+  ["separate", "worktree", "push", "multiple"],
+] as const)(
+  "rechecks real worktree-local %s-controller %s %s URLs after %s target drift",
+  async (shape, field, kind, drift) => {
+    const authorized = "https://github.com/todd-skelton/orchestration-platform.git";
+    const { current, git } = await repositoryFixture(authorized);
+    const repositoryRoot = current.repositoryRoot;
+    if (shape === "separate") {
+      const controller = resolve(repositoryRoot, "..", "external-controller");
+      await git(["clone", "--local", repositoryRoot, controller], repositoryRoot);
+      current.controllerRoot = controller;
+    }
+    await git(["config", "extensions.worktreeConfig", "true"], repositoryRoot);
+    await git(["config", "--unset-all", "remote.origin.url"], repositoryRoot);
+    await git(["config", "url.https://github.com/.insteadOf", "fixture:"], repositoryRoot);
+    const raw = "fixture:todd-skelton/orchestration-platform.git";
+    for (const cwd of [repositoryRoot, current.worktree, current.reviewWorktree]) {
+      await git(["config", "--worktree", "remote.origin.url", raw], cwd);
+      await git(["config", "--worktree", "remote.origin.pushurl", raw], cwd);
+      expect(await git(["remote", "get-url", "--all", "origin"], cwd)).toBe(authorized);
+      expect(await git(["remote", "get-url", "--push", "--all", "origin"], cwd)).toBe(authorized);
+    }
+    const commands = { gh: vi.fn(), ghJson: vi.fn() };
+    const adapter = githubDeliveryAdapter(commands);
+    await expect(adapter.verifyWorkspace(current, current.candidateHead)).resolves.toBe(true);
+
+    const key = kind === "fetch" ? "remote.origin.url" : "remote.origin.pushurl";
+    await git(
+      [
+        "config",
+        "--worktree",
+        ...(drift === "multiple" ? ["--add"] : []),
+        key,
+        drift === "multiple" ? raw : "fixture:foreign/repository.git",
+      ],
+      current[field],
+    );
+    const urlArgs = [
+      "remote",
+      "get-url",
+      ...(kind === "push" ? ["--push"] : []),
+      "--all",
+      "origin",
+    ];
+    expect((await git(urlArgs, current[field])).split(/\r?\n/)).toEqual(
+      drift === "multiple"
+        ? [authorized, authorized]
+        : ["https://github.com/foreign/repository.git"],
+    );
+    const other = field === "worktree" ? current.reviewWorktree : current.worktree;
+    expect(await git(urlArgs, other)).toBe(authorized);
+    expect(await git(urlArgs, repositoryRoot)).toBe(authorized);
+    const reads: string[][] = [];
+    workspaceCommands.observe = (args) => reads.push(args);
+    await expect(adapter.verifyWorkspace(current, current.candidateHead)).resolves.toBe(false);
+    await expect(
+      adapter.publish(current, { ...publicationEvidence(current), draft: true }, "absent"),
+    ).rejects.toThrow("candidate-workspace-drift");
+    expect(reads).toContainEqual(urlArgs);
+    for (const args of reads)
+      expect([
+        ["rev-parse", "--git-common-dir"],
+        ["remote", "get-url", "--all", "origin"],
+        ["remote", "get-url", "--push", "--all", "origin"],
+      ]).toContainEqual(args);
+    expect(commands.gh).not.toHaveBeenCalled();
+    expect(commands.ghJson).not.toHaveBeenCalled();
+    expect(await readdir(current.stateDirectory)).toEqual([]);
+  },
+);
+
+it("canonicalizes a real repository alias while retaining fresh worktree-family checks", async () => {
+  const { current, git } = await repositoryFixture(
+    "https://github.com/todd-skelton/orchestration-platform.git",
+  );
+  const repositoryRoot = current.repositoryRoot;
+  const alias = resolve(repositoryRoot, "..", "repository-alias");
+  await symlink(repositoryRoot, alias, "junction");
+  current.repositoryRoot = alias;
+  const rootCommon = resolve(alias, await git(["rev-parse", "--git-common-dir"], alias));
+  const sourceCommon = resolve(
+    current.worktree,
+    await git(["rev-parse", "--git-common-dir"], current.worktree),
+  );
+  expect(rootCommon).not.toBe(sourceCommon);
+  expect(await realpath(rootCommon)).toBe(await realpath(sourceCommon));
+  const commands = { gh: vi.fn(), ghJson: vi.fn() };
+  const adapter = githubDeliveryAdapter(commands);
+  await expect(adapter.verifyWorkspace(current, current.candidateHead)).resolves.toBe(true);
+
+  const foreign = resolve(repositoryRoot, "..", "foreign-review");
+  await git(["clone", "--local", repositoryRoot, foreign], repositoryRoot);
+  await git(
+    ["remote", "set-url", "origin", "https://github.com/todd-skelton/orchestration-platform.git"],
+    foreign,
+  );
+  expect(await git(["rev-parse", "HEAD"], foreign)).toBe(current.candidateHead);
+  const gitfile = resolve(current.reviewWorktree, ".git");
+  const original = await readFile(gitfile, "utf8");
+  async function writeGitfile(contents: string) {
+    const file = await open(gitfile, "r+");
+    try {
+      await file.truncate(0);
+      await file.writeFile(contents);
+    } finally {
+      await file.close();
+    }
+  }
+  let completed = false;
+  try {
+    await writeGitfile(`gitdir: ${resolve(foreign, ".git").replaceAll("\\", "/")}\n`);
+    expect(await git(["rev-parse", "HEAD"], current.reviewWorktree)).toBe(current.candidateHead);
+    expect(
+      await realpath(
+        resolve(
+          current.reviewWorktree,
+          await git(["rev-parse", "--git-common-dir"], current.reviewWorktree),
+        ),
+      ),
+    ).toBe(await realpath(resolve(foreign, ".git")));
+    const reads: string[][] = [];
+    workspaceCommands.observe = (args) => reads.push(args);
+    await expect(adapter.verifyWorkspace(current, current.candidateHead)).resolves.toBe(false);
+    await expect(
+      adapter.applyDraft(current, {
+        key: "ISS-074",
+        issue: 332,
+        title: "fixture",
+        body: "fixture",
+        attributes: { milestone: null },
+      }),
+    ).rejects.toThrow("candidate-workspace-drift");
+    expect(
+      reads.every(
+        (args) => args[0] === "rev-parse" || (args[0] === "remote" && args[1] === "get-url"),
+      ),
+    ).toBe(true);
+    expect(commands.gh).not.toHaveBeenCalled();
+    expect(commands.ghJson).not.toHaveBeenCalled();
+    expect(await readdir(current.stateDirectory)).toEqual([]);
+    completed = true;
+  } finally {
+    await writeGitfile(original).catch((error) => {
+      if (completed) throw error;
+    });
+  }
+});
+
+it.each(["drafts", "gate-publication"] as const)(
+  "refuses intervening real workspace drift between %s without later mutation or replay",
+  async (boundary) => {
+    const { current, git } = await repositoryFixture(
+      "https://github.com/todd-skelton/orchestration-platform.git",
+    );
+    await writePilotEvidence(current);
+    await git(["config", "extensions.worktreeConfig", "true"]);
+    const plan: DeliveryPlan = {
+      gates: { beforeMirror: [], afterMirror: ["fixture-gate"] },
+      drafts: [332, 333].map((issue) => ({
+        key: `ISS-${issue}`,
+        issue,
+        title: `issue ${issue}`,
+        body: `body ${issue}`,
+        attributes: { milestone: null },
+      })),
+      publication: {
+        sourceBranch: "codex/iss-074-delivery",
+        baseBranch: "main",
+        title: "fixture",
+        body: "fixture",
+        draft: true,
+      },
+      mergePolicy: { method: "squash" },
+      cleanup: {
+        worktrees: [current.worktree, current.reviewWorktree],
+        branch: "codex/iss-074-delivery",
+      },
+    };
+    const edited = new Set<number>();
+    const mutations: string[][] = [];
+    const laterGit: string[][] = [];
+    const gates: string[] = [];
+    const drift = async () => {
+      await git(
+        [
+          "config",
+          "--worktree",
+          "remote.origin.pushurl",
+          "https://github.com/foreign/repository.git",
+        ],
+        current.reviewWorktree,
+      );
+      workspaceCommands.observe = (args) => laterGit.push(args);
+    };
+    const adapter = githubDeliveryAdapter({
+      async gh(_config, args) {
+        mutations.push(args);
+        expect(args.slice(0, 2)).toEqual(["issue", "edit"]);
+        edited.add(Number(args[2]));
+        if (boundary === "drafts" && edited.size === 1) await drift();
+        return "";
+      },
+      async ghJson(_config, args) {
+        expect(args.slice(0, 2)).toEqual(["issue", "view"]);
+        const draft = plan.drafts.find((draft) => String(draft.issue) === args[2])!;
+        return {
+          number: draft.issue,
+          title: draft.title,
+          body: edited.has(draft.issue) ? draft.body : "old",
+          milestone: null,
+        };
+      },
+    });
+    adapter.runGate = async (_config, name) => {
+      gates.push(name);
+      if (boundary === "gate-publication") await drift();
+      return "passed";
+    };
+    // Keep provider observation local; the actual publication mutation boundary is unchanged.
+    adapter.observePublication = async () => ({ state: "needs-mutation", target: "absent" });
+    const publish = vi.spyOn(adapter, "publish");
+    await expect(adapter.verifyWorkspace(current, current.candidateHead)).resolves.toBe(true);
+    const policy = { plan: async () => plan };
+    await expect(deliveryStep(current, adapter, policy)).rejects.toThrow(
+      boundary === "drafts"
+        ? "candidate-workspace-drift"
+        : "publication-unconfirmed-reconcile-before-retry",
+    );
+    expect(mutations.map((args) => args.slice(0, 3))).toEqual(
+      (boundary === "drafts" ? [332] : [332, 333]).map((issue) => ["issue", "edit", String(issue)]),
+    );
+    expect(gates).toEqual(boundary === "drafts" ? [] : ["fixture-gate"]);
+    if (boundary === "drafts") {
+      expect(publish).not.toHaveBeenCalled();
+      await expect(
+        readFile(resolve(current.stateDirectory, "approved-ISS-333.md")),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+    } else {
+      expect(publish).toHaveBeenCalledTimes(1);
+      await expect(publish.mock.results[0]!.value).rejects.toThrow("candidate-workspace-drift");
+      expect(
+        JSON.parse(await readFile(resolve(current.stateDirectory, "gate-1.json"), "utf8")),
+      ).toEqual({ head: current.candidateHead, name: "fixture-gate" });
+    }
+    expect(
+      JSON.parse(await readFile(resolve(current.stateDirectory, "draft-ISS-332.json"), "utf8")),
+    ).toEqual({ head: current.candidateHead, issue: 332 });
+    await expect(
+      readFile(resolve(current.stateDirectory, "approved-pull-request.md")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    const mutationCount = mutations.length;
+    await expect(deliveryStep(current, adapter, policy)).rejects.toThrow(
+      "candidate-workspace-drift",
+    );
+    expect(mutations).toHaveLength(mutationCount);
+    expect(gates).toEqual(boundary === "drafts" ? [] : ["fixture-gate"]);
+    expect(publish).toHaveBeenCalledTimes(boundary === "drafts" ? 0 : 1);
+    expect(laterGit.length).toBeGreaterThan(0);
+    for (const args of laterGit)
+      expect([
+        ["rev-parse", "--git-common-dir"],
+        ["remote", "get-url", "--all", "origin"],
+        ["remote", "get-url", "--push", "--all", "origin"],
+        ["rev-parse", "HEAD"],
+        ["status", "--porcelain"],
+      ]).toContainEqual(args);
+  },
+);
+
 it("revalidates full publication identity after checks before ready or merge effects", async () => {
   const { current } = await repositoryFixture(
     "https://github.com/todd-skelton/orchestration-platform.git",
@@ -611,16 +1745,17 @@ it("revalidates full publication identity after checks before ready or merge eff
         return "[]";
       },
       async ghJson(_config, args) {
-        if (args[0] === "api") return [{ workflow_runs: [] }];
+        const hosted = hostedResponse(current, publication, args, true);
+        if (hosted) return hosted;
         return publicationRow(publication, drifted ? { baseRefName: "release" } : {});
       },
     },
     "git",
     async () => {},
   );
-  await expect(adapter.checks(current, publication)).resolves.toEqual({
+  await expect(adapter.checks(current, publication)).resolves.toMatchObject({
     head: current.candidateHead,
-    checks: [],
+    workflowPending: true,
   });
   drifted = true;
   await expect(adapter.merge(current, publication, { method: "squash" })).rejects.toThrow(
@@ -629,7 +1764,7 @@ it("revalidates full publication identity after checks before ready or merge eff
   expect(effects).toEqual([]);
 });
 
-it("distinguishes the installed CLI no-check response from provider failure", async () => {
+it("distinguishes absent current workflows from failed provider acquisition", async () => {
   const { current } = await repositoryFixture(
     "https://github.com/todd-skelton/orchestration-platform.git",
   );
@@ -651,9 +1786,9 @@ it("distinguishes the installed CLI no-check response from provider failure", as
     "git",
     async () => {},
   );
-  await expect(noChecks.checks(current, publication)).resolves.toEqual({
-    head: current.candidateHead,
-    checks: [],
+  await expect(noChecks.checks(current, publication)).rejects.toMatchObject({
+    reason: "hosted-observation-unavailable",
+    diagnostics: "current publication workflow absent after 12 startup waits",
   });
 
   const unavailable = githubDeliveryAdapter({
@@ -664,7 +1799,8 @@ it("distinguishes the installed CLI no-check response from provider failure", as
         stderr: "provider unavailable\n",
       });
     },
-    async ghJson() {
+    async ghJson(_config, args) {
+      if (args[0] === "api") throw new Error("provider unavailable");
       return publicationRow(publication);
     },
   });
@@ -686,7 +1822,8 @@ it("does not mistake asynchronously computed mergeability for publication identi
         return "[]";
       },
       async ghJson(_config, args) {
-        if (args[0] === "api") return [{ workflow_runs: [] }];
+        const hosted = hostedResponse(current, publication, args, true);
+        if (hosted) return hosted;
         return publicationRow(
           publication,
           ++reads % 2
@@ -698,9 +1835,9 @@ it("does not mistake asynchronously computed mergeability for publication identi
     "git",
     async () => {},
   );
-  await expect(adapter.checks(current, publication)).resolves.toEqual({
+  await expect(adapter.checks(current, publication)).resolves.toMatchObject({
     head: current.candidateHead,
-    checks: [],
+    workflowPending: true,
   });
 });
 
@@ -1492,6 +2629,11 @@ async function preUpgradeDeliveryFixture(
       return "";
     },
     async ghJson(_config, args) {
+      const hosted = hostedResponse(current, publication, args, pending);
+      if (hosted) {
+        if (args[1]!.includes("runs?")) calls.push("actions observation");
+        return hosted;
+      }
       if (args[0] === "api" && args[3]?.includes("enqueuePullRequest")) {
         calls.push("enqueue");
         if (admission === "failed")
@@ -1597,14 +2739,28 @@ it("resumes legacy published delivery records after a stopped executor upgrade a
     sha(JSON.stringify({ ...f.current, controllerRevision: historicalRevision })),
   );
   await expect(f.resume()).resolves.toMatchObject({ status: "observing-hosted-checks" });
-  expect(f.calls).toEqual(["pr checks"]);
+  expect(f.calls).toEqual(["actions observation", "actions observation"]);
   f.pass();
   await expect(f.resume()).resolves.toMatchObject({ status: "complete" });
-  expect(f.calls).toEqual(["pr checks", "pr checks", "pr ready", "enqueue"]);
+  expect(f.calls).toEqual([
+    "actions observation",
+    "actions observation",
+    "actions observation",
+    "actions observation",
+    "pr ready",
+    "enqueue",
+  ]);
   const after = await stateSnapshot(f.current.stateDirectory);
   for (const [name, contents] of Object.entries(f.before)) expect(after[name]).toBe(contents);
   await expect(f.resume()).resolves.toMatchObject({ status: "complete" });
-  expect(f.calls).toEqual(["pr checks", "pr checks", "pr ready", "enqueue"]);
+  expect(f.calls).toEqual([
+    "actions observation",
+    "actions observation",
+    "actions observation",
+    "actions observation",
+    "pr ready",
+    "enqueue",
+  ]);
 });
 
 it.each(["pending", "lost"] as const)(
@@ -1872,6 +3028,11 @@ it("reconciles a lost merge through the engine and the real OPEN-only checks ada
       return "";
     },
     async ghJson(_config, args) {
+      const hosted = hostedResponse(current, publication, args);
+      if (hosted) {
+        if (args[1]!.includes("runs?")) effects.push(args);
+        return hosted;
+      }
       if (lostObservation) {
         lostObservation = false;
         throw new Error("lost observation");
@@ -1908,7 +3069,7 @@ it("reconciles a lost merge through the engine and the real OPEN-only checks ada
     status: "complete",
   });
   expect(effects.filter((args) => args[1] === "merge")).toHaveLength(1);
-  expect(effects.filter((args) => args[1] === "checks")).toHaveLength(1);
+  expect(effects.filter((args) => args[1]?.includes("runs?"))).toHaveLength(2);
   expect(cleaned).toBe(true);
   // Two engine cycles perform real Git identity checks; Windows CI exceeds the 5s default.
 }, 30_000);
@@ -1964,6 +3125,11 @@ it("cleans real Git state, confirms exact absence, and restarts without effects"
       return "";
     },
     async ghJson(_config, args) {
+      const hosted = hostedResponse(current, publication, args);
+      if (hosted) {
+        if (args[1]!.includes("runs?")) effects.push(args);
+        return hosted;
+      }
       providerReads += 1;
       const row = publicationRow(publication, {
         state: merged ? "MERGED" : "OPEN",
@@ -2184,9 +3350,16 @@ it("keeps repository identities and mirror rules in the explicit private policy 
   const root = await mkdtemp(resolve(tmpdir(), "delivery-policy-"));
   roots.push(root);
   const current = config(root);
-  const issue = `---\nkey: ISS-074\ntitle: "Deliver"\nlabels: ["type:slice"]\nmilestone: "Minimum orchestration kernel"\nblocked_by: [ISS-073]\n---\n\n## Why\n\nFixture.\n`;
+  const issue = `---\nkey: ISS-074\ntitle: "Deliver"\nlabels: ["type:slice"]\nmilestone: "Minimum orchestration kernel"\nblocked_by: []\n---\n\n## Why\n\nFixture.\n`;
   const planning = {
     roadmap: {
+      schemaVersion: "orchestration-roadmap/v1",
+      project: {
+        id: "PVT_fixture",
+        number: 1,
+        title: "Delivery",
+        url: "https://example.test/project",
+      },
       repository: current.repository,
       milestones: [{ key: "M2", title: "Minimum orchestration kernel" }],
       issues: [
@@ -2194,7 +3367,7 @@ it("keeps repository identities and mirror rules in the explicit private policy 
           key: "ISS-074",
           file: "planning/drafts/ISS-074.md",
           milestone: "M2",
-          blockedBy: ["ISS-073"],
+          blockedBy: [],
         },
       ],
     },
@@ -2211,11 +3384,17 @@ it("keeps repository identities and mirror rules in the explicit private policy 
       { number: 332, title: "reserved seed", body: "reserved" },
     ],
   };
-  const plan = selfPlanFromSnapshots(current, planning, board, {
-    total: { added: 7, deleted: 6 },
-    scripts: { added: 1, deleted: 3 },
-    test: { added: 4, deleted: 2 },
-  });
+  const plan = selfPlanFromSnapshots(
+    current,
+    planning,
+    board,
+    {
+      total: { added: 7, deleted: 6 },
+      scripts: { added: 1, deleted: 3 },
+      test: { added: 4, deleted: 2 },
+    },
+    planning,
+  );
   expect(plan.gates).toEqual({
     beforeMirror: ["typecheck", "format:check", "test"],
     afterMirror: ["planning:board-check"],
@@ -2350,26 +3529,35 @@ it("uses the later-cycle merge base for repaired candidate line counts", async (
     test: { added: 5, deleted: 2 },
   });
 
-  const issue = `---\nkey: ISS-074\ntitle: "Deliver"\nlabels: ["type:slice"]\nmilestone: "Minimum orchestration kernel"\nblocked_by: [ISS-073]\n---\n\n## Why\n\nFixture.\n`;
+  const issue = `---\nkey: ISS-074\ntitle: "Deliver"\nlabels: ["type:slice"]\nmilestone: "Minimum orchestration kernel"\nblocked_by: []\n---\n\n## Why\n\nFixture.\n`;
+  const planning = {
+    roadmap: {
+      schemaVersion: "orchestration-roadmap/v1",
+      project: {
+        id: "PVT_fixture",
+        number: 1,
+        title: "Delivery",
+        url: "https://example.test/project",
+      },
+      repository: current.repository,
+      milestones: [{ key: "M2", title: "Minimum orchestration kernel" }],
+      issues: [
+        {
+          key: "ISS-074",
+          file: "planning/drafts/ISS-074.md",
+          milestone: "M2",
+          blockedBy: [],
+        },
+      ],
+    },
+    issueDrafts: { "ISS-074": issue },
+  };
   const plan = selfPlanFromSnapshots(
     current,
-    {
-      roadmap: {
-        repository: current.repository,
-        milestones: [{ key: "M2", title: "Minimum orchestration kernel" }],
-        issues: [
-          {
-            key: "ISS-074",
-            file: "planning/drafts/ISS-074.md",
-            milestone: "M2",
-            blockedBy: ["ISS-073"],
-          },
-        ],
-      },
-      issueDrafts: { "ISS-074": issue },
-    },
+    planning,
     { issues: [{ number: 332, title: "reserved seed", body: "reserved" }] },
     changes,
+    planning,
   );
   expect(plan.publication.body).toContain(
     "- Total: 10 added, 6 deleted, net +4\n" +

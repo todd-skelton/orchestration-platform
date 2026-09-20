@@ -159,6 +159,16 @@ async function assertClean(executable: string, config: SetupConfig, cwd: string)
     throw new SetupBlocked("dirty-setup-repository");
 }
 
+async function joinGitReads<T extends readonly unknown[] | []>(reads: T) {
+  try {
+    return await Promise.all(reads);
+  } catch (error) {
+    // ISS-190: retain the first rejection, but finish owned reads before refusal.
+    await Promise.allSettled(reads);
+    throw error;
+  }
+}
+
 // Setup alone owns this byte filter. Pending lookahead is at most 19 bytes;
 // suppression holds no line, URL or secret, regardless of its length.
 export class SetupOutputSanitizer {
@@ -406,7 +416,7 @@ export function gitSetupAdapter(options: SetupAdapterOptions = {}): SetupAdapter
   const gitExecutable = options.gitExecutable ?? "git";
 
   return {
-    async assertExecutor(config, executingRoot) {
+    async assertExecutor(config, executingRoot, matchedReplay = false) {
       try {
         const [actualExecuting, controller, repository, state] = await Promise.all([
           realpath(executingRoot),
@@ -450,7 +460,7 @@ export function gitSetupAdapter(options: SetupAdapterOptions = {}): SetupAdapter
           repositoryBranch,
           pilotObject,
           baseObject,
-        ] = await Promise.all([
+        ] = await joinGitReads([
           git(gitExecutable, config, ["rev-parse", "--show-toplevel"], controller),
           git(gitExecutable, config, ["rev-parse", "HEAD"], controller),
           git(gitExecutable, config, ["rev-parse", "--show-toplevel"], repository),
@@ -464,12 +474,15 @@ export function gitSetupAdapter(options: SetupAdapterOptions = {}): SetupAdapter
           controllerHead !== config.controllerRevision ||
           comparable(await realpath(repositoryTop)) !== comparable(repository) ||
           pilotObject !== config.pilotRevision ||
-          repositoryHead !== config.pilotRevision ||
+          repositoryHead !==
+            (matchedReplay && comparable(repository) === comparable(controller)
+              ? config.controllerRevision
+              : config.pilotRevision) ||
           baseObject !== config.base ||
           repositoryBranch !== config.baseBranch
         )
           throw new SetupBlocked("setup-head-drift");
-        await Promise.all([
+        await joinGitReads([
           git(gitExecutable, config, ["check-ref-format", "--branch", config.baseBranch]),
           git(gitExecutable, config, ["check-ref-format", "--branch", config.sourceBranch]),
           assertClean(gitExecutable, config, controller),
@@ -503,7 +516,7 @@ export function gitSetupAdapter(options: SetupAdapterOptions = {}): SetupAdapter
             config.repositoryRoot,
           );
           if (comparable(common) !== comparable(repositoryCommon)) return { state: "collision" };
-          const [head, branch, dirty] = await Promise.all([
+          const [head, branch, dirty] = await joinGitReads([
             git(gitExecutable, config, ["rev-parse", "HEAD"], actual),
             git(gitExecutable, config, ["branch", "--show-current"], actual),
             git(gitExecutable, config, ["status", "--porcelain", "--untracked-files=all"], actual),

@@ -568,6 +568,86 @@
       "file": "planning/drafts/ISS-171.md",
       "milestone": "M2",
       "blockedBy": []
+    },
+    {
+      "key": "ISS-177",
+      "file": "planning/drafts/ISS-177.md",
+      "milestone": "M2",
+      "blockedBy": []
+    },
+    {
+      "key": "ISS-178",
+      "file": "planning/drafts/ISS-178.md",
+      "milestone": "M2",
+      "blockedBy": []
+    },
+    {
+      "key": "ISS-179",
+      "file": "planning/drafts/ISS-179.md",
+      "milestone": "M2",
+      "blockedBy": []
+    },
+    {
+      "key": "ISS-180",
+      "file": "planning/drafts/ISS-180.md",
+      "milestone": "M2",
+      "blockedBy": []
+    },
+    {
+      "key": "ISS-181",
+      "file": "planning/drafts/ISS-181.md",
+      "milestone": "M2",
+      "blockedBy": [
+        "ISS-179"
+      ]
+    },
+    {
+      "key": "ISS-182",
+      "file": "planning/drafts/ISS-182.md",
+      "milestone": "M2",
+      "blockedBy": []
+    },
+    {
+      "key": "ISS-183",
+      "file": "planning/drafts/ISS-183.md",
+      "milestone": "M2",
+      "blockedBy": []
+    },
+    {
+      "key": "ISS-185",
+      "file": "planning/drafts/ISS-185.md",
+      "milestone": "M2",
+      "blockedBy": []
+    },
+    {
+      "key": "ISS-187",
+      "file": "planning/drafts/ISS-187.md",
+      "milestone": "M2",
+      "blockedBy": []
+    },
+    {
+      "key": "ISS-188",
+      "file": "planning/drafts/ISS-188.md",
+      "milestone": "M2",
+      "blockedBy": []
+    },
+    {
+      "key": "ISS-192",
+      "file": "planning/drafts/ISS-192.md",
+      "milestone": "M2",
+      "blockedBy": []
+    },
+    {
+      "key": "ISS-193",
+      "file": "planning/drafts/ISS-193.md",
+      "milestone": "M2",
+      "blockedBy": []
+    },
+    {
+      "key": "ISS-194",
+      "file": "planning/drafts/ISS-194.md",
+      "milestone": "M2",
+      "blockedBy": []
     }
   ]
 }

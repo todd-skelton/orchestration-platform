@@ -9,9 +9,14 @@ import {
   expectedBoardItems,
   indexBoardByKey,
   loadBoardSnapshot,
+  normalizeBody,
   planningKeyOf,
   validateBoardSnapshot,
 } from "../scripts/planning/board-check.mjs";
+import {
+  candidatePlanningBase,
+  candidatePlanningKeys,
+} from "../scripts/planning/candidate-board.mjs";
 import { DeliveryBlocked } from "../scripts/dogfood/delivery.mjs";
 import { acceptedReviewG0 } from "../scripts/dogfood/delivery-adapter.mjs";
 import { readFile } from "node:fs/promises";
@@ -281,10 +286,13 @@ export async function pullRequest({ config, gitExecutable }) {
   return { ...pr, body: `${pr.body}\n\nReview G0: ${await acceptedReviewG0(config)}` };
 }
 
-function planningMirror(config, planning, board) {
+function planningMirror(config, planning, board, base) {
   const value = policy(config);
   requirePolicy(planning?.roadmap?.repository === EXPECTED_REPOSITORY, "wrong-planning-repository");
-  const index = indexBoardByKey(board);
+  const index = indexBoardByKey({
+    ...board,
+    issues: board.issues.filter((row) => planningKeyOf(row.body) === value.key),
+  });
   const seed = board.issues.find((item) => item.number === value.number);
   if (!index.has(value.key) && seed && planningKeyOf(seed.body) === undefined)
     index.set(value.key, seed);
@@ -292,6 +300,57 @@ function planningMirror(config, planning, board) {
   requirePolicy(actual?.number === value.number, "self-planning-identity-mismatch");
   const target = expectedBoardItems(planning).find((item) => item.key === value.key);
   requirePolicy(target, "self-draft-target-missing");
+  const siblings = [];
+  requirePolicy(base, "self-planning-base-missing");
+  try {
+    validatePlanningSnapshot(planning);
+  } catch (error) {
+    throw new DeliveryBlocked("self-planning-invalid", String(error));
+  }
+  const targets = new Map(expectedBoardItems(planning).map((item) => [item.key, item]));
+  const previous = new Map(expectedBoardItems(base).map((item) => [item.key, item]));
+  for (const key of [...candidatePlanningKeys(base, planning)].sort()) {
+    if (key === value.key) continue;
+    const before = previous.get(key);
+    const after = targets.get(key);
+    const refuse = (condition) => {
+      if (!condition) throw new DeliveryBlocked(`self-sibling-refused:${key}`);
+    };
+    // Review authorizes prose. Siblings cannot acquire selected-issue metadata authority.
+    refuse(before && after);
+    refuse(
+      JSON.stringify(base.roadmap.issues.find((row) => row.key === key)) ===
+        JSON.stringify(planning.roadmap.issues.find((row) => row.key === key)) &&
+        JSON.stringify(base.roadmap.project) === JSON.stringify(planning.roadmap.project) &&
+        before.milestone === after.milestone &&
+        base.issueDrafts[key]
+          .match(/^---\r?\n[\s\S]*?\r?\n---\r?\n/)?.[0]
+          ?.replaceAll("\r\n", "\n") ===
+          planning.issueDrafts[key]
+            .match(/^---\r?\n[\s\S]*?\r?\n---\r?\n/)?.[0]
+            ?.replaceAll("\r\n", "\n"),
+    );
+    const rows = board.issues.filter((row) => planningKeyOf(row.body) === key);
+    refuse(rows.length === 1);
+    const row = rows[0];
+    refuse(row.state === "OPEN" || row.state === "CLOSED");
+    if (row.state === "CLOSED") continue;
+    refuse(row.title === after.title && row.milestone === after.milestone);
+    refuse(
+      [before.body, after.body].some((body) => normalizeBody(body) === normalizeBody(row.body)),
+    );
+    siblings.push({
+      key,
+      issue: row.number,
+      title: after.title,
+      body: after.body,
+      attributes: {
+        milestone: after.milestone,
+        baseBody: before.body,
+        reopenedEvent: row.reopenedEvent ?? null,
+      },
+    });
+  }
   return {
     gates: {
       beforeMirror: [],
@@ -305,17 +364,19 @@ function planningMirror(config, planning, board) {
         body: target.body,
         attributes: { milestone: target.milestone },
       },
+      ...siblings,
     ],
   };
 }
 
-export async function mirrorPlanning({ config }) {
+export async function mirrorPlanning({ config, gitExecutable = "git" }) {
   policy(config);
-  const [planning, board] = await Promise.all([
+  const [planning, board, base] = await Promise.all([
     loadPlanningSnapshot(config.worktree),
     loadBoardSnapshot(config.repository),
+    candidatePlanningBase(config.worktree, config.candidateHead, gitExecutable),
   ]);
-  return planningMirror(config, planning, board);
+  return planningMirror(config, planning, board, base);
 }
 
 export function mergeMethod({ config }) {
@@ -327,8 +388,8 @@ export function afterMerge({ config }) {
   policy(config);
 }
 
-export function selfPlanFromSnapshots(config, planning, board, lineChanges) {
-  const mirror = planningMirror(config, planning, board);
+export function selfPlanFromSnapshots(config, planning, board, lineChanges, base) {
+  const mirror = planningMirror(config, planning, board, base);
   const pr = publication(config, lineChanges);
   return {
     ...mirror,

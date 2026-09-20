@@ -32,14 +32,24 @@ import type {
   DeliveryConfig,
   PublicationEvidence,
 } from "../../scripts/dogfood/delivery.js";
-import { loadPlanningSnapshot, type PlanningSnapshot } from "../../scripts/planning/check.mjs";
+import {
+  loadPlanningSnapshot,
+  parseFrontmatter,
+  type PlanningSnapshot,
+} from "../../scripts/planning/check.mjs";
 import {
   expectedBoardItems,
+  boardMismatches,
+  validateBoardSnapshot,
   loadBoardSnapshot,
   loadProjectSnapshot,
   type BoardSnapshot,
 } from "../../scripts/planning/board-check.mjs";
 import { selfPlanFromSnapshots, requiredChecks } from "../../adapters/self.mjs";
+import * as self from "../../adapters/self.mjs";
+import { candidatePlanningBase } from "../../scripts/planning/candidate-board.mjs";
+import { repositoryDeliveryPolicy } from "../../scripts/dogfood/repository-adapter.mjs";
+import { isItemStopReason } from "../../scripts/dogfood/supervision.js";
 
 vi.mock("../../scripts/planning/board-check.mjs", async (original) => ({
   ...(await original<object>()),
@@ -51,7 +61,11 @@ const exec = promisify(execFile);
 const gateAuthority = "https://github.com/fixture/repository/issues/494#issuecomment-5687186310";
 const roots: string[] = [];
 afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+  await Promise.all(
+    roots
+      .splice(0)
+      .map((root) => rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 })),
+  );
   vi.clearAllMocks();
   vi.unstubAllEnvs();
 });
@@ -78,7 +92,7 @@ function planning(keys: string[]): PlanningSnapshot {
     issueDrafts: Object.fromEntries(
       keys.map((key) => [
         key,
-        `---\nkey: ${key}\ntitle: "Do ${key}"\nlabels: ["type:slice", "ready"]\nmilestone: "First"\nblocked_by: []\n---\n\n## Why\n\nUseful.\n`,
+        `---\nkey: ${key}\ntitle: "Do ${key}"\nlabels: ["type:slice", "ready"]\nmilestone: "First"\nblocked_by: []\n---\n\n## Why\n\nUseful.\n\n## Done when\n\n- Preserve behavior.\n`,
       ]),
     ),
   };
@@ -89,6 +103,8 @@ async function fixture(
   temporaryRoot = tmpdir(),
   routeList = false,
   fixed = { prefix: "", suffix: "" },
+  snapshot?: PlanningSnapshot,
+  selection = { key: "ISS-100", number: 100 },
 ) {
   // Delivery expects canonical roots, including macOS /var and Windows temp aliases.
   const root = await realpath(await mkdtemp(resolve(temporaryRoot, "native-refresh-")));
@@ -134,7 +150,9 @@ async function fixture(
     return git(tree, ["rev-parse", "HEAD"]);
   };
   await git(repo, ["init", "-b", "main"]);
-  await writePlanning(repo, planning(seedKeys));
+  await mkdir(resolve(repo, "docs"));
+  await writeFile(resolve(repo, "docs/loop.md"), "Fixture loop rules.\n");
+  await writePlanning(repo, snapshot ?? planning(seedKeys));
   await writeFile(
     resolve(repo, "feature.txt"),
     routeList ? "const routes = [\n  'existing',\n];\n" : `${fixed.prefix}old\n${fixed.suffix}`,
@@ -150,8 +168,8 @@ async function fixture(
   await git(repo, ["fetch", "origin", "refs/heads/main:refs/remotes/origin/main"]);
   await git(repo, ["worktree", "add", "--detach", pilot, base]);
   await git(repo, ["worktree", "add", "-b", "codex/iss-100", sourceTree, base]);
-  const candidatePlanning = planning(seedKeys);
-  candidatePlanning.issueDrafts["ISS-100"] += "\nCandidate planning delta.\n";
+  const candidatePlanning = structuredClone(snapshot ?? planning(seedKeys));
+  candidatePlanning.issueDrafts[selection.key] += "\nCandidate planning delta.\n";
   await writePlanning(sourceTree, candidatePlanning);
   await writeFile(
     resolve(sourceTree, "feature.txt"),
@@ -165,7 +183,7 @@ async function fixture(
   const source: Config = {
     owner: "fixture",
     run: "refresh-fixture",
-    issue: "https://github.com/todd-skelton/orchestration-platform/issues/100",
+    issue: `https://github.com/todd-skelton/orchestration-platform/issues/${selection.number}`,
     pilotRevision: base,
     base,
     mainBase: base,
@@ -265,7 +283,7 @@ async function fixture(
     },
     delivery: {
       requiredChecks: checks,
-      policy: { key: "ISS-100", number: 100, title: "Do ISS-100", sourceBranch: "codex/iss-100" },
+      policy: { ...selection, title: `Do ${selection.key}`, sourceBranch: "codex/iss-100" },
     },
   };
   const config: QueueConfig = {
@@ -301,7 +319,7 @@ async function fixture(
       totalCount: snapshot.roadmap.issues.length,
       issues: expectedBoardItems(snapshot).map((row) => ({
         ...row,
-        number: Number(row.key.slice(4)),
+        number: row.key === selection.key ? selection.number : Number(row.key.slice(4)),
         state: "OPEN",
       })),
     };
@@ -416,7 +434,25 @@ async function fixture(
       throw new Error("unused");
     },
   };
-  const realDelivery = githubDeliveryAdapter();
+  const draftEdits: string[][] = [];
+  const realDelivery = githubDeliveryAdapter({
+    async ghJson(_current, args) {
+      if (args[0] !== "issue" || args[1] !== "view") throw new Error("unexpected GitHub read");
+      const row = board.issues.find((row) => row.number === Number(args[2]));
+      return row && { ...row, milestone: row.milestone ? { title: row.milestone } : null };
+    },
+    async gh(_current, args) {
+      if (args[0] !== "issue" || args[1] !== "edit") throw new Error("unexpected GitHub write");
+      draftEdits.push(args);
+      drafts++;
+      const row = board.issues.find((row) => row.number === Number(args[2]))!;
+      row.body = await readFile(args[args.indexOf("--body-file") + 1]!, "utf8");
+      if (args.includes("--title")) row.title = args[args.indexOf("--title") + 1]!;
+      if (args.includes("--milestone")) row.milestone = args[args.indexOf("--milestone") + 1]!;
+      if (args.includes("--remove-milestone")) row.milestone = null;
+      return "";
+    },
+  });
   let refreshPublication: DeliveryAdapter | undefined;
   let publicationDirty = false;
   let publication: PublicationEvidence | undefined;
@@ -441,20 +477,6 @@ async function fixture(
       }
       if (stopGate) throw new Error("interrupted gate observation");
       return realDelivery.runGate(current, name, candidate);
-    },
-    async observeDraft(_current, draft) {
-      return board.issues.find((row) => row.number === draft.issue)?.body === draft.body
-        ? { state: "confirmed", value: { issue: draft.issue } }
-        : { state: "needs-mutation" };
-    },
-    async applyDraft(_current, draft) {
-      drafts++;
-      const row = board.issues.find((row) => row.number === draft.issue)!;
-      Object.assign(row, {
-        title: draft.title,
-        body: draft.body,
-        milestone: draft.attributes.milestone,
-      });
     },
     async observePublication(current, plan, digest, target) {
       if (refreshPublication) {
@@ -516,11 +538,7 @@ async function fixture(
   };
   const policy = {
     async plan(current: DeliveryConfig) {
-      const plan = selfPlanFromSnapshots(current, await loadPlanningSnapshot(sourceTree), board, {
-        total: { added: 1, deleted: 1 },
-        scripts: { added: 0, deleted: 0 },
-        test: { added: 0, deleted: 0 },
-      });
+      const plan = await repositoryDeliveryPolicy(self, "git").plan(current);
       // This fixture exercises the real self afterMirror gate; bootstrap gates have their own tests.
       plan.gates.beforeMirror = withTypecheck ? ["typecheck"] : [];
       // Model ISS-145's preserved PR branch while retaining the genuine self planning gate.
@@ -634,6 +652,7 @@ async function fixture(
     delivery,
     native,
     policy,
+    draftEdits,
     item,
     head,
     reviewer,
@@ -701,6 +720,568 @@ async function fixture(
     },
   };
 }
+
+// Recorded ISS-174 failure: these six drafts were OPEN and retained their native numbers.
+const regressionSiblings = new Map([
+  ["ISS-146", 457],
+  ["ISS-164", 517],
+  ["ISS-165", 518],
+  ["ISS-167", 524],
+  ["ISS-171", 525],
+  ["ISS-176", 537],
+]);
+
+async function siblingRegression() {
+  // Freeze the six real drafts at 11a165dc; removing these lines on live main must
+  // not remove the regression's input. Other rows are synthetic closed scaffolding.
+  const originals = new Map(
+    await Promise.all(
+      [...regressionSiblings.keys()].map(
+        async (key) =>
+          [
+            key,
+            await readFile(resolve(import.meta.dirname, `fixtures/iss-178/${key}.txt`), "utf8"),
+          ] as const,
+      ),
+    ),
+  );
+  const keys = new Set(["ISS-174", ...originals.keys()]);
+  for (const [key, draft] of originals)
+    for (const dependency of parseFrontmatter(draft, key).blocked_by) keys.add(dependency);
+  const base = planning([...keys]);
+  const milestone = "Chase Sets delivery adapter";
+  base.roadmap.milestones = [{ key: "M2", title: milestone }];
+  for (const row of base.roadmap.issues) {
+    row.milestone = "M2";
+    const draft = originals.get(row.key);
+    if (draft) {
+      base.issueDrafts[row.key] = draft;
+      row.blockedBy = parseFrontmatter(draft, row.key).blocked_by;
+    } else
+      base.issueDrafts[row.key] = base.issueDrafts[row.key]!.replace(
+        'milestone: "First"',
+        `milestone: "${milestone}"`,
+      );
+  }
+  const f = await fixture(undefined, undefined, undefined, undefined, base, {
+    key: "ISS-174",
+    number: 529,
+  });
+  for (const row of f.board().issues) {
+    const key = /planning-key: (ISS-\d+)/.exec(row.body)![1]!;
+    row.state = key === "ISS-174" || regressionSiblings.has(key) ? "OPEN" : "CLOSED";
+    row.number = regressionSiblings.get(key) ?? row.number;
+  }
+  const candidate = await loadPlanningSnapshot(f.sourceTree);
+  for (const key of regressionSiblings.keys()) {
+    const before = candidate.issueDrafts[key]!;
+    const after = before.replace(/QUALITY_PROFILE: [^\r\n]+\r?\n\r?\n/, "");
+    expect(after).not.toBe(before);
+    candidate.issueDrafts[key] = after;
+  }
+  await f.writePlanning(f.sourceTree, candidate);
+  await f.commit(f.sourceTree);
+  await f.pinSource();
+  const head = await f.git(f.sourceTree, ["rev-parse", "HEAD"]);
+  const config: DeliveryConfig = {
+    controller: f.config.controller,
+    run: f.config.run,
+    issue: f.source.issue,
+    repository: f.source.repository,
+    repositoryRoot: f.repo,
+    controllerRoot: f.repo,
+    controllerRevision: f.config.controllerRevision,
+    worktree: f.sourceTree,
+    reviewWorktree: f.source.reviewWorktree,
+    stateDirectory: f.sourceState,
+    candidateHead: head,
+    retries: 0,
+    requiredChecks: f.source.requiredChecks,
+    policy: f.item.delivery.policy,
+  };
+  const plan = await f.policy.plan(config);
+  const fromSnapshots = selfPlanFromSnapshots(
+    config,
+    candidate,
+    f.board(),
+    {
+      total: { added: 0, deleted: 12 },
+      scripts: { added: 0, deleted: 0 },
+      test: { added: 0, deleted: 0 },
+    },
+    await candidatePlanningBase(f.sourceTree, head),
+  );
+  expect(fromSnapshots.drafts).toEqual(plan.drafts);
+  return { ...f, configForDelivery: config, plan, candidate, base, head };
+}
+
+it.each([false, true])(
+  "mirrors the exact six ISS-174 deletions through native delivery before its scoped gate/publication (autocrlf: %s)",
+  async (autocrlf) => {
+    vi.stubEnv("GIT_CONFIG_COUNT", "1");
+    vi.stubEnv("GIT_CONFIG_KEY_0", "core.autocrlf");
+    vi.stubEnv("GIT_CONFIG_VALUE_0", String(autocrlf));
+    const f = await siblingRegression();
+    const selected = f.plan.drafts[0]!;
+    const selectedRow = f.board().issues.find((row) => row.number === 529)!;
+    selectedRow.body = selected.body;
+    const problems = boardMismatches(f.candidate, f.board());
+    expect(problems.sort()).toEqual(
+      [...regressionSiblings.keys()].map((key) => `${key} body does not match its source draft`),
+    );
+    const diff = await f.git(f.sourceTree, [
+      "diff",
+      "--numstat",
+      f.source.base,
+      f.head,
+      "--",
+      ...[...regressionSiblings.keys()].map((key) => `planning/drafts/${key}.md`),
+    ]);
+    expect(diff.split("\n").map((line) => line.split("\t").slice(0, 2))).toEqual(
+      Array(6).fill(["0", "2"]),
+    );
+    expect(f.plan.drafts.map((draft) => draft.issue)).toEqual([
+      529,
+      ...regressionSiblings.values(),
+    ]);
+    const before = structuredClone(f.board());
+    await expect(f.deliver()).resolves.toMatchObject({
+      status: "observing-hosted-checks",
+      head: f.head,
+    });
+    expect(f.draftEdits.map((args) => Number(args[2]))).toEqual([...regressionSiblings.values()]);
+    expect(f.draftEdits.every((args) => args.length === 5 && args[3] === "--body-file")).toBe(true);
+    for (const [index, row] of f.board().issues.entries())
+      expect({ ...row, body: before.issues[index]!.body }).toEqual(before.issues[index]);
+    expect(boardMismatches(f.candidate, f.board())).toEqual([]);
+    expect(f.publications()).toBe(1);
+    await expect(f.deliver()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+    expect(f.draftEdits).toHaveLength(6);
+    expect(f.publications()).toBe(1);
+  },
+);
+
+it("names the unmirrored sibling and refuses publication when only one mirror is suppressed", async () => {
+  const f = await siblingRegression();
+  const plan = f.policy.plan;
+  f.policy.plan = async (current) => {
+    const value = await plan(current);
+    value.drafts = value.drafts.filter((draft) => draft.key !== "ISS-176");
+    return value;
+  };
+  await expect(f.deliver()).rejects.toThrow("gate-attribution-unknown:planning:board-check");
+  expect(await readFile(resolve(f.sourceState, "board-failure.log"), "utf8")).toContain(
+    "ISS-176 body does not match its source draft",
+  );
+  expect(f.publications()).toBe(0);
+});
+
+it.each(["missing", "duplicate", "retargeted", "title", "milestone", "body"])(
+  "refuses synthetic sibling %s at plan time without edits",
+  async (mode) => {
+    const f = await siblingRegression();
+    const row = f.board().issues.find((row) => row.number === 457)!;
+    if (mode === "missing") f.board().issues = f.board().issues.filter((item) => item !== row);
+    if (mode === "duplicate") f.board().issues.push({ ...row, number: 999 });
+    if (mode === "retargeted")
+      row.body = row.body.replace("planning-key: ISS-146", "planning-key: ISS-999");
+    if (mode === "title") row.title += " drift";
+    if (mode === "milestone") row.milestone = "drift";
+    if (mode === "body") row.body += "\nUnexpected prose.\n";
+    f.board().totalCount = f.board().issues.length;
+    await expect(f.deliver()).rejects.toThrow(/ISS-146/);
+    expect(f.draftEdits).toHaveLength(0);
+    expect(f.publications()).toBe(0);
+  },
+);
+
+it.each([false, true])(
+  "reobserves synthetic closure after plan persistence (partial mirror: %s)",
+  async (partial) => {
+    const f = await siblingRegression();
+    const observe = f.delivery.observeDraft;
+    let interrupted = false;
+    f.delivery.observeDraft = async (current, draft) => {
+      if (!interrupted && draft.key === (partial ? "ISS-165" : "ISS-174")) {
+        interrupted = true;
+        throw new Error("fixture interruption after persisted plan");
+      }
+      return observe(current, draft);
+    };
+    await expect(f.deliver()).rejects.toThrow("delivery-state-unknown");
+    const saved = await readFile(resolve(f.sourceState, "delivery-plan.json"), "utf8");
+    expect(JSON.parse(saved).plan.drafts).toHaveLength(7);
+    f.board().issues.find((row) => row.number === 537)!.state = "CLOSED";
+    await expect(f.deliver()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+    await expect(f.deliver()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+    expect(f.draftEdits.some((args) => args[2] === "537")).toBe(false);
+    expect(new Set(f.draftEdits.map((args) => args[2])).size).toBe(f.draftEdits.length);
+    expect(await readFile(resolve(f.sourceState, "delivery-plan.json"), "utf8")).toBe(saved);
+    expect(boardMismatches(f.candidate, f.board())).toEqual([]);
+  },
+);
+
+it.each(["title", "milestone"])(
+  "refuses synthetic OPEN %s drift on saved-plan replay even at target body",
+  async (field) => {
+    const f = await siblingRegression();
+    const observe = f.delivery.observeDraft;
+    let stop = true;
+    f.delivery.observeDraft = async (current, draft) => {
+      if (stop) throw new Error("fixture interruption");
+      return observe(current, draft);
+    };
+    await expect(f.deliver()).rejects.toThrow("delivery-state-unknown");
+    stop = false;
+    const row = f.board().issues.find((row) => row.number === 457)!;
+    row.body = f.plan.drafts.find((draft) => draft.key === "ISS-146")!.body;
+    if (field === "title") row.title += " drift";
+    else row.milestone = "drift";
+    await expect(f.deliver()).rejects.toThrow("self-sibling-refused:ISS-146");
+    expect(f.draftEdits.filter((args) => args[2] !== "529")).toHaveLength(0);
+    expect(f.publications()).toBe(0);
+  },
+);
+
+it("reconciles a sibling edit's lost response without repeating its body write", async () => {
+  const f = await siblingRegression();
+  const apply = f.delivery.applyDraft;
+  const observe = f.delivery.observeDraft;
+  let lost = false;
+  let unavailable = false;
+  f.delivery.applyDraft = async (current, draft) => {
+    await apply(current, draft);
+    if (draft.key === "ISS-146" && !lost) {
+      lost = true;
+      unavailable = true;
+      throw new Error("lost response");
+    }
+  };
+  f.delivery.observeDraft = async (current, draft) => {
+    if (unavailable) throw new Error("temporary read outage");
+    return observe(current, draft);
+  };
+  await expect(f.deliver()).rejects.toThrow("delivery-state-unknown");
+  unavailable = false;
+  await expect(f.deliver()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+  await expect(f.deliver()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+  expect(f.draftEdits.filter((args) => args[2] === "457")).toHaveLength(1);
+  expect(f.draftEdits).toHaveLength(7);
+});
+
+async function syntheticSibling() {
+  const f = await fixture(["ISS-100", "ISS-101", "ISS-102"]);
+  const candidate = await loadPlanningSnapshot(f.sourceTree);
+  candidate.issueDrafts["ISS-101"] += "\nReviewed synthetic sibling prose.\n";
+  await f.writePlanning(f.sourceTree, candidate);
+  await f.commit(f.sourceTree);
+  await f.pinSource();
+  const row = f.board().issues.find((row) => row.number === 101)!;
+  return { ...f, row, candidate };
+}
+
+it.each(["title", "milestone", "body", "missing", "duplicate", "retarget", "reopened"])(
+  "refuses synthetic %s during saved sibling replay, including a recorded no-op",
+  async (mode) => {
+    const f = await syntheticSibling();
+    // Stop after all draft receipts, before afterMirror. The second call must observe again.
+    f.setStopGate(true);
+    await expect(f.deliver()).rejects.toThrow("delivery-state-unknown");
+    const writes = f.draftEdits.length;
+    if (mode === "title") f.row.title += " drift";
+    if (mode === "milestone") f.row.milestone = "drift";
+    if (mode === "body") f.row.body += "\nUnexpected prose";
+    if (mode === "missing") f.board().issues = f.board().issues.filter((row) => row !== f.row);
+    if (mode === "duplicate") f.board().issues.push({ ...f.row, number: 999 });
+    if (mode === "retarget") f.row.number = 998;
+    if (mode === "reopened") f.row.reopenedEvent = "RE_fixture_2";
+    f.board().totalCount = f.board().issues.length;
+    f.setStopGate(false);
+    await expect(f.deliver()).rejects.toThrow("self-sibling-refused:ISS-101");
+    expect(f.draftEdits).toHaveLength(writes);
+    expect(f.publications()).toBe(0);
+  },
+);
+
+it.each(["base", "other", "target"])(
+  "checks synthetic OPEN metadata separately from its %s body at mutation time",
+  async (body) => {
+    for (const field of ["title", "milestone"] as const) {
+      const f = await syntheticSibling();
+      const apply = f.delivery.applyDraft;
+      f.delivery.applyDraft = async (current, draft) => {
+        if (draft.key === "ISS-101") {
+          f.row[field] += " drift";
+          if (body === "other") f.row.body += "\nUnexpected prose";
+          if (body === "target") f.row.body = draft.body;
+        }
+        return apply(current, draft);
+      };
+      await expect(f.deliver()).rejects.toThrow("self-sibling-refused:ISS-101");
+      expect(f.draftEdits.filter((args) => args[2] === "101")).toHaveLength(0);
+      expect(f.publications()).toBe(0);
+    }
+  },
+);
+
+it("leaves unchanged drift and initially CLOSED siblings untouched while full-board consumers refuse", async () => {
+  const f = await syntheticSibling();
+  f.row.state = "CLOSED";
+  f.board().issues.find((row) => row.number === 102)!.body += "\nUnrelated drift";
+  await expect(f.deliver()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+  expect(f.draftEdits.map((args) => args[2])).toEqual(["100"]);
+  expect(() => validateBoardSnapshot(f.candidate, f.board())).toThrow("ISS-102 body");
+  await expect(
+    self.selectCandidates({
+      repository: f.source.repository,
+      planning: f.candidate,
+      board: f.board(),
+    }),
+  ).rejects.toThrow("ISS-102 body");
+});
+
+it("keeps pinned saved selection while ahead bodies refuse fresh selection until published main", async () => {
+  const f = await syntheticSibling();
+  for (const row of f.board().issues) row.labels = ["ready"];
+  const input = {
+    repository: f.source.repository,
+    key: "ISS-100",
+    number: 100,
+    executorRoot: f.repo,
+    planningRevision: f.source.base,
+  };
+  const selected = await self.issueContext(input);
+  f.setStopGate(true);
+  await expect(f.deliver()).rejects.toThrow("delivery-state-unknown");
+  await expect(self.issueContext(input)).resolves.toEqual(selected);
+  await expect(
+    self.selectCandidates({
+      repository: f.source.repository,
+      executorRoot: f.repo,
+      planningRevision: f.source.base,
+    }),
+  ).rejects.toThrow("body does not match");
+  // Abandonment has the same refusal: there is no automatic body restoration.
+  await expect(
+    self.selectCandidates({
+      repository: f.source.repository,
+      executorRoot: f.repo,
+      planningRevision: f.source.base,
+    }),
+  ).rejects.toThrow("body does not match");
+  f.setStopGate(false);
+  await expect(f.deliver()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+  const head = await f.git(f.sourceTree, ["rev-parse", "HEAD"]);
+  // Synthetic hosted/merge controls; this is selection behavior, not external CI evidence.
+  f.delivery.checks = async () => ({
+    head,
+    checks: f.source.requiredChecks.map((name) => ({
+      name,
+      bucket: "pass",
+      link: "https://fixture.test/check",
+    })),
+  });
+  let merged = false;
+  f.delivery.observeMerge = async () =>
+    merged
+      ? { state: "confirmed", value: { number: 200, head, mergeCommit: head } }
+      : { state: "needs-mutation" };
+  f.delivery.merge = async () => {
+    await f.git(f.repo, ["merge", "--ff-only", head]);
+    f.board().issues.find((row) => row.number === 100)!.state = "CLOSED";
+    merged = true;
+  };
+  f.delivery.verifyWorkspace = async () => true;
+  f.delivery.observeCleanup = async () => ({
+    state: "confirmed",
+    value: { worktrees: [f.sourceTree, f.source.reviewWorktree], branch: "codex/iss-100" },
+  });
+  await expect(f.deliver()).resolves.toMatchObject({ status: "complete" });
+  await expect(f.deliver()).resolves.toMatchObject({ status: "complete" });
+  expect(
+    await self.selectCandidates({
+      repository: f.source.repository,
+      executorRoot: f.repo,
+      planningRevision: head,
+    }),
+  ).toHaveLength(2);
+  await expect(self.issueContext(input)).resolves.toEqual(selected);
+  expect(f.draftEdits).toHaveLength(2);
+});
+
+it("refreshes retained partial sibling mirroring before new exact-head DELTA/gates and never applies stale prose", async () => {
+  const f = await syntheticSibling();
+  const observe = f.delivery.observeDraft;
+  let stop = true;
+  f.delivery.observeDraft = async (current, draft) => {
+    if (stop && draft.key === "ISS-101") throw new Error("interrupted partial mirror");
+    return observe(current, draft);
+  };
+  await expect(f.deliver()).rejects.toThrow("delivery-state-unknown");
+  const oldPlan = await readFile(resolve(f.sourceState, "delivery-plan.json"), "utf8");
+  const originalHead = await f.git(f.sourceTree, ["rev-parse", "HEAD"]);
+  const mainPlanning = planning(["ISS-100", "ISS-101", "ISS-102", "ISS-103"]);
+  mainPlanning.issueDrafts["ISS-101"] = mainPlanning.issueDrafts["ISS-101"]!.replace(
+    "Useful.",
+    "Main's new explanation.",
+  );
+  await f.writePlanning(f.repo, mainPlanning);
+  const main = await f.commit(f.repo);
+  await f.git(f.repo, ["push", resolve(f.root, "remote.git"), "main"]);
+  f.config.controllerRevision = main;
+  f.item.setup.controllerRevision = main;
+  // Host published main's sibling body; the selected ahead body remains untouched.
+  f.row.body = expectedBoardItems(mainPlanning).find((row) => row.key === "ISS-101")!.body;
+  stop = false;
+  f.setReviewRunning(true);
+  await expect(f.deliver()).resolves.toMatchObject({ status: "observing-reviewer" });
+  expect(f.draftEdits.map((args) => args[2])).toEqual(["100"]);
+  expect(f.gateHeads).toEqual([]);
+  f.setReviewRunning(false);
+  await expect(f.deliver()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+  const refreshed = await f.git(f.sourceTree, ["rev-parse", "HEAD"]);
+  expect(refreshed).not.toBe(originalHead);
+  expect(f.prompts).toHaveLength(1);
+  expect(f.gateHeads).toEqual([refreshed]);
+  expect(f.row.body).toContain("Main's new explanation.");
+  expect(f.row.body).toContain("Reviewed synthetic sibling prose.");
+  expect(f.draftEdits.filter((args) => args[2] === "101")).toHaveLength(1);
+  expect(await readFile(resolve(f.sourceState, "delivery-plan.json"), "utf8")).toBe(oldPlan);
+  expect((await f.adapter().history()).map((row) => row.stage)).toEqual([
+    "source",
+    "source",
+    "refresh",
+  ]);
+});
+
+it.each(["title", "labels", "dependency", "milestone", "project"])(
+  "refuses synthetic candidate sibling %s changes without metadata writes",
+  async (field) => {
+    const f = await syntheticSibling();
+    const snapshot = await loadPlanningSnapshot(f.sourceTree);
+    if (field === "title")
+      snapshot.issueDrafts["ISS-101"] = snapshot.issueDrafts["ISS-101"]!.replace(
+        'title: "Do ISS-101"',
+        'title: "Retitled"',
+      );
+    if (field === "labels")
+      snapshot.issueDrafts["ISS-101"] = snapshot.issueDrafts["ISS-101"]!.replace(', "ready"', "");
+    if (field === "dependency") {
+      snapshot.issueDrafts["ISS-101"] = snapshot.issueDrafts["ISS-101"]!.replace(
+        "blocked_by: []",
+        "blocked_by: [ISS-100]",
+      );
+      snapshot.roadmap.issues.find((row: { key: string }) => row.key === "ISS-101")!.blockedBy = [
+        "ISS-100",
+      ];
+    }
+    if (field === "milestone") {
+      snapshot.roadmap.milestones.push({ key: "M2", title: "Second" });
+      snapshot.roadmap.issues.find((row: { key: string }) => row.key === "ISS-101")!.milestone =
+        "M2";
+      snapshot.issueDrafts["ISS-101"] = snapshot.issueDrafts["ISS-101"]!.replace(
+        'milestone: "First"',
+        'milestone: "Second"',
+      );
+    }
+    if (field === "project") snapshot.roadmap.project.id = "PVT_other";
+    await f.writePlanning(f.sourceTree, snapshot);
+    await f.commit(f.sourceTree);
+    await f.pinSource();
+    await expect(f.deliver()).rejects.toThrow("self-sibling-refused:ISS-101");
+    expect(f.draftEdits).toHaveLength(0);
+  },
+);
+
+it("reobserves synthetic closure between observation and apply without issuing an edit", async () => {
+  const f = await syntheticSibling();
+  const apply = f.delivery.applyDraft;
+  f.delivery.applyDraft = async (current, draft) => {
+    if (draft.key === "ISS-101") f.row.state = "CLOSED";
+    return apply(current, draft);
+  };
+  await expect(f.deliver()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+  expect(f.draftEdits.map((args) => args[2])).toEqual(["100"]);
+});
+
+it("reconciles pending publication with sibling receipts before newer main without duplicate writes", async () => {
+  const f = await syntheticSibling();
+  f.losePublicationObservation();
+  await expect(f.deliver()).rejects.toThrow("delivery-state-unknown");
+  const mirrored = structuredClone(f.board().issues);
+  const head = f.publication()!.head;
+  await f.advanceMain(["ISS-100", "ISS-101", "ISS-102", "ISS-103"]);
+  for (const row of f.board().issues) {
+    const previous = mirrored.find((item) => item.number === row.number);
+    if (previous) Object.assign(row, previous);
+  }
+  await expect(f.deliver()).resolves.toMatchObject({ status: "observing-hosted-checks", head });
+  await expect(f.deliver()).resolves.toMatchObject({ status: "observing-hosted-checks", head });
+  expect(f.publications()).toBe(1);
+  expect(f.draftEdits).toHaveLength(2);
+  expect(f.prompts).toHaveLength(0);
+});
+
+it("uses the same sibling plan from an accepted review-repair directory and preserves source evidence", async () => {
+  const f = await syntheticSibling();
+  const prior = await readFile(resolve(f.sourceState, "reviewer-terminal.json"), "utf8");
+  const directory = f.item.repair.stateDirectory;
+  await cp(f.sourceState, directory, { recursive: true });
+  const pinned = JSON.parse(await readFile(resolve(directory, "config.json"), "utf8"));
+  pinned.config.stateDirectory = directory;
+  await writeFile(resolve(directory, "config.json"), JSON.stringify(pinned));
+  let reviewId = "";
+  for (const role of ["author", "reviewer"] as const) {
+    const id = randomUUID();
+    if (role === "reviewer") reviewId = id;
+    for (const suffix of ["attempt", "terminal"]) {
+      const path = resolve(directory, `${role}-${suffix}.json`);
+      const record = JSON.parse(await readFile(path, "utf8"));
+      record.id = id;
+      if (suffix === "attempt") record.trace = resolve(directory, `${role}.jsonl`);
+      await writeFile(path, JSON.stringify(record));
+    }
+  }
+  const head = await f.git(f.sourceTree, ["rev-parse", "HEAD"]);
+  const run = () => f.adapter().delivery(f.item, { head, reviewId, stateDirectory: directory });
+  f.setStopGate(true);
+  await expect(run()).rejects.toThrow("delivery-state-unknown");
+  f.setStopGate(false);
+  await expect(run()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+  await expect(run()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+  expect(f.draftEdits.map((args) => args[2])).toEqual(["100", "101"]);
+  expect(await readFile(resolve(f.sourceState, "reviewer-terminal.json"), "utf8")).toBe(prior);
+  expect(
+    JSON.parse(await readFile(resolve(directory, "delivery-plan.json"), "utf8")).plan.drafts,
+  ).toHaveLength(2);
+  expect(f.prompts).toHaveLength(0);
+});
+
+it("reuses already mirrored siblings after a gate correction's fresh DELTA and scoped gate", async () => {
+  const f = await gateCorrectionFixture(true, false, await syntheticSibling());
+  const original = await readFile(resolve(f.sourceState, "reviewer-terminal.json"), "utf8");
+  await expect(f.run()).resolves.toMatchObject({ status: "observing-author" });
+  expect(f.draftEdits.map((args) => args[2])).toEqual(["100", "101"]);
+  f.setReviewRunning(true);
+  await expect(f.run()).resolves.toMatchObject({ status: "observing-reviewer" });
+  expect(f.publications()).toBe(0);
+  f.setReviewRunning(false);
+  await expect(f.run()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+  await expect(f.run()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+  expect(f.draftEdits.map((args) => args[2])).toEqual(["100", "101"]);
+  const result = JSON.parse(
+    await readFile(resolve(f.sourceState, "gate-correction-result.json"), "utf8"),
+  );
+  expect(f.gates.filter((gate) => gate.head === result.head).map((gate) => gate.gate)).toEqual([
+    "typecheck",
+    "planning:board-check",
+    "test",
+  ]);
+  expect(f.authorPrompts).toHaveLength(1);
+  expect(f.prompts).toHaveLength(1);
+  expect(await f.adapter().history()).toHaveLength(4);
+  expect(await readFile(resolve(f.sourceState, "reviewer-terminal.json"), "utf8")).toBe(original);
+});
 
 async function savedGateStop(
   afterMirror = false,
@@ -1594,7 +2175,9 @@ it.each(["missing board item", "omitted registration", "deleted registration"])(
       f.board().issues = f.board().issues.filter((row) => row.number !== 103);
       f.board().totalCount--;
     }
-    await expect(f.deliver()).rejects.toThrow("gate-attribution-unknown:planning:board-check");
+    await expect(f.deliver()).rejects.toThrow(
+      mode === "omitted registration" ? "self-planning-invalid" : "self-sibling-refused:ISS-103",
+    );
     expect(f.publication()).toBeUndefined();
   },
 );
@@ -2161,37 +2744,54 @@ it("retains the delta reviewer retry across queue resume", async () => {
   ]);
 });
 
-async function gateCorrectionFixture(afterMirror = false, refresh = false) {
-  const f = await fixture();
+// ISS-192: the recognized scoped static staleness failure, as the adapter returns it.
+const staleArtifact = {
+  gate: "verify:static:scoped",
+  output: "Error: docs/SYNTHETIC_INDEX.md is stale",
+  log: `[VERIFY_STATIC_RUN] check:synthetic-artifact-index\n$ node ./scripts/generate-synthetic-alpha-index.mjs --check\nError: docs/SYNTHETIC_INDEX.md is stale\n[ELIFECYCLE] Command failed with exit code 1.\n${"full output\n".repeat(600)}`,
+  diagnostics: ["docs/SYNTHETIC_INDEX.md is stale"],
+};
+
+async function gateCorrectionFixture(
+  afterMirror = false,
+  refresh = false,
+  provided?: Awaited<ReturnType<typeof fixture>>,
+  staleness = false,
+) {
+  const f = provided ?? (await fixture());
   if (refresh) await f.advanceMain();
   await f.saveAttempt();
   const gates: { head: string; gate: string; directory: string }[] = [];
   const controls: { head: string; main: string; gate: string }[] = [];
   let cause: "candidate" | "base" | "host" | "unknown" = "candidate";
   let secondGate: string | undefined;
+  const failing = staleness ? staleArtifact.gate : "test";
   const plan = f.policy.plan;
   f.policy.plan = async (current) => {
     const value = await plan(current);
     value.gates = afterMirror
-      ? { beforeMirror: ["typecheck"], afterMirror: ["planning:board-check", "test"] }
-      : { beforeMirror: ["typecheck", "test"], afterMirror: ["planning:board-check"] };
+      ? { beforeMirror: ["typecheck"], afterMirror: ["planning:board-check", failing] }
+      : { beforeMirror: ["typecheck", failing], afterMirror: ["planning:board-check"] };
     return value;
   };
+  const runGate = f.delivery.runGate;
   f.delivery.runGate = async (current, gate, head) => {
     gates.push({ head, gate, directory: current.stateDirectory });
     const corrected = (await readFile(resolve(f.sourceTree, "feature.txt"), "utf8")).includes(
       "fixed",
     );
-    if ((!corrected && gate === "test") || (corrected && gate === secondGate)) {
+    if ((!corrected && gate === failing) || (corrected && gate === secondGate)) {
       const log = resolve(current.stateDirectory, "full-gate.log");
       await writeFile(
         log,
-        `FAIL feature.test.ts > preserves behavior\nAssertionError: wrong value\n${"full output\n".repeat(600)}`,
+        staleness
+          ? staleArtifact.log
+          : `FAIL feature.test.ts > preserves behavior\nAssertionError: wrong value\n${"full output\n".repeat(600)}`,
         { flag: "wx" },
       );
       return {
         status: "failed",
-        output: "AssertionError: wrong value",
+        output: staleness ? staleArtifact.output : "AssertionError: wrong value",
         evidence: {
           head,
           command: {
@@ -2201,11 +2801,13 @@ async function gateCorrectionFixture(afterMirror = false, refresh = false) {
           },
           log,
           cause: "diagnostic",
-          diagnostics: ["feature.test.ts > preserves behavior"],
+          diagnostics: staleness
+            ? staleArtifact.diagnostics
+            : ["feature.test.ts > preserves behavior"],
         },
       };
     }
-    return "passed";
+    return gate === "planning:board-check" ? runGate(current, gate, head) : "passed";
   };
   f.delivery.attributeGate = async (_config, gate, failure, main) => {
     controls.push({ head: failure.head, main, gate });
@@ -2323,6 +2925,54 @@ it.each(["base", "host", "unknown"] as const)(
     expect(f.authorPrompts).toEqual([]);
     expect(f.controls).toHaveLength(1);
     expect(f.publications()).toBe(0);
+    await expect(readFile(resolve(f.sourceState, "gate-correction.json"))).rejects.toThrow();
+  },
+);
+
+it("corrects a recognized generated-artifact staleness failure once with fresh DELTA review", async () => {
+  const f = await gateCorrectionFixture(false, false, undefined, true);
+  await expect(f.run()).resolves.toMatchObject({ status: "observing-author" });
+  const capture = JSON.parse(
+    await readFile(resolve(f.sourceState, "gate-correction.json"), "utf8"),
+  );
+  expect(capture.gate).toBe("verify:static:scoped");
+  expect(f.controls).toEqual([
+    { head: capture.failedHead, main: capture.main, gate: "verify:static:scoped" },
+  ]);
+  f.setRunning(true);
+  await expect(f.run()).resolves.toMatchObject({ status: "observing-author" });
+  await expect(f.run()).resolves.toMatchObject({ status: "observing-author" });
+  expect(f.authorPrompts).toHaveLength(1);
+  expect(f.authorPrompts[0]).toContain(JSON.stringify(staleArtifact.diagnostics));
+  expect(f.authorPrompts[0]).toContain(capture.failedHead);
+  f.setRunning(false);
+  f.setReviewRunning(true);
+  await expect(f.run()).resolves.toMatchObject({ status: "observing-reviewer" });
+  f.setReviewRunning(false);
+  await expect(f.run()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+  expect(f.prompts.at(-1)).toContain("Independent DELTA review");
+  expect(f.authorPrompts).toHaveLength(1);
+  const corrected = await f.git(f.sourceTree, ["rev-parse", "HEAD"]);
+  expect(f.gates.filter((gate) => gate.head === corrected).map((gate) => gate.gate)).toEqual([
+    "typecheck",
+    "verify:static:scoped",
+    "planning:board-check",
+  ]);
+  expect(f.controls).toHaveLength(1);
+});
+
+it.each(["base", "host", "unknown"] as const)(
+  "stops %s scoped static attribution without correction, publication or parking",
+  async (cause) => {
+    const f = await gateCorrectionFixture(false, false, undefined, true);
+    f.setCause(cause);
+    const reason = `gate-${cause === "base" ? "base-failed" : cause === "host" ? "host-failed" : "attribution-unknown"}:verify:static:scoped`;
+    await expect(f.run()).rejects.toMatchObject({ reason });
+    await expect(f.run()).rejects.toMatchObject({ reason });
+    expect(f.authorPrompts).toEqual([]);
+    expect(f.controls).toHaveLength(1);
+    expect(f.publications()).toBe(0);
+    expect(isItemStopReason(reason)).toBe(false);
     await expect(readFile(resolve(f.sourceState, "gate-correction.json"))).rejects.toThrow();
   },
 );

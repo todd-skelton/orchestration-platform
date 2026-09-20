@@ -23,6 +23,8 @@ import type { Config } from "../../scripts/dogfood/flow.js";
 import { parseReview } from "../../scripts/dogfood/repair-policy.mjs";
 import overlengthReview from "./fixtures/iss-150-overlength.json" with { type: "json" };
 import prefixedReview from "./fixtures/iss-150-prefixed.json" with { type: "json" };
+import prefixedAuthor from "./fixtures/iss-177-prefixed-author.json" with { type: "json" };
+import overlengthAuthor from "./fixtures/iss-183-overlength-author.json" with { type: "json" };
 
 const id = "01a048fe-90c8-7cb3-8da5-938c1f5cb5f0",
   head = "b".repeat(40);
@@ -991,15 +993,240 @@ it.each([
     "malformed-worker-verdict",
   );
 });
-it("continues requiring an author verdict to occupy the whole final message", () => {
+it("accepts plain and prefixed author verdicts", () => {
   const events = structuredClone(rows);
   const verdict = { run: config.run, role: "author", head, verdict: "PASS", summary: "" };
   events[1]!.item!.text = JSON.stringify(verdict);
   expect(parseTrace(trace(events), true, "author", config).status).toBe("passed");
   events[1]!.item!.text = `Work complete.\n${JSON.stringify(verdict)}`;
+  expect(parseTrace(trace(events), true, "author", config).status).toBe("passed");
+});
+// Minimal verbatim events from the ISS-177 retained author trace, SHA-256
+// ba416b2bb60792af25adca761ca6f8426861377515442491cd30e116eda6f37c.
+it("parses the recorded 2560-character author message through the real observer", async () => {
+  const message = prefixedAuthor[1]!.item!.text;
+  const verdict = JSON.parse(message.slice(message.indexOf("{")));
+  const recordedConfig = { ...config, run: verdict.run };
+  expect(message).toHaveLength(2560);
+  expect(verdict.summary).toHaveLength(1068);
+  const terminal = parseTrace(trace(prefixedAuthor), true, "author", recordedConfig);
+  expect(terminal).toEqual({
+    id: prefixedAuthor[0]!.thread_id,
+    status: "passed",
+    head: "804e9357a88868daab31b211966f645baeca6c02",
+    summary: verdict.summary,
+    usage: prefixedAuthor[2]!.usage,
+  });
+  const root = await realpath(await mkdtemp(resolve(tmpdir(), "dogfood-author-prefix-")));
+  cleanup.push(root);
+  const attempt = {
+    id: terminal.id,
+    pid: 999_999,
+    trace: resolve(root, "author.jsonl"),
+    launchedAt: 1,
+  };
+  await writeFile(attempt.trace, trace(prefixedAuthor));
+  await writeFile(resolve(root, "author.exit.json"), JSON.stringify({ code: 0 }));
+  await expect(codexAdapter().observe("author", recordedConfig, attempt)).resolves.toEqual(
+    terminal,
+  );
+});
+
+const authorVerdict = { run: config.run, role: "author", head, verdict: "PASS", summary: "" };
+// Minimal verbatim events from author-dc931f49 in ISS-182, trace SHA-256
+// 54596454139b7ffe47f52d9459c9f0a6a4e3c71e0f31ef46745abe3f6c307d5e.
+it.each([2079, 2000, 2001])("observes the author summary boundary: %i", async (length) => {
+  const events = structuredClone(overlengthAuthor);
+  const verdict = JSON.parse(events[1]!.item!.text);
+  expect(events[1]!.item!.text).toHaveLength(2225);
+  expect(verdict.summary).toHaveLength(2079);
+  if (length !== 2079) {
+    events[0]!.thread_id = "00000000-0000-4000-8000-000000000183";
+    Object.assign(verdict, { run: "synthetic-author-length", head, summary: "x".repeat(length) });
+    events[1]!.item!.text = `Synthetic prefix.\n${JSON.stringify(verdict)}`;
+  }
+  const root = await realpath(await mkdtemp(resolve(tmpdir(), "dogfood-author-length-")));
+  cleanup.push(root);
+  const attempt = {
+    id: events[0]!.thread_id!,
+    pid: process.pid,
+    trace: resolve(root, "author.jsonl"),
+    launchedAt: 1,
+  };
+  const current = {
+    ...config,
+    run: verdict.run,
+    worktree: resolve(import.meta.dirname, "../.."),
+  };
+  await writeFile(attempt.trace, trace(events));
+  await writeFile(resolve(root, "author.exit.json"), JSON.stringify({ code: 0 }));
+  if (length === 2000) {
+    await expect(codexAdapter().observe("author", current, attempt)).resolves.toMatchObject({
+      status: "passed",
+      summary: verdict.summary,
+      head,
+    });
+  } else {
+    const diagnostic = `Author summary length is ${length} characters; maximum is 2000. Inspect and verify the work, then return a valid verdict with a shorter summary.`;
+    expect(() => parseTrace(trace(events), true, "author", current, attempt.id)).toThrow(
+      "malformed-worker-verdict",
+    );
+    await expect(codexAdapter().observe("author", current, attempt)).resolves.toMatchObject({
+      id: attempt.id,
+      status: "malformed",
+      summary: diagnostic,
+      usage: events[2]!.usage,
+    });
+    expect(diagnostic.length).toBeLessThan(2000);
+  }
+});
+it.each([
+  "thread",
+  "run",
+  "role",
+  "incomplete",
+  "failed-turn",
+  "no-completion",
+  "FAIL",
+  "wrong-head",
+])("keeps real author observation distinct from malformed transport: %s", async (mode) => {
+  const root = await realpath(await mkdtemp(resolve(tmpdir(), "dogfood-author-control-")));
+  cleanup.push(root);
+  const syntheticId = "00000000-0000-4000-8000-000000000183";
+  const verdict = { ...authorVerdict, summary: "x".repeat(2001) };
+  if (mode === "run") verdict.run = "synthetic-wrong-run";
+  if (mode === "role") verdict.role = "reviewer";
+  if (mode === "FAIL" || mode === "wrong-head") {
+    verdict.summary = "Synthetic valid verdict.";
+    if (mode === "FAIL") verdict.verdict = "FAIL";
+    else verdict.head = "e".repeat(40);
+  }
+  const events: unknown[] = [
+    { type: "thread.started", thread_id: syntheticId },
+    { type: "item.completed", item: { type: "agent_message", text: JSON.stringify(verdict) } },
+  ];
+  if (mode === "failed-turn") events.push({ type: "turn.failed" });
+  else if (mode !== "no-completion") events.push({ type: "turn.completed" });
+  const attempt = {
+    id: mode === "thread" ? id : syntheticId,
+    pid: process.pid,
+    trace: resolve(root, "author.jsonl"),
+    launchedAt: Date.now(),
+  };
+  await writeFile(attempt.trace, trace(events));
+  if (mode !== "incomplete")
+    await writeFile(resolve(root, "author.exit.json"), JSON.stringify({ code: 0 }));
+  const observed = codexAdapter().observe("author", config, attempt);
+  if (mode === "thread") await expect(observed).rejects.toThrow("attempt-identity-changed");
+  else if (mode === "run" || mode === "role")
+    await expect(observed).rejects.toThrow("worker-verdict-identity-mismatch");
+  else if (mode === "no-completion")
+    await expect(observed).rejects.toThrow("missing-successful-terminal");
+  else
+    await expect(observed).resolves.toMatchObject({
+      status:
+        mode === "incomplete"
+          ? "running"
+          : mode === "failed-turn"
+            ? "dead"
+            : mode === "FAIL"
+              ? "failed"
+              : "passed",
+      ...(mode === "wrong-head" ? { head: verdict.head } : {}),
+    });
+});
+function authorEvents(message = `Work complete.\n${JSON.stringify(authorVerdict)}`) {
+  const events = structuredClone(rows);
+  events[1]!.item!.text = message;
+  return events;
+}
+it.each([
+  ["two verdicts", (object: string) => `${object}\n${object}`],
+  ["earlier non-verdict object", (object: string) => `{}\nWork complete.\n${object}`],
+  ["trailing prose", (object: string) => `${object}\nDone.`],
+  ["absent verdict", () => "Work complete. PASS."],
+  ["malformed JSON", (object: string) => object.slice(0, -1)],
+] as const)("rejects author framing with %s", (_name, frame) => {
+  expect(() =>
+    parseTrace(trace(authorEvents(frame(JSON.stringify(authorVerdict)))), true, "author", config),
+  ).toThrow("malformed-worker-verdict");
+});
+it.each([
+  { extra: true },
+  ...Object.keys(authorVerdict).map((key) => ({ [key]: undefined })),
+  { run: 1 },
+  { run: "other" },
+  { role: 1 },
+  { role: "reviewer" },
+  { head: 1 },
+  { head: null },
+  { head: "invalid" },
+  { verdict: 1 },
+  { verdict: "MAYBE" },
+  { summary: 1 },
+  { summary: null },
+  { summary: [] },
+])("retains strict author validation with a prefix (%j)", (invalid) => {
+  const events = authorEvents(
+    `Work complete.\n${JSON.stringify({ ...authorVerdict, ...invalid })}`,
+  );
   expect(() => parseTrace(trace(events), true, "author", config)).toThrow(
     "malformed-worker-verdict",
   );
+});
+it.each([2000, 2001])("enforces only the author summary cap at %i characters", (length) => {
+  const events = authorEvents(
+    `Work complete.\n${JSON.stringify({ ...authorVerdict, summary: "x".repeat(length) })}`,
+  );
+  const parse = () => parseTrace(trace(events), true, "author", config);
+  if (length === 2000) expect(parse().summary).toBe("x".repeat(length));
+  else expect(parse).toThrow("malformed-worker-verdict");
+});
+it("retains completion, identity, last-message and FAIL semantics for prefixed authors", () => {
+  const events = authorEvents();
+  expect(parseTrace(trace(events), false, "author", config, id).status).toBe("running");
+  expect(parseTrace(trace(events), true, "author", config, id, true).status).toBe("dead");
+  expect(() => parseTrace(trace(events), true, "author", config, "other")).toThrow(
+    "attempt-identity-changed",
+  );
+  for (const invalid of [
+    events.slice(0, 2),
+    [...events, events[2]],
+    [...events, { type: "turn.failed" }],
+  ])
+    expect(() => parseTrace(trace(invalid), true, "author", config, id)).toThrow(
+      "missing-successful-terminal",
+    );
+  for (const invalid of [events.slice(1), [events[0], ...events]])
+    expect(() => parseTrace(trace(invalid), true, "author", config, id)).toThrow(
+      "missing-or-ambiguous-thread-identity",
+    );
+  expect(
+    parseTrace(trace([events[0], { type: "turn.failed" }]), true, "author", config, id).status,
+  ).toBe("dead");
+  const fail = authorEvents(
+    `Work complete.\n${JSON.stringify({ ...authorVerdict, verdict: "FAIL", summary: "Unfinished." })}`,
+  )[1]!;
+  expect(
+    parseTrace(trace([events[0], events[1], fail, events[2]]), true, "author", config, id),
+  ).toMatchObject({ status: "failed", summary: "Unfinished." });
+  expect(
+    parseTrace(trace([events[0], fail, events[1], events[2]]), true, "author", config, id).status,
+  ).toBe("passed");
+  expect(() =>
+    parseTrace(
+      trace([
+        events[0],
+        events[1],
+        { type: "item.completed", item: { type: "agent_message", text: "Unfinished." } },
+        events[2],
+      ]),
+      true,
+      "author",
+      config,
+      id,
+    ),
+  ).toThrow("malformed-worker-verdict");
 });
 it.skipIf(process.env.GITHUB_ACTIONS !== "true")(
   "loads the adapter in a hosted child Node process with its native TypeScript imports",
@@ -1224,7 +1451,8 @@ it.each([
 const cleanup: string[] = [];
 afterEach(async () => {
   vi.unstubAllEnvs();
-  for (const root of cleanup.splice(0)) await rm(root, { recursive: true, force: true });
+  for (const root of cleanup.splice(0))
+    await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
 });
 it("filters the actual controller-to-observer child environment", async () => {
   const root = await realpath(await mkdtemp(resolve(tmpdir(), "dogfood-process-")));
