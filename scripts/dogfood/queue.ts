@@ -912,6 +912,28 @@ export async function queueConfigFromLoop(
       attempt = { ...attempt, phase: "failed" };
       await record(priorQueue, "attempt", attempt);
     }
+    // ISS-195: a parked delivery-phase refresh DELTA FAIL consumes its attempt once, at
+    // the head the reviewer read and with that reviewer's prescribed findings.
+    const refreshFailure = await pinnedRefreshFailure(
+      config,
+      selected,
+      sourceAttempt,
+      priorQueue,
+      attempt,
+    );
+    if (refreshFailure) {
+      attempt = {
+        ...attempt,
+        phase: "failed",
+        head: refreshFailure.head,
+        reviewId: refreshFailure.reviewId,
+        findings: refreshFailure.findings,
+        history: refreshFailure.history,
+        acceptedStage: null,
+        stateDirectory: null,
+      };
+      await record(priorQueue, "attempt", attempt);
+    }
     if (attempt === ABSENT || attempt.phase !== "failed") break;
     demand(!conflictContinuation, "continuation-failed");
     validateFailedAttempt(attempt, sourceAttempt, config.attemptCeiling);
@@ -1570,6 +1592,156 @@ async function pinnedRepairFailure(
   )
     return undefined;
   return { terminal, mainBase: repair.config.mainBase as string };
+}
+
+// ISS-195: observe a parked delivery-phase refresh DELTA FAIL from its retained
+// worker records. The refresh origin follows the delivery adapter's own resolution:
+// the accepted stage, its admitted ISS-157 continuation, then any gate correction.
+async function pinnedRefreshFailure(
+  config: LoopConfig,
+  selected: SelectedLoopIssue,
+  number: number,
+  directory: string,
+  attempt: AttemptRecord | typeof ABSENT,
+) {
+  const issue = `https://github.com/${config.repository}/issues/${selected.number}`;
+  if (
+    config.acceptedReplan ||
+    attempt === ABSENT ||
+    attempt.phase !== "delivery" ||
+    attempt.run !== config.run ||
+    attempt.issue !== issue ||
+    attempt.item !== `${selected.key}:${number}` ||
+    !attempt.acceptedStage ||
+    attempt.candidateAttempt !== number + (attempt.acceptedStage === "repair" ? 1 : 0) ||
+    attempt.stateDirectory !== resolve(directory, attempt.acceptedStage) ||
+    typeof attempt.reviewId !== "string"
+  )
+    return undefined;
+  const sourceDirectory = resolve(directory, "source");
+  const accepted = attempt.stateDirectory;
+  const [source, pinned, candidate, reviewed] = await Promise.all([
+    optionalRecord(sourceDirectory, "config"),
+    optionalRecord(accepted, "config"),
+    optionalRecord(accepted, "candidate"),
+    optionalRecord(accepted, "reviewer-terminal"),
+  ]);
+  if (
+    [source, pinned, candidate, reviewed].includes(ABSENT) ||
+    !source.config ||
+    !pinned.config ||
+    [source.config, pinned.config].some(
+      (pin) =>
+        pin.run !== config.run || pin.repository !== config.repository || pin.issue !== issue,
+    ) ||
+    source.config.stateDirectory !== sourceDirectory ||
+    source.config.base !== attempt.base ||
+    pinned.config.stateDirectory !== accepted ||
+    candidate.head !== attempt.head ||
+    reviewed.id !== attempt.reviewId ||
+    reviewed.status !== "passed" ||
+    reviewed.head !== attempt.head
+  )
+    return undefined;
+  let origin = accepted;
+  let stopDirectory = accepted;
+  if ((await optionalRecord(accepted, "gate-stop")) !== ABSENT) {
+    if ((await optionalRecord(accepted, "gate-stop-continuation")) === ABSENT) return undefined;
+    origin = stopDirectory = resolve(accepted, "gate-stop-continuation");
+  }
+  const correction = await optionalRecord(origin, "gate-correction");
+  if (correction !== ABSENT) {
+    if (typeof correction.directory !== "string") return undefined;
+    origin = correction.directory;
+  }
+  // An origin gate stop can only reject; park authority is the run-scope stop below.
+  for (const path of new Set([origin, stopDirectory])) {
+    const stop = await optionalRecord(path, "gate-stop");
+    if (stop !== ABSENT && stop.reason !== "refresh-review-failed") return undefined;
+  }
+  const refresh = await optionalRecord(origin, "native-refresh");
+  if (refresh === ABSENT || !SHA.test(refresh.head) || typeof refresh.directory !== "string")
+    return undefined;
+  const [reviewer, terminal] = await Promise.all([
+    optionalRecord(refresh.directory, "reviewer-attempt"),
+    optionalRecord(refresh.directory, "reviewer-terminal"),
+  ]);
+  if (
+    reviewer === ABSENT ||
+    terminal === ABSENT ||
+    typeof reviewer.id !== "string" ||
+    terminal.id !== reviewer.id ||
+    terminal.status !== "failed" ||
+    terminal.head !== refresh.head
+  )
+    return undefined;
+  let review: ValidatedReview;
+  try {
+    review = parseReview(terminal.summary, config.run, refresh.head);
+  } catch (error) {
+    if (error instanceof RepairBlocked) return undefined;
+    throw error;
+  }
+  if (review.verdict === "PASS") return undefined;
+  for (const path of new Set([accepted, origin, refresh.directory]))
+    if (
+      (await optionalRecord(path, "publication")) !== ABSENT ||
+      (await optionalRecord(path, "publication-intent")) !== ABSENT
+    )
+      return undefined;
+  const history = await readQueueHistory({
+    stateDirectory: directory,
+    nativeLaunchCeiling: config.nativeLaunchCeiling,
+    initialHistory: [],
+  });
+  const latest = history.findLast((p) => p.item === attempt.item);
+  if (
+    !latest ||
+    latest.id !== reviewer.id ||
+    latest.stage !== "refresh" ||
+    latest.role !== "reviewer" ||
+    latest.outcome !== "failed"
+  )
+    return undefined;
+  // The most recent completed run-scope item stop for this key at this candidate.
+  const runState = dirname(directory);
+  let parked: { cycle: number; stop: number; intent: Record<string, any> } | undefined;
+  for (const name of await readdir(runState)) {
+    const match = /^cycle-(\d+)-stop-(\d+)\.json$/.exec(name);
+    if (!match) continue;
+    const cycle = Number(match[1]);
+    const stop = Number(match[2]);
+    if (parked && (parked.cycle > cycle || (parked.cycle === cycle && parked.stop > stop)))
+      continue;
+    const intent = await optionalRecord(runState, name.slice(0, -".json".length));
+    if (
+      intent === ABSENT ||
+      intent.selection?.key !== selected.key ||
+      intent.reason !== "refresh-review-failed" ||
+      intent.attempts !== attempt.candidateAttempt
+    )
+      continue;
+    parked = { cycle, stop, intent };
+  }
+  if (!parked) return undefined;
+  const completed = await optionalRecord(
+    runState,
+    `cycle-${parked.cycle}-stop-${parked.stop}-complete`,
+  );
+  if (
+    completed === ABSENT ||
+    parked.intent.selection.number !== selected.number ||
+    parked.intent.marker !== `loop-stop:${config.run}:${parked.cycle}:${parked.stop}` ||
+    completed.stop !== parked.stop ||
+    JSON.stringify(completed.selection) !== JSON.stringify(parked.intent.selection)
+  )
+    return undefined;
+  return {
+    head: refresh.head as string,
+    reviewId: reviewer.id as string,
+    findings: review.findings,
+    history,
+  };
 }
 
 export async function readQueueHistory(
