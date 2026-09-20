@@ -503,9 +503,6 @@ does not validate it.
 A `QUALITY_PROFILE` line or Quality Packet belongs to the Chase Sets delivery
 skill; self drafts do not carry it, and a platform reviewer verifies every
 packet claim independently and never adopts one as evidence.
-For ISS-174's tag removal, closed drafts remain unchanged history; after landing,
-the operator syncs the edited open drafts' GitHub issue bodies, with
-`pnpm planning:board-check` semantics unchanged.
 
 `## Done when` accepts unordered `-`, `*`, or `+` items or ordinary top-level
 `N.` ordered items, with indented continuation lines. The self adapter consumes
