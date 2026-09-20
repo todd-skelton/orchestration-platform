@@ -1376,10 +1376,15 @@ it("derives nothing across calls: every mutated fact is reread live by the next 
   await owner(async () => {
     const foreign = resolve(repositoryRoot, "..", "foreign-review");
     await git(["clone", "--quiet", "--local", repositoryRoot, foreign], repositoryRoot);
-    await writeFile(
-      resolve(current.reviewWorktree, ".git"),
-      `gitdir: ${resolve(foreign, ".git").replaceAll("\\", "/")}\n`,
-    );
+    // Git for Windows creates the gitfile hidden, so it is truncated in place rather than
+    // recreated: `writeFile` would fail there with EPERM.
+    const gitfile = await open(resolve(current.reviewWorktree, ".git"), "r+");
+    try {
+      await gitfile.truncate(0);
+      await gitfile.writeFile(`gitdir: ${resolve(foreign, ".git").replaceAll("\\", "/")}\n`);
+    } finally {
+      await gitfile.close();
+    }
   }, [["rev-parse", "--git-common-dir"], current.reviewWorktree]);
   expect(commands.gh).not.toHaveBeenCalled();
   expect(commands.ghJson).not.toHaveBeenCalled();
