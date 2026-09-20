@@ -49,6 +49,7 @@ import { selfPlanFromSnapshots, requiredChecks } from "../../adapters/self.mjs";
 import * as self from "../../adapters/self.mjs";
 import { candidatePlanningBase } from "../../scripts/planning/candidate-board.mjs";
 import { repositoryDeliveryPolicy } from "../../scripts/dogfood/repository-adapter.mjs";
+import { isItemStopReason } from "../../scripts/dogfood/supervision.js";
 
 vi.mock("../../scripts/planning/board-check.mjs", async (original) => ({
   ...(await original<object>()),
@@ -2743,10 +2744,19 @@ it("retains the delta reviewer retry across queue resume", async () => {
   ]);
 });
 
+// ISS-192: the recognized scoped static staleness failure, as the adapter returns it.
+const staleArtifact = {
+  gate: "verify:static:scoped",
+  output: "Error: docs/SYNTHETIC_INDEX.md is stale",
+  log: `[VERIFY_STATIC_RUN] check:synthetic-artifact-index\n$ node ./scripts/generate-synthetic-alpha-index.mjs --check\nError: docs/SYNTHETIC_INDEX.md is stale\n[ELIFECYCLE] Command failed with exit code 1.\n${"full output\n".repeat(600)}`,
+  diagnostics: ["docs/SYNTHETIC_INDEX.md is stale"],
+};
+
 async function gateCorrectionFixture(
   afterMirror = false,
   refresh = false,
   provided?: Awaited<ReturnType<typeof fixture>>,
+  staleness = false,
 ) {
   const f = provided ?? (await fixture());
   if (refresh) await f.advanceMain();
@@ -2755,12 +2765,13 @@ async function gateCorrectionFixture(
   const controls: { head: string; main: string; gate: string }[] = [];
   let cause: "candidate" | "base" | "host" | "unknown" = "candidate";
   let secondGate: string | undefined;
+  const failing = staleness ? staleArtifact.gate : "test";
   const plan = f.policy.plan;
   f.policy.plan = async (current) => {
     const value = await plan(current);
     value.gates = afterMirror
-      ? { beforeMirror: ["typecheck"], afterMirror: ["planning:board-check", "test"] }
-      : { beforeMirror: ["typecheck", "test"], afterMirror: ["planning:board-check"] };
+      ? { beforeMirror: ["typecheck"], afterMirror: ["planning:board-check", failing] }
+      : { beforeMirror: ["typecheck", failing], afterMirror: ["planning:board-check"] };
     return value;
   };
   const runGate = f.delivery.runGate;
@@ -2769,16 +2780,18 @@ async function gateCorrectionFixture(
     const corrected = (await readFile(resolve(f.sourceTree, "feature.txt"), "utf8")).includes(
       "fixed",
     );
-    if ((!corrected && gate === "test") || (corrected && gate === secondGate)) {
+    if ((!corrected && gate === failing) || (corrected && gate === secondGate)) {
       const log = resolve(current.stateDirectory, "full-gate.log");
       await writeFile(
         log,
-        `FAIL feature.test.ts > preserves behavior\nAssertionError: wrong value\n${"full output\n".repeat(600)}`,
+        staleness
+          ? staleArtifact.log
+          : `FAIL feature.test.ts > preserves behavior\nAssertionError: wrong value\n${"full output\n".repeat(600)}`,
         { flag: "wx" },
       );
       return {
         status: "failed",
-        output: "AssertionError: wrong value",
+        output: staleness ? staleArtifact.output : "AssertionError: wrong value",
         evidence: {
           head,
           command: {
@@ -2788,7 +2801,9 @@ async function gateCorrectionFixture(
           },
           log,
           cause: "diagnostic",
-          diagnostics: ["feature.test.ts > preserves behavior"],
+          diagnostics: staleness
+            ? staleArtifact.diagnostics
+            : ["feature.test.ts > preserves behavior"],
         },
       };
     }
@@ -2910,6 +2925,54 @@ it.each(["base", "host", "unknown"] as const)(
     expect(f.authorPrompts).toEqual([]);
     expect(f.controls).toHaveLength(1);
     expect(f.publications()).toBe(0);
+    await expect(readFile(resolve(f.sourceState, "gate-correction.json"))).rejects.toThrow();
+  },
+);
+
+it("corrects a recognized generated-artifact staleness failure once with fresh DELTA review", async () => {
+  const f = await gateCorrectionFixture(false, false, undefined, true);
+  await expect(f.run()).resolves.toMatchObject({ status: "observing-author" });
+  const capture = JSON.parse(
+    await readFile(resolve(f.sourceState, "gate-correction.json"), "utf8"),
+  );
+  expect(capture.gate).toBe("verify:static:scoped");
+  expect(f.controls).toEqual([
+    { head: capture.failedHead, main: capture.main, gate: "verify:static:scoped" },
+  ]);
+  f.setRunning(true);
+  await expect(f.run()).resolves.toMatchObject({ status: "observing-author" });
+  await expect(f.run()).resolves.toMatchObject({ status: "observing-author" });
+  expect(f.authorPrompts).toHaveLength(1);
+  expect(f.authorPrompts[0]).toContain(JSON.stringify(staleArtifact.diagnostics));
+  expect(f.authorPrompts[0]).toContain(capture.failedHead);
+  f.setRunning(false);
+  f.setReviewRunning(true);
+  await expect(f.run()).resolves.toMatchObject({ status: "observing-reviewer" });
+  f.setReviewRunning(false);
+  await expect(f.run()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+  expect(f.prompts.at(-1)).toContain("Independent DELTA review");
+  expect(f.authorPrompts).toHaveLength(1);
+  const corrected = await f.git(f.sourceTree, ["rev-parse", "HEAD"]);
+  expect(f.gates.filter((gate) => gate.head === corrected).map((gate) => gate.gate)).toEqual([
+    "typecheck",
+    "verify:static:scoped",
+    "planning:board-check",
+  ]);
+  expect(f.controls).toHaveLength(1);
+});
+
+it.each(["base", "host", "unknown"] as const)(
+  "stops %s scoped static attribution without correction, publication or parking",
+  async (cause) => {
+    const f = await gateCorrectionFixture(false, false, undefined, true);
+    f.setCause(cause);
+    const reason = `gate-${cause === "base" ? "base-failed" : cause === "host" ? "host-failed" : "attribution-unknown"}:verify:static:scoped`;
+    await expect(f.run()).rejects.toMatchObject({ reason });
+    await expect(f.run()).rejects.toMatchObject({ reason });
+    expect(f.authorPrompts).toEqual([]);
+    expect(f.controls).toHaveLength(1);
+    expect(f.publications()).toBe(0);
+    expect(isItemStopReason(reason)).toBe(false);
     await expect(readFile(resolve(f.sourceState, "gate-correction.json"))).rejects.toThrow();
   },
 );

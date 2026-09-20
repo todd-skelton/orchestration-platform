@@ -503,6 +503,271 @@ it("recognizes complete assertion identities but rejects incomplete and mixed te
   ).toEqual(["feature.ts"]);
 });
 
+// ISS-192: the Chase Sets scoped static gate's generated-artifact staleness throws.
+function staticBlock(producer: string, artifact: string, state: "stale" | "missing") {
+  return [
+    "[VERIFY_STATIC_RUN] check:synthetic-artifact-index",
+    `$ node ./scripts/${producer} --check`,
+    `file:///synthetic/scripts/${producer}:90`,
+    "    throw new Error(`${relative} is " + state + "`);",
+    "          ^",
+    "",
+    `Error: ${artifact} is ${state}`,
+    `    at checkExpectedFile (file:///synthetic/scripts/${producer}:90:11)`,
+    `    at async main (file:///synthetic/scripts/${producer}:122:18)`,
+    "",
+    "Node.js v24.15.0",
+    "[ELIFECYCLE] Command failed with exit code 1.",
+    "[ELIFECYCLE] Command failed with exit code 1.",
+    "",
+  ].join("\n");
+}
+
+const staticPrefix =
+  "[SKIPPED-BY-SCOPE] check:synthetic-budget: packages/synthetic/**\n[VERIFY_STATIC_SCOPE] scanned=2/3; skipped=1; excluded=0; changed=4; source=git merge-base.\n[VERIFY_STATIC_RUN] check:synthetic-inventory\n$ node ./scripts/check-synthetic-inventory.mjs\nSynthetic inventory covers all modules.\n";
+
+it("recognizes generated-artifact staleness only when the failing static block is wholly accounted for", () => {
+  const stale =
+    staticPrefix +
+    staticBlock("generate-synthetic-alpha-index.mjs", "docs/SYNTHETIC_INDEX.md", "stale");
+  expect(gateDiagnostics("verify:static:scoped", stale)).toEqual([
+    "docs/SYNTHETIC_INDEX.md is stale",
+  ]);
+  expect(
+    gateDiagnostics(
+      "verify:static:scoped",
+      staticPrefix +
+        staticBlock(
+          "generate-synthetic-beta-manifest.mjs",
+          "docs/SYNTHETIC_MANIFEST.md",
+          "missing",
+        ),
+    ),
+  ).toEqual(["docs/SYNTHETIC_MANIFEST.md is missing"]);
+  expect(
+    gateDiagnostics(
+      "verify:static:scoped",
+      staticPrefix +
+        "[VERIFY_STATIC_RUN] check:synthetic-artifact-index\n$ node ./scripts/generate-synthetic-beta-manifest.mjs --check\ndocs/SYNTHETIC_MANIFEST.md is missing\ndocs/SYNTHETIC_INDEX.md is stale\n[ELIFECYCLE] Command failed with exit code 1.\n",
+    ),
+  ).toEqual(["docs/SYNTHETIC_MANIFEST.md is missing", "docs/SYNTHETIC_INDEX.md is stale"]);
+  // The retained cs-3779:1 shape.
+  expect(
+    gateDiagnostics(
+      "verify:static:scoped",
+      staticPrefix +
+        staticBlock(
+          "generate-design-system-component-index.mjs",
+          "packages/design-system/COMPONENT_INDEX.md",
+          "stale",
+        ),
+    ),
+  ).toEqual(["packages/design-system/COMPONENT_INDEX.md is stale"]);
+  expect(gateDiagnostics("verify:static:scoped", "\u001b[31m" + stale + "\u001b[0m")).toEqual([
+    "docs/SYNTHETIC_INDEX.md is stale",
+  ]);
+  for (const unknown of [
+    // An additional failing check inside the final block.
+    stale.replace(
+      "Node.js v24.15.0",
+      "Node.js v24.15.0\nSynthetic budget exceeded: 3 raw elements",
+    ),
+    // An unrecognized tail after the lifecycle lines.
+    stale + "unexpected trailing runner text\n",
+    // A later block that is not a generated-artifact throw.
+    stale +
+      "[VERIFY_STATIC_RUN] check:synthetic-budget\n$ node ./scripts/check-synthetic-budget.mjs\n[ELIFECYCLE] Command failed with exit code 1.\n",
+    // No `generate-*.mjs --check` producer echoed the diagnostic.
+    stale.replace(
+      "$ node ./scripts/generate-synthetic-alpha-index.mjs --check",
+      "$ node ./scripts/check-synthetic-index.mjs",
+    ),
+    // A throw frame without its caret.
+    stale.replace("          ^\n", ""),
+    // Producer prose after the shape, an absolute path, and no marker at all.
+    stale.replace("is stale\n", "is stale. Run pnpm run generate:synthetic-alpha-index.\n"),
+    stale.replace("Error: docs/SYNTHETIC_INDEX.md", "Error: /synthetic/docs/SYNTHETIC_INDEX.md"),
+    stale.replaceAll("[VERIFY_STATIC_RUN] ", ""),
+    // Timeouts, resource failures and fatal runner errors keep the existing guard.
+    stale.replace(
+      "Node.js v24.15.0",
+      "Error: check:synthetic-artifact-index timed out after 30000ms",
+    ),
+    stale + "FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory\n",
+    stale + "[ELIFECYCLE] Command failed with signal SIGKILL.\n",
+  ])
+    expect(gateDiagnostics("verify:static:scoped", unknown)).toEqual([]);
+  for (const other of ["typecheck", "format:check", "test"])
+    expect(gateDiagnostics(other, stale)).toEqual([]);
+});
+
+it.each([
+  ["candidate", "candidate"],
+  ["vacuous", "unknown"],
+  ["base", "base"],
+  ["extra", "unknown"],
+  ["tail", "unknown"],
+  ["timeout", "unknown"],
+  ["resource", "unknown"],
+  ["uncommitted", "unknown"],
+])(
+  "attributes scoped static generated-artifact staleness %s through a non-vacuous base control",
+  async (mode, expected) => {
+    const { current, git } = await repositoryFixture(
+      "https://github.com/todd-skelton/orchestration-platform.git",
+    );
+    const commit = async () => {
+      await git(["add", "-A"], current.worktree);
+      await git(
+        [
+          "-c",
+          "user.name=fixture",
+          "-c",
+          "user.email=fixture@example.test",
+          "commit",
+          "-m",
+          "static gate fixture",
+        ],
+        current.worktree,
+      );
+      return git(["rev-parse", "HEAD"], current.worktree);
+    };
+    await writeFile(
+      resolve(current.worktree, "package.json"),
+      JSON.stringify({
+        scripts: { "verify:static:scoped": "node ./scripts/verify-static-scoped.mjs" },
+      }),
+    );
+    await writeFile(resolve(current.worktree, "pnpm-lock.yaml"), "fixture lock\n");
+    await writeFile(resolve(current.worktree, "feature.ts"), "base\n");
+    await mkdir(resolve(current.worktree, "docs"));
+    await writeFile(
+      resolve(current.worktree, "docs/SYNTHETIC_INDEX.md"),
+      "| Synthetic | index |\n",
+    );
+    await writeFile(
+      resolve(current.worktree, "docs/SYNTHETIC_OLD.md"),
+      "renamed synthetic document\n",
+    );
+    const main = await commit();
+    await writeFile(resolve(current.worktree, "feature.ts"), "candidate\n");
+    await git(["mv", "docs/SYNTHETIC_OLD.md", "docs/SYNTHETIC_NEW.md"], current.worktree);
+    current.candidateHead = await commit();
+    await git(["checkout", "--detach", current.candidateHead], current.reviewWorktree);
+    const launcher = resolve(current.stateDirectory, "static-gate-tool.mjs");
+    await writeFile(
+      launcher,
+      `
+    import { readFileSync } from "node:fs";
+    const mode = ${JSON.stringify(mode)};
+    if (process.argv[2] === "install") process.exit(0);
+    const candidate = readFileSync("feature.ts", "utf8").includes("candidate");
+    const scope = process.env.CHANGED_FILES_JSON;
+    const artifact = mode === "uncommitted" ? "docs/SYNTHETIC_ABSENT.md is missing" : "docs/SYNTHETIC_INDEX.md is stale";
+    const block = () => {
+      console.log("[VERIFY_STATIC_RUN] check:synthetic-artifact-index");
+      console.log("$ node ./scripts/generate-synthetic-alpha-index.mjs --check");
+      console.log("file:///synthetic/scripts/generate-synthetic-alpha-index.mjs:90");
+      console.log("    throw new Error(relative + \\" is stale\\");");
+      console.log("          ^");
+      console.log("");
+      if (mode === "timeout") console.log("Error: check:synthetic-artifact-index timed out after 30000ms");
+      else if (mode === "resource") console.log("FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory");
+      else console.log("Error: " + artifact);
+      console.log("    at checkExpectedFile (file:///synthetic/scripts/generate-synthetic-alpha-index.mjs:90:11)");
+      console.log("");
+      console.log("Node.js v24.15.0");
+      if (mode === "extra") console.log("Synthetic budget exceeded: 3 raw elements");
+      console.log("[ELIFECYCLE] Command failed with exit code 1.");
+      if (mode === "tail") console.log("unexpected trailing runner text");
+    };
+    if (!candidate) {
+      // The base tree's own merge-base selects nothing; only the supplied scope runs the link.
+      if (mode === "vacuous" || scope === undefined) {
+        console.log("[SKIPPED-BY-SCOPE] check:synthetic-artifact-index: empty derived diff");
+        console.log("[VERIFY_STATIC_SCOPE] scanned=0/1; skipped=1; excluded=0; changed=0; source=git merge-base.");
+        process.exit(0);
+      }
+      console.log("[VERIFY_STATIC_SCOPE] scanned=1/1; skipped=0; excluded=0; changed=" + JSON.parse(scope).length + "; source=CHANGED_FILES_JSON.");
+      console.log("[VERIFY_STATIC_CHANGED] " + scope);
+      if (mode === "base") { block(); process.exit(1); }
+      console.log("[VERIFY_STATIC_RUN] check:synthetic-artifact-index");
+      console.log("$ node ./scripts/generate-synthetic-alpha-index.mjs --check");
+      console.log("Synthetic artifact index is current.");
+      process.exit(0);
+    }
+    console.log("[VERIFY_STATIC_SCOPE] scanned=2/2; skipped=0; excluded=0; changed=3; source=" + (scope === undefined ? "git merge-base" : "CHANGED_FILES_JSON") + ".");
+    console.log("[VERIFY_STATIC_RUN] check:synthetic-inventory");
+    console.log("$ node ./scripts/check-synthetic-inventory.mjs");
+    console.log("retained output".repeat(1000));
+    block();
+    process.exit(1);
+  `,
+    );
+    vi.stubEnv("npm_execpath", launcher);
+    const adapter = githubDeliveryAdapter();
+    const result = await adapter.runGate(current, "verify:static:scoped", current.candidateHead);
+    if (typeof result !== "object" || result.status !== "failed" || !result.evidence)
+      throw new Error("missing gate evidence");
+    const failure = result.evidence;
+    expect(failure.command).toEqual({
+      executable: process.execPath,
+      argv: [launcher, "run", "verify:static:scoped"],
+      cwd: current.worktree,
+    });
+    const bytes = await readFile(failure.log, "utf8");
+    expect(bytes.length).toBeGreaterThan(4000);
+    expect(bytes).toContain("source=git merge-base.");
+    if (expected === "unknown" && mode !== "vacuous") {
+      expect(failure.cause).toBe("unknown");
+      expect(failure.diagnostics).toEqual(
+        mode === "uncommitted" ? ["docs/SYNTHETIC_ABSENT.md is missing"] : [],
+      );
+    } else {
+      expect(failure).toMatchObject({
+        cause: "diagnostic",
+        diagnostics: ["docs/SYNTHETIC_INDEX.md is stale"],
+      });
+      const control = await adapter.attributeGate!(current, "verify:static:scoped", failure, main);
+      expect(control).toMatchObject({ cause: expected, main });
+      const terminal = JSON.parse(
+        await readFile(resolve(control.log, "../base-terminal.json"), "utf8"),
+      );
+      expect(terminal).toEqual({
+        head: main,
+        command: { ...failure.command, cwd: terminal.command.cwd },
+        code: expected === "base" ? 1 : 0,
+        signal: null,
+      });
+      expect(terminal.command.cwd).not.toBe(current.worktree);
+      const base = await readFile(control.log, "utf8");
+      if (mode === "vacuous") {
+        expect(base).toContain(
+          "[SKIPPED-BY-SCOPE] check:synthetic-artifact-index: empty derived diff",
+        );
+        expect(base).not.toContain("[VERIFY_STATIC_RUN] check:synthetic-artifact-index");
+      } else {
+        expect(base).toContain("[VERIFY_STATIC_RUN] check:synthetic-artifact-index");
+        expect(base).toContain("source=CHANGED_FILES_JSON.");
+        expect(JSON.parse(base.match(/^\[VERIFY_STATIC_CHANGED\] (.+)$/m)![1]!)).toEqual([
+          "docs/SYNTHETIC_OLD.md",
+          "docs/SYNTHETIC_NEW.md",
+          "feature.ts",
+        ]);
+      }
+      expect(await git(["rev-parse", "HEAD"], current.worktree)).toBe(current.candidateHead);
+      await expect(
+        adapter.attributeGate!(current, "verify:static:scoped", failure, main),
+      ).resolves.toEqual(control);
+    }
+    expect(await git(["status", "--porcelain"], current.worktree)).toBe("");
+    expect(await readFile(failure.log, "utf8")).toBe(bytes);
+    await expect(
+      adapter.runGate(current, "verify:static:scoped", current.candidateHead),
+    ).resolves.toEqual(result);
+  },
+);
+
 function reviewerReport(
   current: DeliveryConfig,
   verdict: "PASS" | "FAIL" = "PASS",
