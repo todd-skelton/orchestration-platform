@@ -1,10 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
-<<<<<<< HEAD
   appendFile,
-=======
->>>>>>> 7c33164a58de0d9e01191a28b4df12bc83efe2a6
   cp,
   mkdir,
   mkdtemp,
@@ -12,10 +9,7 @@ import {
   readdir,
   realpath,
   rm,
-<<<<<<< HEAD
-=======
   stat,
->>>>>>> 7c33164a58de0d9e01191a28b4df12bc83efe2a6
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
