@@ -27,7 +27,11 @@ const DIGEST = /^[a-f0-9]{64}$/;
 const ATTEMPT_ID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 
 // ISS-152: pipe directly to a runtime file, not execFile's bounded output buffer.
-async function gateCommand(command: GateFailureEvidence["command"], log: string) {
+async function gateCommand(
+  command: GateFailureEvidence["command"],
+  log: string,
+  env?: Record<string, string>,
+) {
   const file = await open(log, "wx");
   try {
     return await new Promise<{ code: number | null; signal: string | null; startup?: string }>(
@@ -36,6 +40,7 @@ async function gateCommand(command: GateFailureEvidence["command"], log: string)
           cwd: command.cwd,
           windowsHide: true,
           stdio: ["ignore", file.fd, file.fd],
+          ...(env ? { env: { ...process.env, ...env } } : {}),
         });
         child.once("error", (error) => done({ code: null, signal: null, startup: error.message }));
         child.once("close", (code, signal) => done({ code, signal }));
@@ -47,8 +52,53 @@ async function gateCommand(command: GateFailureEvidence["command"], log: string)
   }
 }
 
-// Deliberately recognize only completed compiler, formatter and assertion diagnostics.
-// Timeouts, resource failures and mixed causes have no candidate attribution.
+const STATIC_SCOPED_GATE = "verify:static:scoped";
+const STATIC_RUN_MARKER = /^\[VERIFY_STATIC_RUN\] (\S+)$/gm;
+
+// ISS-192: the Chase Sets scoped static runner is fail-fast and marks each link,
+// so the failing link is the last marked block.
+function staticScopedFailingLink(output: string): string | undefined {
+  return [...output.matchAll(STATIC_RUN_MARKER)].at(-1)?.[1];
+}
+
+// Recognize only a final block wholly made of `<path> is stale|missing` throws
+// from a `generate-*.mjs --check` producer: its command echo, Node's uncaught
+// throw frame and the pnpm lifecycle tail. Any other line keeps the failure unknown.
+function staticArtifactDiagnostics(output: string): string[] {
+  const block = output.split(/^(?=\[VERIFY_STATIC_RUN\] )/m);
+  if (block.length < 2) return [];
+  const lines = block.at(-1)!.split(/\r?\n/);
+  const diagnostics: string[] = [];
+  let producer = false;
+  for (let index = 1; index < lines.length; index++) {
+    const line = lines[index]!;
+    if (
+      line.trim() === "" ||
+      /^\s+at /.test(line) ||
+      /^Node\.js v\d/.test(line) ||
+      /^\[ELIFECYCLE\] Command failed with exit code \d+\.$/.test(line)
+    )
+      continue;
+    if (line.startsWith("$ ")) {
+      if (/\bgenerate-[\w.-]+\.mjs --check$/.test(line)) producer = true;
+      continue;
+    }
+    if (/^(?:file:\/\/|\/|[A-Za-z]:[\\/])\S+:\d+$/.test(line)) {
+      // Node's throw frame: location, thrown source, caret. A frame without its caret is unknown.
+      while (lines[++index] !== undefined && !/^\s*\^+\s*$/.test(lines[index]!));
+      if (index >= lines.length) return [];
+      continue;
+    }
+    const match = /^(?:Error: )?((?:[\w.@-]+\/)*[\w.@-]+ is (?:stale|missing))$/.exec(line);
+    if (!match) return [];
+    diagnostics.push(match[1]!);
+  }
+  return producer ? diagnostics : [];
+}
+
+// Deliberately recognize only completed compiler, formatter, assertion and
+// generated-artifact staleness diagnostics. Timeouts, resource failures and
+// mixed causes have no candidate attribution.
 export function gateDiagnostics(name: string, raw: string): string[] {
   const output = raw.replace(/\u001b\[[0-9;]*m/g, "");
   if (
@@ -57,6 +107,7 @@ export function gateDiagnostics(name: string, raw: string): string[] {
     )
   )
     return [];
+  if (name === STATIC_SCOPED_GATE) return staticArtifactDiagnostics(output);
   if (name === "typecheck")
     return [...output.matchAll(/^([^\r\n]+\(\d+,\d+\): error TS\d+: .+)$/gm)].map((m) => m[1]!);
   if (name === "format:check" && output.includes("Code style issues found"))
@@ -331,6 +382,45 @@ export async function acceptedReviewG0(config: DeliveryConfig): Promise<string> 
     if (!(error instanceof RepairBlocked)) throw error;
   }
   throw new DeliveryBlocked("unreviewed-delivery-source");
+}
+
+function staticLinkRan(output: string, link: string) {
+  return [...output.matchAll(STATIC_RUN_MARKER)].some((m) => m[1] === link);
+}
+
+// The candidate's derived static scope: the same name-status diff the runner
+// reads, including both sides of renames.
+async function changedFiles(
+  gitExecutable: string,
+  config: DeliveryConfig,
+  main: string,
+  head: string,
+) {
+  const tokens = (
+    await git(
+      gitExecutable,
+      config,
+      [
+        "diff",
+        "--name-status",
+        "-z",
+        "--find-renames",
+        "--diff-filter=ACMRTD",
+        `${main}...${head}`,
+        "--",
+      ],
+      config.worktree,
+    )
+  )
+    .split("\0")
+    .filter(Boolean);
+  const files: string[] = [];
+  for (let index = 0; index < tokens.length;) {
+    const paths = /^[RC]\d*$/.test(tokens[index++]!) ? 2 : 1;
+    files.push(...tokens.slice(index, index + paths));
+    index += paths;
+  }
+  return [...new Set(files)];
 }
 
 async function stagedFile(config: DeliveryConfig, name: string, contents: string) {
@@ -889,7 +979,7 @@ export function githubDeliveryAdapter(
         // Tie every diagnostic to a file in the committed candidate, not an external path.
         let committed = diagnostics.length > 0;
         for (const diagnostic of diagnostics) {
-          const path = diagnostic.split(/\(\d+,\d+\):| > /)[0]!;
+          const path = diagnostic.split(/\(\d+,\d+\):| > |\s+is\s+(?:stale|missing)$/)[0]!;
           try {
             await git(
               gitExecutable,
@@ -942,6 +1032,14 @@ export function githubDeliveryAdapter(
       if (evidence.cause !== "diagnostic" || evidence.head !== config.candidateHead) return result;
       let added = false;
       try {
+        // ISS-192: the scoped static runner derives its scope from the tree's own
+        // merge-base, so a detached base tree selects nothing. The base control
+        // must run the candidate's selection or it discriminates nothing.
+        const link =
+          name === STATIC_SCOPED_GATE
+            ? staticScopedFailingLink(await readFile(evidence.log, "utf8"))
+            : undefined;
+        if (name === STATIC_SCOPED_GATE && !link) return result;
         // Dependencies and the script must be comparable. A changed toolchain stays unknown.
         for (const path of ["package.json", "pnpm-lock.yaml"]) {
           const before = await git(
@@ -979,7 +1077,14 @@ export function githubDeliveryAdapter(
           result.cause = "host";
         else {
           const command = { ...evidence.command, cwd: tree };
-          const terminal = await gateCommand(command, log);
+          const env = link
+            ? {
+                CHANGED_FILES_JSON: JSON.stringify(
+                  await changedFiles(gitExecutable, config, main, evidence.head),
+                ),
+              }
+            : undefined;
+          const terminal = await gateCommand(command, log, env);
           await stagedFile(
             config,
             `${directory.split(/[\\/]/).at(-1)}/base-terminal.json`,
@@ -990,8 +1095,10 @@ export function githubDeliveryAdapter(
             (await git(gitExecutable, config, ["status", "--porcelain"], tree)) === "" &&
             (await git(gitExecutable, config, ["rev-parse", "HEAD"], tree)) === main;
           if (!clean || terminal.startup) result.cause = "host";
-          else if (terminal.code === 0 && !terminal.signal) result.cause = "candidate";
-          else if (
+          else if (terminal.code === 0 && !terminal.signal) {
+            // A passing base is evidence only when the failing link actually ran there.
+            if (!link || staticLinkRan(output, link)) result.cause = "candidate";
+          } else if (
             terminal.code !== null &&
             !terminal.signal &&
             gateDiagnostics(name, output).length
