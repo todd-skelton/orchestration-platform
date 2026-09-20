@@ -216,13 +216,20 @@ are unchanged (ISS-155).
 Native delivery captures the complete gate output and terminal execution before
 considering correction.
 The candidate terminal records the exact executable, arguments, working directory
-and reviewed head. Recognized compiler, formatter or completed test assertion
-diagnostics must name committed candidate files. The same command runs in an
+and reviewed head. Recognized compiler, formatter, completed test assertion or
+Chase Sets scoped static generated-artifact staleness diagnostics
+(`<repo-relative path> is stale|missing` from a `generate-*.mjs --check`
+producer, wholly accounting for the final `[VERIFY_STATIC_RUN]` block) must
+name committed candidate files. The same command runs in an
 isolated committed tree at the recorded delivery main base, with an offline,
 frozen dependency install. Changed manifests or lockfiles remain unknown.
 The candidate and base logs and terminal records remain in the delivery runtime (ISS-152).
 
-Only a passing base control admits candidate attribution. Base reproduction
+Only a passing base control admits candidate attribution. The scoped static
+base control receives the candidate's derived changed-file set as
+`CHANGED_FILES_JSON`, and its pass counts only when the failing link's
+`[VERIFY_STATIC_RUN]` marker appears in the base log; a vacuous base selection
+stays unknown (ISS-192). Base reproduction
 stops as `gate-base-failed:<gate>`. Startup, install, log I/O and cleanup failures
 stop as `gate-host-failed:<gate>`; drift retains its workspace stop. Missing or
 incomplete diagnostics, unsupported gates, timeouts, resource failures and mixed

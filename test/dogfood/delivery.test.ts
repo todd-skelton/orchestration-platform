@@ -19,12 +19,14 @@ import {
   DeliveryBlocked,
   hostedFailurePrompt,
   hostedFailureEvidence,
+  LocalGateFailure,
   type DeliveryAdapter,
   type DeliveryConfig,
   type DeliveryPlan,
   type PublicationObservation,
   type PublicationEvidence,
   type CheckEvidence,
+  type GateFailureEvidence,
 } from "../../scripts/dogfood/delivery.mjs";
 
 const head = "a".repeat(40);
@@ -1855,10 +1857,61 @@ it("refuses candidate workspace drift before any gate or provider mutation", asy
   expect(f.calls.some((call) => call.startsWith("gate:") || call === "publish")).toBe(false);
 });
 
-it.each(["typecheck", "format:check", "planning:board-check"])(
+// ISS-192: a recognized scoped static staleness failure leaves delivery as
+// diagnostic evidence, which is what admits the base control and single
+// gate-correction author; the retained cs-3779:1 shape stays unknown.
+it.each([
+  ["recognized", "diagnostic", ["docs/SYNTHETIC_INDEX.md is stale"]],
+  ["unrecognized", "unknown", []],
+] as const)(
+  "retains a %s verify:static:scoped failure once as %s evidence without publishing",
+  async (_shape, cause, diagnostics) => {
+    const f = await fixture();
+    let failures = 0;
+    const log = resolve(f.config.stateDirectory, "static-gate.log");
+    const evidence: GateFailureEvidence = {
+      head: f.config.candidateHead,
+      command: {
+        executable: process.execPath,
+        argv: ["fixture-pnpm", "run", "verify:static:scoped"],
+        cwd: f.config.worktree,
+      },
+      log,
+      cause,
+      diagnostics: [...diagnostics],
+    };
+    const run = f.adapter.runGate;
+    f.adapter.runGate = async (config, name, candidate) => {
+      if (name !== "verify:static:scoped") return run(config, name, candidate);
+      failures++;
+      return { status: "failed", output: "Error: docs/SYNTHETIC_INDEX.md is stale", evidence };
+    };
+    f.plan.gates = { beforeMirror: ["verify:static:scoped", "typecheck"], afterMirror: [] };
+    for (let replay = 0; replay < 2; replay++) {
+      const error = await deliveryStep(f.config, f.adapter, f.policy).catch((value) => value);
+      expect(error).toBeInstanceOf(LocalGateFailure);
+      expect(error).toMatchObject({
+        reason: "gate-attribution-unknown:verify:static:scoped",
+        gate: "verify:static:scoped",
+        evidence,
+      });
+      expect(isItemStopReason(error.reason)).toBe(false);
+    }
+    expect(failures).toBe(1);
+    expect(f.calls.filter((call) => call.startsWith("gate:"))).toEqual([]);
+    expect(
+      JSON.parse(await readFile(resolve(f.config.stateDirectory, "gate-1-failure.json"), "utf8")),
+    ).toMatchObject({ head: f.config.candidateHead, evidence });
+    expect(f.calls).not.toContain("publish");
+    expect(f.calls).not.toContain("merge");
+  },
+);
+
+it.each(["typecheck", "format:check", "planning:board-check", "verify:static:scoped"])(
   "retains an untyped %s failure without correction or replay",
   async (gate) => {
     const f = await fixture();
+    if (gate === "verify:static:scoped") f.plan.gates.beforeMirror.unshift(gate);
     let failures = 0;
     const run = f.adapter.runGate;
     f.adapter.runGate = async (config, name, head) => {
