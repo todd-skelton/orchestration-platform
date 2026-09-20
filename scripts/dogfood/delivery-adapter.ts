@@ -786,24 +786,33 @@ export function githubDeliveryAdapter(
   const verifyWorkspace = async (config: DeliveryConfig, head: string) => {
     try {
       await assertWorktreeRepository(gitExecutable, config);
-      if (
-        (await git(gitExecutable, config, ["rev-parse", "HEAD"], config.controllerRoot)) !==
-        config.controllerRevision
-      )
-        return false;
-      if (
-        (await git(gitExecutable, config, ["status", "--porcelain"], config.controllerRoot)) !== ""
-      )
-        return false;
-      if (
-        (await git(gitExecutable, config, ["branch", "--show-current"], config.repositoryRoot)) !==
-          "main" ||
-        (await git(gitExecutable, config, ["status", "--porcelain"], config.repositoryRoot)) !== ""
-      )
-        return false;
+      // One live `status --porcelain=v2 --branch` per distinct working directory carries the
+      // resolved head, the current branch and the working-tree entries that previously took a
+      // `rev-parse HEAD` or `branch --show-current` plus a `status --porcelain` pair. An unborn
+      // HEAD reports `(initial)` and a detached one `(detached)`; a clean tree ahead of its
+      // upstream still prints `# branch.ab`, so cleanliness is "no line outside the headers".
+      const status = async (cwd: string) => {
+        const lines = (
+          await git(gitExecutable, config, ["status", "--porcelain=v2", "--branch"], cwd)
+        ).split(/\r?\n/);
+        const header = (name: string) =>
+          lines.find((line) => line.startsWith(`# branch.${name} `))?.slice(name.length + 10);
+        return {
+          head: header("oid"),
+          branch: header("head"),
+          clean: lines.every((line) => line.startsWith("# branch.")),
+        };
+      };
+      const controller = await status(config.controllerRoot);
+      if (controller.head !== config.controllerRevision) return false;
+      // Coincidence is decided on the configured values alone; neither root is stat'ed.
+      const coincident = samePath(config.controllerRoot, config.repositoryRoot);
+      if (!coincident && !controller.clean) return false;
+      const repository = coincident ? controller : await status(config.repositoryRoot);
+      if (repository.branch !== "main" || !repository.clean) return false;
       for (const cwd of [config.worktree, config.reviewWorktree]) {
-        if ((await git(gitExecutable, config, ["rev-parse", "HEAD"], cwd)) !== head) return false;
-        if ((await git(gitExecutable, config, ["status", "--porcelain"], cwd)) !== "") return false;
+        const candidate = await status(cwd);
+        if (candidate.head !== head || !candidate.clean) return false;
       }
       return true;
     } catch {
