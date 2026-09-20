@@ -9,7 +9,7 @@ import type { PreReviewEvidence } from "./continuation.js";
 
 export type Role = "author" | "reviewer";
 export interface Config {
-  authorFailures?: { count: number; ids: string[] };
+  authorFailures?: { count: number; ids: string[]; diagnostics?: Record<string, string> };
   routing?: import("./routing.mjs").RoutingSelection;
   owner: string;
   run: string;
@@ -85,7 +85,7 @@ export interface Check {
 }
 export interface Adapter {
   authorRung?(config: Config): Promise<number>;
-  authorRefused?(config: Config, identity: string): Promise<void>;
+  authorRefused?(config: Config, identity: string, diagnostics?: string): Promise<void>;
   validateAuthorChanges?(config: Config): Promise<void>;
   preflight(config: Config): Promise<void>;
   waitForProvider?(config: Config): Promise<void>;
@@ -498,7 +498,11 @@ async function runStep(
             if (!(error instanceof QueueBlocked) || error.reason !== "provider-model-refused")
               throw error;
             if (role === "author")
-              await adapter.authorRefused?.(config, `${directory}:probe:${rung}`);
+              await adapter.authorRefused?.(
+                config,
+                `${directory}:probe:${rung}`,
+                error.diagnostics,
+              );
             useFallback();
           }
         }

@@ -690,12 +690,17 @@ controller root, a new validated executor may resume an old setup plan with only
 agrees, and old plans, invocations, stops and worker budgets remain unchanged (ISS-159).
 
 The pool keeps a model listed while all of its credentials are suspended.
+ISS-197 also recorded the pool omitting models from its `/models` catalog
+while simultaneously serving them and reporting a non-disabled account `ready`;
+that capture did not test the all-credentials-suspended condition.
 A weekly quota block returns `429 model_cooldown`, which is neither a refusal
 nor an outage to the trace classifier; two such worker deaths park an issue
 as `launcher-failed`. The launch probe also reads the pool supervisor's per-account, per-model
 routing status from `CODEX_POOL_STATUS_URL`
-after the models probe. Any non-disabled account reporting the model `ready`
-admits the launch; a model no account mentions is left to the models probe.
+before the catalog check. Any non-disabled account reporting the model `ready`
+admits it without a catalog membership check; the authenticated `/models`
+request and body validation still run on that admission. A model no account
+mentions is left to the catalog, as is every model without a configured status URL.
 When every account blocks the model, a block clearing inside
 `providerOutageCeilingMs` waits as `waiting-provider` with the pool's reset
 time, and a longer block is `provider-model-refused`: the worker advances its

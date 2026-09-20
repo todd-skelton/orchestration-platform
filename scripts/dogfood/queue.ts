@@ -961,6 +961,7 @@ export async function queueConfigFromLoop(
     if (conflict) {
       if (!authorFailures.ids.includes(conflict.author.id))
         authorFailures = {
+          ...authorFailures,
           count: authorFailures.count + 1,
           ids: [...authorFailures.ids, conflict.author.id],
         };
@@ -2568,13 +2569,20 @@ export function repositoryQueueAdapter(
 
   const readHistory = () => readQueueHistory(config);
 
-  const failAuthor = async (id: string) => {
+  const failAuthor = async (id: string, diagnostics?: string) => {
     const attempt = await json(state, "attempt");
     const failures = attempt.authorFailures ?? { count: 0, ids: [] };
     if (failures.ids.includes(id)) return;
     await record(state, "attempt", {
       ...attempt,
-      authorFailures: { count: failures.count + 1, ids: [...failures.ids, id] },
+      authorFailures: {
+        ...failures,
+        count: failures.count + 1,
+        ids: [...failures.ids, id],
+        ...(diagnostics === undefined
+          ? {}
+          : { diagnostics: { ...failures.diagnostics, [id]: diagnostics.slice(0, 200) } }),
+      },
       history: await readHistory(),
     });
   };
@@ -2673,8 +2681,8 @@ export function repositoryQueueAdapter(
     async authorRung() {
       return (await json(state, "attempt")).authorFailures?.count ?? 0;
     },
-    async authorRefused(_current, identity) {
-      await failAuthor(identity);
+    async authorRefused(_current, identity, diagnostics) {
+      await failAuthor(identity, diagnostics);
     },
     async waitForProvider(current) {
       await native.waitForProvider?.(current);

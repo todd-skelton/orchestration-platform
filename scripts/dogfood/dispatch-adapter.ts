@@ -62,6 +62,7 @@ export async function probeProvider(
   signal: AbortSignal,
   request = fetch,
   model?: string,
+  poolReady = false,
 ) {
   let token: string;
   try {
@@ -87,8 +88,14 @@ export async function probeProvider(
       )
     )
       throw new Error("malformed provider models response");
-    if (!models.data.some((entry) => entry.id === model))
-      throw new QueueBlocked("provider-model-refused", model);
+    if (!poolReady && !models.data.some((entry) => entry.id === model))
+      throw new QueueBlocked(
+        "provider-model-refused",
+        `models catalog omitted ${model}; catalog head: ${models.data
+          .slice(0, 10)
+          .map((entry) => entry.id)
+          .join(", ")}`.slice(0, 200),
+      );
   } else await response.body?.cancel();
 }
 
@@ -138,7 +145,7 @@ export async function probePoolModel(
   // The pool does not know the model, or its observations are stale: the
   // models probe alone decides.
   if (!mentioned) return;
-  if (entries.some((entry) => entry.status === "ready")) return;
+  if (entries.some((entry) => entry.status === "ready")) return true;
   // Mentioned only by disabled accounts: no eligible account, no known end.
   if (entries.length === 0) throw new Error(`pool has no enabled account for ${model}`);
   // Only a block whose every end is a known future time can be measured
@@ -171,9 +178,10 @@ export async function admitLaunch(
   await waitForProvider(
     config,
     async (signal, deadline) => {
-      await probeProvider(baseUrl, authCommand, signal, request, config[role].model);
-      if (statusUrl)
-        await probePoolModel(statusUrl, config[role].model, signal, deadline, request, clock?.now);
+      const poolReady = statusUrl
+        ? await probePoolModel(statusUrl, config[role].model, signal, deadline, request, clock?.now)
+        : false;
+      await probeProvider(baseUrl, authCommand, signal, request, config[role].model, poolReady);
     },
     clock,
     report,
