@@ -20,6 +20,8 @@ import {
   workerEnvironment,
 } from "../../scripts/dogfood/dispatch-adapter.js";
 import type { Config } from "../../scripts/dogfood/flow.js";
+import { queueStep } from "../../scripts/dogfood/queue.js";
+import { sourceFailureFixture } from "./fixtures/source-failure.js";
 import { parseReview } from "../../scripts/dogfood/repair-policy.mjs";
 import overlengthReview from "./fixtures/iss-150-overlength.json" with { type: "json" };
 import prefixedReview from "./fixtures/iss-150-prefixed.json" with { type: "json" };
@@ -491,7 +493,7 @@ it("admits a launch only when the pool has a ready account for the model", async
         { routingModels: { "gpt-6-astra": { status: "ready" } } },
       ),
     ),
-  ).resolves.toBeUndefined();
+  ).resolves.toBe(true);
   // A disabled account's readiness does not admit a launch.
   await expect(
     probe(
@@ -652,7 +654,7 @@ it.skipIf(process.platform === "win32")(
     });
     expect(late.statuses.length).toBe(120);
     expect(late.request.mock.calls.map(([url]) => String(url)).slice(0, 2)).toEqual([
-      "http://pool.test/v1/models",
+      "http://pool.test:8318/api/status",
       "http://pool.test:8318/api/status",
     ]);
     // A reset just inside the remaining deadline waits, then admits once ready.
@@ -675,17 +677,20 @@ it.skipIf(process.platform === "win32")(
       url.endsWith("/models") ? models.clone() : blockedUntil("2026-09-16T19:10:00Z"),
     );
     await expect(never.done).rejects.toMatchObject({ reason: "provider-unavailable" });
-    // A model refusal from the models probe propagates before any status read.
+    // Pool status is read first; an unmentioned model still lets the catalog refuse.
     const refused = run((url) =>
       url.endsWith("/models")
         ? Response.json({ data: [{ id: "other" }] })
-        : blockedUntil("2026-09-16T19:10:00Z"),
+        : Response.json({ accounts: [{ routingModels: {} }] }),
     );
     await expect(refused.done).rejects.toMatchObject({
       reason: "provider-model-refused",
-      diagnostics: "test",
+      diagnostics: "models catalog omitted test; catalog head: other",
     });
-    expect(refused.request.mock.calls.every(([url]) => String(url).endsWith("/models"))).toBe(true);
+    expect(refused.request.mock.calls.map(([url]) => String(url))).toEqual([
+      "http://pool.test:8318/api/status",
+      "http://pool.test/v1/models",
+    ]);
     // Without a status URL the models probe alone admits.
     const { CODEX_POOL_STATUS_URL: _unused, ...withoutStatus } = environment;
     const request = vi.fn<typeof fetch>(async () => models.clone());
@@ -695,6 +700,209 @@ it.skipIf(process.platform === "win32")(
     const idle = vi.fn<typeof fetch>();
     await expect(admitLaunch(admission, "author", {}, idle)).resolves.toBeUndefined();
     expect(idle).not.toHaveBeenCalled();
+  },
+);
+it.skipIf(process.platform === "win32").each(["ready", "unmentioned", "blocked"])(
+  "ISS-197 retains native admission and refusal accounting when the pool model is %s",
+  async (poolVerdict) => {
+    const f = await sourceFailureFixture();
+    cleanup.push(f.root);
+    const helper = resolve(f.root, "auth.sh");
+    await writeFile(helper, '#!/bin/sh\nprintf "test-provider-key\\n"\n', { mode: 0o700 });
+    const environment = {
+      CODEX_PROVIDER_BASE_URL: "http://pool.test/v1",
+      CODEX_PROVIDER_AUTH_COMMAND: helper,
+      CODEX_POOL_STATUS_URL: "http://pool.test:8318/api/status",
+    };
+    // Captured shape: the only non-image OpenAI entries omit Astra; three
+    // Codex accounts block it and one enabled account can still serve it.
+    const catalog = [
+      { id: "gpt-5.5", owned_by: "openai" },
+      { id: "codex-auto-review", owned_by: "openai" },
+      { id: "claude-fable-5-1", owned_by: "anthropic" },
+      ...Array.from({ length: 20 }, (_, i) => ({ id: `fixture-${i}`, owned_by: "anthropic" })),
+    ];
+    const blockedAccounts = [22, 23, 24].map((day) => ({
+      disabled: false,
+      routingModels: {
+        "gpt-6-astra": { status: "blocked", next_retry_after: `2026-09-${day}T00:00:00Z` },
+      },
+    }));
+    const request = vi.fn<typeof fetch>(async (input) =>
+      String(input).endsWith("/models")
+        ? Response.json({ data: catalog })
+        : Response.json({
+            accounts:
+              poolVerdict === "unmentioned"
+                ? [{ routingModels: {} }]
+                : [
+                    ...blockedAccounts,
+                    ...(poolVerdict === "ready"
+                      ? [{ disabled: false, routingModels: { "gpt-6-astra": { status: "ready" } } }]
+                      : []),
+                  ],
+          }),
+    );
+    const clock = { now: () => Date.parse("2026-09-20T16:53:19Z"), pause: vi.fn() };
+    const report = vi.fn();
+    const launch = f.native.launch;
+    const launchedRungs: number[] = [];
+    f.native.launch = async (role, current, prompt) => {
+      await admitLaunch(current, role, environment, request, clock, report);
+      launchedRungs.push(current.author.rung!);
+      return launch(role, current, prompt);
+    };
+    f.setAuthorStatus("running");
+    const q = await f.compose(f.cycle);
+    await expect(queueStep(q.config, q.adapter)).resolves.toMatchObject({
+      status: "observing-author",
+    });
+    const path = resolve(q.config.stateDirectory, "attempt.json");
+    const saved = JSON.parse(await readFile(path, "utf8"));
+    const source = q.config.items[0]!.source.stateDirectory;
+    const ids = [`${source}:probe:0`, `${source}:probe:1`];
+    expect(launchedRungs).toEqual([poolVerdict === "ready" ? 0 : 2]);
+    if (poolVerdict === "ready") {
+      expect(saved.authorFailures).toEqual({ count: 0, ids: [] });
+      expect(request.mock.calls.map(([url]) => String(url))).toEqual([
+        environment.CODEX_POOL_STATUS_URL,
+        `${environment.CODEX_PROVIDER_BASE_URL}/models`,
+      ]);
+      expect(request.mock.calls[1]![1]).toEqual({
+        headers: { Authorization: "Bearer test-provider-key" },
+        signal: request.mock.calls[0]![1]!.signal,
+      });
+    } else {
+      expect(saved.authorFailures.count).toBe(2);
+      expect(saved.authorFailures.ids).toEqual(ids);
+      expect(Object.keys(saved.authorFailures.diagnostics)).toEqual(ids);
+      for (const id of ids) {
+        const diagnostic = saved.authorFailures.diagnostics[id] as string;
+        expect(diagnostic.length).toBeLessThanOrEqual(200);
+        if (poolVerdict === "unmentioned") {
+          expect(diagnostic).toMatch(/^models catalog omitted gpt-6-astra; catalog head: /);
+          expect(diagnostic).toContain("gpt-5.5, codex-auto-review, claude-fable-5-1");
+          expect(diagnostic.split("catalog head: ")[1]!.split(", ")).toHaveLength(10);
+          expect(diagnostic).toContain("fixture-6");
+          expect(diagnostic).not.toContain("fixture-7");
+        } else {
+          expect(diagnostic).toBe(
+            "pool blocks gpt-6-astra at every account until 2026-09-22T00:00:00.000Z",
+          );
+        }
+      }
+    }
+    expect(clock.pause).not.toHaveBeenCalled();
+    expect(report).not.toHaveBeenCalled();
+    // Resume keeps each diagnostic with its identity, without charging or probing again.
+    const requests = request.mock.calls.length;
+    const resumed = await f.compose(f.cycle);
+    await expect(queueStep(resumed.config, resumed.adapter)).resolves.toMatchObject({
+      status: "observing-author",
+    });
+    expect(JSON.parse(await readFile(path, "utf8")).authorFailures).toEqual(saved.authorFailures);
+    expect(request).toHaveBeenCalledTimes(requests);
+  },
+);
+it.skipIf(process.platform === "win32")(
+  "keeps pool-ready admissions authenticated and validates the catalog body for both roles",
+  async () => {
+    const root = await realpath(await mkdtemp(resolve(tmpdir(), "pool-ready-auth-")));
+    cleanup.push(root);
+    const helper = resolve(root, "auth.sh");
+    const environment = {
+      CODEX_PROVIDER_BASE_URL: "http://pool.test/v1/",
+      CODEX_PROVIDER_AUTH_COMMAND: helper,
+      CODEX_POOL_STATUS_URL: "http://pool.test:8318/api/status",
+    };
+    for (const role of ["author", "reviewer"] as const) {
+      for (const failure of ["none", "auth", "http", "body", "entry"]) {
+        await writeFile(
+          helper,
+          failure === "auth" ? "#!/bin/sh\nexit 1\n" : '#!/bin/sh\nprintf "fresh-key\\n"\n',
+          { mode: 0o700 },
+        );
+        const request = vi.fn<typeof fetch>(async (input) => {
+          if (String(input).endsWith("/api/status"))
+            return Response.json({ accounts: [{ routingModels: { test: { status: "ready" } } }] });
+          if (failure === "http") return new Response(null, { status: 503 });
+          return Response.json(
+            failure === "body" ? {} : failure === "entry" ? { data: [{}] } : { data: [] },
+          );
+        });
+        let now = 0;
+        const pauses: number[] = [];
+        const statuses: object[] = [];
+        const admission = admitLaunch(
+          { ...config, providerOutageCeilingMs: 10_000 },
+          role,
+          environment,
+          request,
+          {
+            now: () => now,
+            pause: async (ms) => {
+              pauses.push(ms);
+              now += ms;
+            },
+          },
+          (status) => {
+            statuses.push(status);
+          },
+        );
+        if (failure === "none") {
+          await expect(admission).resolves.toBeUndefined();
+          expect(pauses).toEqual([]);
+          expect(statuses).toEqual([]);
+        } else {
+          const diagnostics =
+            failure === "auth"
+              ? "provider authentication command failed"
+              : failure === "http"
+                ? "provider models probe returned HTTP 503"
+                : "malformed provider models response";
+          await expect(admission).rejects.toMatchObject({
+            reason: "provider-unavailable",
+            diagnostics,
+          });
+          expect(pauses).toEqual([10_000]);
+          expect(statuses).toEqual([
+            { status: "waiting-provider", run: config.run, issue: config.issue, diagnostics },
+          ]);
+        }
+        expect(request).toHaveBeenCalledTimes(failure === "auth" ? 1 : 2);
+        if (failure !== "auth")
+          expect(request.mock.calls[1]).toEqual([
+            "http://pool.test/v1/models",
+            {
+              headers: { Authorization: "Bearer fresh-key" },
+              signal: request.mock.calls[0]![1]!.signal,
+            },
+          ]);
+      }
+    }
+    // Refusal diagnostics bound both the count of ids and the total text.
+    for (const ids of [Array.from({ length: 12 }, (_, i) => `m${i}`), ["x".repeat(300)]]) {
+      const request = vi.fn<typeof fetch>(async () =>
+        Response.json({ data: ids.map((id) => ({ id })) }),
+      );
+      const error = (await probeProvider(
+        "http://pool.test/v1",
+        helper,
+        new AbortController().signal,
+        request,
+        "test",
+      ).catch((error: unknown) => error)) as { reason: string; diagnostics: string };
+      expect(error.reason).toBe("provider-model-refused");
+      expect(error.diagnostics.length).toBeLessThanOrEqual(200);
+      expect(error.diagnostics.split("catalog head: ")[1]!.split(", ").length).toBeLessThanOrEqual(
+        10,
+      );
+      if (ids.length === 12) {
+        expect(error.diagnostics).toBe(
+          "models catalog omitted test; catalog head: m0, m1, m2, m3, m4, m5, m6, m7, m8, m9",
+        );
+      } else expect(error.diagnostics).toHaveLength(200);
+    }
   },
 );
 it.skipIf(process.platform === "win32")(
