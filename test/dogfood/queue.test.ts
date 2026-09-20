@@ -1,6 +1,16 @@
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { cp, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import {
+  appendFile,
+  cp,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  realpath,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -72,6 +82,7 @@ const repositoryPolicy: RepositoryAdapter = {
   afterMerge: () => {},
 };
 const execute = promisify(execFile);
+let fixtureGit: Promise<string> | undefined;
 const unavailable = { status: "unavailable" as const };
 const usage = (input: number, output: number) => ({
   inputTokens: { status: "known" as const, value: input },
@@ -312,11 +323,16 @@ async function loopFixture(
       `---\nkey: ISS-104\ntitle: "One config"\n---\n\n## Done when\n\n${acceptanceCriteria}\n\n## Out of scope\n`,
     ),
   ]);
-  const finder = process.platform === "win32" ? "where.exe" : "which";
-  const gitExecutable = (await execute(finder, ["git"])).stdout.trim().split(/\r?\n/)[0]!;
+  const gitExecutable = await (fixtureGit ??= execute(
+    process.platform === "win32" ? "where.exe" : "which",
+    ["git"],
+  ).then((found) => found.stdout.trim().split(/\r?\n/)[0]!));
   await execute(gitExecutable, ["init", "-b", "main", repository]);
-  await execute(gitExecutable, ["-C", repository, "config", "user.name", "Fixture"]);
-  await execute(gitExecutable, ["-C", repository, "config", "user.email", "fixture@example.test"]);
+  // ISS-171: the bytes `git config user.name` and `user.email` would append, without two processes.
+  await appendFile(
+    resolve(repository, ".git/config"),
+    "[user]\n\tname = Fixture\n\temail = fixture@example.test\n",
+  );
   await execute(gitExecutable, ["-C", repository, "add", "."]);
   await execute(gitExecutable, ["-C", repository, "commit", "-m", "fixture"]);
   const base = (
