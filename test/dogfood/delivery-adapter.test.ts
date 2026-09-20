@@ -1095,33 +1095,68 @@ it.each([
         [["remote", "get-url", "--push", "--all", "origin"], cwd, remote],
       );
     }
+    // One `status --porcelain=v2 --branch` per distinct working directory serves the head, the
+    // branch and cleanliness; the coincident controller/repository root reads once.
+    const status = (oid: string, branch: string, ...entries: string[]) =>
+      [`# branch.oid ${oid}`, `# branch.head ${branch}`, ...entries].join("\n") + "\n";
+    const statusArgs = ["status", "--porcelain=v2", "--branch"];
+    const distinct = current.controllerRoot !== current.repositoryRoot;
+    reads.push([statusArgs, current.controllerRoot, status(current.controllerRevision, "main")]);
+    if (distinct)
+      reads.push([statusArgs, current.repositoryRoot, status(current.controllerRevision, "main")]);
     reads.push(
-      [["rev-parse", "HEAD"], current.controllerRoot, current.controllerRevision],
-      [["status", "--porcelain"], current.controllerRoot, ""],
-      [["branch", "--show-current"], current.repositoryRoot, "main"],
-      [["status", "--porcelain"], current.repositoryRoot, ""],
+      [statusArgs, current.worktree, status(current.candidateHead, "codex/iss-074-delivery")],
+      [statusArgs, current.reviewWorktree, status(current.candidateHead, "(detached)")],
     );
-    for (const cwd of [current.worktree, current.reviewWorktree])
-      reads.push(
-        [["rev-parse", "HEAD"], cwd, current.candidateHead],
-        [["status", "--porcelain"], cwd, ""],
-      );
+    expect(distinct).toBe(drift === "root-dirty");
     const changed = {
       "common-directory": [current.reviewWorktree, "rev-parse --git-common-dir", dirname(root)],
-      HEAD: [current.worktree, "rev-parse HEAD", "b".repeat(40)],
-      dirty: [current.worktree, "status --porcelain", "?? uncommitted.txt"],
+      HEAD: [
+        current.worktree,
+        statusArgs.join(" "),
+        status("b".repeat(40), "codex/iss-074-delivery"),
+      ],
+      dirty: [
+        current.worktree,
+        statusArgs.join(" "),
+        status(current.candidateHead, "codex/iss-074-delivery", "? uncommitted.txt"),
+      ],
       fetch: [current.worktree, "remote get-url --all origin", "https://github.com/foreign/repo"],
       push: [
         current.reviewWorktree,
         "remote get-url --push --all origin",
         "https://github.com/foreign/repo",
       ],
-      "controller-revision": [current.controllerRoot, "rev-parse HEAD", "b".repeat(40)],
-      "controller-dirty": [current.controllerRoot, "status --porcelain", "?? controller.txt"],
-      "root-dirty": [current.repositoryRoot, "status --porcelain", "?? root.txt"],
-      "root-branch": [current.repositoryRoot, "branch --show-current", "not-main"],
-      "review-HEAD": [current.reviewWorktree, "rev-parse HEAD", "b".repeat(40)],
-      "review-dirty": [current.reviewWorktree, "status --porcelain", "?? review.txt"],
+      "controller-revision": [
+        current.controllerRoot,
+        statusArgs.join(" "),
+        status("b".repeat(40), "main"),
+      ],
+      "controller-dirty": [
+        current.controllerRoot,
+        statusArgs.join(" "),
+        status(current.controllerRevision, "main", "? controller.txt"),
+      ],
+      "root-dirty": [
+        current.repositoryRoot,
+        statusArgs.join(" "),
+        status(current.controllerRevision, "main", "? root.txt"),
+      ],
+      "root-branch": [
+        current.repositoryRoot,
+        statusArgs.join(" "),
+        status(current.controllerRevision, "not-main"),
+      ],
+      "review-HEAD": [
+        current.reviewWorktree,
+        statusArgs.join(" "),
+        status("b".repeat(40), "(detached)"),
+      ],
+      "review-dirty": [
+        current.reviewWorktree,
+        statusArgs.join(" "),
+        status(current.candidateHead, "(detached)", "? review.txt"),
+      ],
     }[drift]!;
     let drifted = false;
     workspaceGit.mockReset();
@@ -1135,7 +1170,7 @@ it.each([
     const commands = { gh: vi.fn(), ghJson: vi.fn() };
     const adapter = githubDeliveryAdapter(commands, "workspace-git");
     await expect(adapter.verifyWorkspace(current, current.candidateHead)).resolves.toBe(true);
-    expect(workspaceGit).toHaveBeenCalledTimes(17);
+    expect(workspaceGit).toHaveBeenCalledTimes(distinct ? 13 : 12);
     expect(workspaceGit.mock.calls).toEqual(reads.map(([args, cwd]) => [args, cwd]));
 
     drifted = true;
@@ -1162,6 +1197,199 @@ it.each([
     expect(await readdir(root)).toEqual([]);
   },
 );
+
+// The per-call read vector: nine family/target reads, then one live status per distinct
+// working directory in controller, repository root, worktree, review worktree order.
+function workspaceReads(current: DeliveryConfig): [string[], string][] {
+  const reads: [string[], string][] = [];
+  for (const cwd of [current.repositoryRoot, current.worktree, current.reviewWorktree])
+    reads.push(
+      [["rev-parse", "--git-common-dir"], cwd],
+      [["remote", "get-url", "--all", "origin"], cwd],
+      [["remote", "get-url", "--push", "--all", "origin"], cwd],
+    );
+  for (const cwd of new Set([
+    current.controllerRoot,
+    current.repositoryRoot,
+    current.worktree,
+    current.reviewWorktree,
+  ]))
+    reads.push([["status", "--porcelain=v2", "--branch"], cwd]);
+  return reads;
+}
+
+it.each(["same", "separate"] as const)(
+  "reads the full per-call set on a fresh %s-controller workspace whose main is ahead of its upstream",
+  async (shape) => {
+    const { current, git } = await repositoryFixture(
+      "https://github.com/todd-skelton/orchestration-platform.git",
+    );
+    const repositoryRoot = current.repositoryRoot;
+    const base = current.controllerRevision;
+    await writeFile(resolve(repositoryRoot, "ahead.txt"), "ahead\n");
+    await git(["add", "ahead.txt"]);
+    await git([
+      "-c",
+      "user.name=fixture",
+      "-c",
+      "user.email=fixture@example.test",
+      "commit",
+      "--quiet",
+      "-m",
+      "ahead",
+    ]);
+    await git(["update-ref", "refs/remotes/origin/main", base]);
+    await git(["config", "branch.main.remote", "origin"]);
+    await git(["config", "branch.main.merge", "refs/heads/main"]);
+    current.controllerRevision = await git(["rev-parse", "HEAD"]);
+    expect(current.controllerRevision).not.toBe(base);
+    if (shape === "separate") {
+      const controller = resolve(repositoryRoot, "..", "external-controller");
+      await git(["clone", "--local", repositoryRoot, controller], repositoryRoot);
+      current.controllerRoot = controller;
+      expect(await git(["rev-parse", "HEAD"], controller)).toBe(current.controllerRevision);
+    }
+    // A clean tree ahead of its upstream reports `# branch.ab` while `status --porcelain` is empty.
+    expect(
+      (await git(["status", "--porcelain=v2", "--branch"], repositoryRoot)).split(/\r?\n/),
+    ).toEqual([
+      `# branch.oid ${current.controllerRevision}`,
+      "# branch.head main",
+      "# branch.upstream origin/main",
+      "# branch.ab +1 -0",
+    ]);
+    expect(await git(["status", "--porcelain"], repositoryRoot)).toBe("");
+    const expected = workspaceReads(current);
+    expect(expected).toHaveLength(shape === "same" ? 12 : 13);
+    const reads: [string[], string][] = [];
+    workspaceCommands.observe = (args, cwd) => reads.push([args, cwd]);
+    const commands = { gh: vi.fn(), ghJson: vi.fn() };
+    const adapter = githubDeliveryAdapter(commands);
+    await expect(adapter.verifyWorkspace(current, current.candidateHead)).resolves.toBe(true);
+    expect(reads).toEqual(expected);
+    reads.length = 0;
+    await expect(adapter.verifyWorkspace(current, current.candidateHead)).resolves.toBe(true);
+    expect(reads).toEqual(expected);
+    expect(commands.gh).not.toHaveBeenCalled();
+    expect(commands.ghJson).not.toHaveBeenCalled();
+  },
+);
+
+it.each(["detached", "unborn"] as const)(
+  "refuses a %s repository root HEAD through the shared status read",
+  async (state) => {
+    const { current, git } = await repositoryFixture(
+      "https://github.com/todd-skelton/orchestration-platform.git",
+    );
+    const adapter = githubDeliveryAdapter({ gh: vi.fn(), ghJson: vi.fn() });
+    await expect(adapter.verifyWorkspace(current, current.candidateHead)).resolves.toBe(true);
+    if (state === "detached") await git(["checkout", "--quiet", "--detach"]);
+    else await git(["checkout", "--quiet", "--orphan", "unborn"]);
+    const headers = (await git(["status", "--porcelain=v2", "--branch"]))
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith("# branch."));
+    expect(headers).toEqual(
+      state === "detached"
+        ? [`# branch.oid ${current.controllerRevision}`, "# branch.head (detached)"]
+        : ["# branch.oid (initial)", "# branch.head unborn"],
+    );
+    const reads: [string[], string][] = [];
+    workspaceCommands.observe = (args, cwd) => reads.push([args, cwd]);
+    await expect(adapter.verifyWorkspace(current, current.candidateHead)).resolves.toBe(false);
+    expect(reads).toEqual(workspaceReads(current).slice(0, 10));
+    expect(reads.at(-1)).toEqual([
+      ["status", "--porcelain=v2", "--branch"],
+      current.controllerRoot,
+    ]);
+  },
+);
+
+it("derives nothing across calls: every mutated fact is reread live by the next call", async () => {
+  const authorized = "https://github.com/todd-skelton/orchestration-platform.git";
+  const { current, git } = await repositoryFixture(authorized);
+  const repositoryRoot = current.repositoryRoot;
+  await git(["config", "extensions.worktreeConfig", "true"]);
+  const perCall = workspaceReads(current);
+  expect(perCall).toHaveLength(12);
+  const reads: [string[], string][] = [];
+  workspaceCommands.observe = (args, cwd) => reads.push([args, cwd]);
+  const commands = { gh: vi.fn(), ghJson: vi.fn() };
+  const adapter = githubDeliveryAdapter(commands);
+  await expect(adapter.verifyWorkspace(current, current.candidateHead)).resolves.toBe(true);
+  expect(reads).toEqual(perCall);
+  // Each mutation drifts a fact owned by an earlier read than the previous one, so the exact
+  // read prefix proves which live command refused and that no earlier read was skipped.
+  const owner = async (mutate: () => Promise<void>, read: [string[], string]) => {
+    await mutate();
+    reads.length = 0;
+    await expect(adapter.verifyWorkspace(current, current.candidateHead)).resolves.toBe(false);
+    const index = perCall.findIndex(
+      ([args, cwd]) => cwd === read[1] && args.join(" ") === read[0].join(" "),
+    );
+    expect(index).toBeGreaterThanOrEqual(0);
+    expect(reads).toEqual(perCall.slice(0, index + 1));
+    expect(reads.at(-1)).toEqual(read);
+  };
+  const status = ["status", "--porcelain=v2", "--branch"];
+  await owner(async () => {
+    await git(
+      [
+        "-c",
+        "user.name=fixture",
+        "-c",
+        "user.email=fixture@example.test",
+        "commit",
+        "--quiet",
+        "--allow-empty",
+        "-m",
+        "moved",
+      ],
+      current.reviewWorktree,
+    );
+    expect(await git(["rev-parse", "HEAD"], current.reviewWorktree)).not.toBe(
+      current.candidateHead,
+    );
+    expect(await git(["status", "--porcelain"], current.reviewWorktree)).toBe("");
+  }, [status, current.reviewWorktree]);
+  await owner(async () => {
+    await writeFile(resolve(current.worktree, "uncommitted.txt"), "drift\n");
+  }, [status, current.worktree]);
+  await owner(async () => {
+    await git(["checkout", "--quiet", "-b", "not-main"], repositoryRoot);
+    expect(await git(["rev-parse", "HEAD"], repositoryRoot)).toBe(current.controllerRevision);
+    expect(await git(["status", "--porcelain"], repositoryRoot)).toBe("");
+  }, [status, current.controllerRoot]);
+  await owner(async () => {
+    await git(
+      [
+        "config",
+        "--worktree",
+        "remote.origin.pushurl",
+        "https://github.com/foreign/repository.git",
+      ],
+      current.reviewWorktree,
+    );
+    expect(await git(["remote", "get-url", "--push", "--all", "origin"], current.worktree)).toBe(
+      authorized,
+    );
+  }, [["remote", "get-url", "--push", "--all", "origin"], current.reviewWorktree]);
+  await owner(async () => {
+    const foreign = resolve(repositoryRoot, "..", "foreign-review");
+    await git(["clone", "--quiet", "--local", repositoryRoot, foreign], repositoryRoot);
+    // Git for Windows creates the gitfile hidden, so it is truncated in place rather than
+    // recreated: `writeFile` would fail there with EPERM.
+    const gitfile = await open(resolve(current.reviewWorktree, ".git"), "r+");
+    try {
+      await gitfile.truncate(0);
+      await gitfile.writeFile(`gitdir: ${resolve(foreign, ".git").replaceAll("\\", "/")}\n`);
+    } finally {
+      await gitfile.close();
+    }
+  }, [["rev-parse", "--git-common-dir"], current.reviewWorktree]);
+  expect(commands.gh).not.toHaveBeenCalled();
+  expect(commands.ghJson).not.toHaveBeenCalled();
+  expect(await readdir(current.stateDirectory)).toEqual([]);
+});
 
 it.each([
   "https://github.com/todd-skelton/orchestration-platform.git",
