@@ -1,5 +1,16 @@
 import { spawn } from "node:child_process";
-import { mkdir, mkdtemp, open, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import {
+  copyFile,
+  mkdir,
+  mkdtemp,
+  open,
+  readFile,
+  readdir,
+  realpath,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -528,4 +539,355 @@ it.each([
   expect(calls.includes("workspace:ISS-129")).toBe(workspaceCalls);
   expect(calls).not.toContain("source:");
   for (const [path, bytes] of current.preserved) expect(await readFile(path, "utf8")).toBe(bytes);
+});
+
+// ISS-164: the attached parent and its private request stream. A Node child
+// (parent.mjs) stands in for the Windows parent with the same redirected stdio
+// shape; the real PowerShell/wsl.exe path is host-owned evidence after merge.
+const parentScript = resolve(import.meta.dirname, "supervise-fixtures/parent.mjs");
+const syntheticEntry = resolve(import.meta.dirname, "supervise-fixtures/synthetic-supervisor.mjs");
+const incumbent = resolve(import.meta.dirname, "supervise-fixtures/incumbent.mjs");
+const syntheticRun = "synthetic-native-component";
+const hex = (seed: string, length: number) =>
+  createHash("sha256").update(seed).digest("hex").slice(0, length);
+let parentOrdinal = 0;
+
+type ParentControl = {
+  executable: string;
+  args: string[];
+  env?: Record<string, string>;
+  verifierWorktree?: {
+    worktree: string;
+    branch: string;
+    head: string;
+    wrapper: string;
+    artifacts: string;
+  };
+  loss?: boolean;
+};
+type ParentRecord = {
+  lines: Record<string, unknown>[];
+  requests: { correlation: number; path: string }[];
+  replies: Record<string, unknown>[];
+  incumbent: { correlation: number; exit: number | null }[];
+  unaccepted: string[];
+  stderr: string;
+  exit: { code: number | null; signal: string | null } | null;
+  startFailure?: string;
+  loss?: boolean;
+  cancelled?: boolean;
+};
+
+function startParent(root: string, control: ParentControl) {
+  const token = `parent-${++parentOrdinal}`;
+  const controlPath = resolve(root, `${token}.json`);
+  const record = resolve(root, `${token}.record.json`);
+  const ready = writeFile(controlPath, JSON.stringify({ ...control, record }));
+  const child = ready.then(() =>
+    spawn(process.execPath, [parentScript, controlPath], {
+      windowsHide: true,
+      stdio: [process.platform === "win32" ? "pipe" : "ignore", "pipe", "pipe"],
+    }),
+  );
+  const done = child.then(
+    (parent) =>
+      new Promise<{ code: number | null; record: ParentRecord }>((done, reject) => {
+        let stderr = "";
+        parent.stderr!.setEncoding("utf8");
+        parent.stderr!.on("data", (chunk) => (stderr += chunk));
+        parent.once("error", reject);
+        parent.once("close", async (code) => {
+          try {
+            done({ code, record: JSON.parse(await readFile(record, "utf8")) });
+          } catch (error) {
+            reject(new Error(`parent exited ${code} without a record: ${stderr}`));
+          }
+        });
+      }),
+  );
+  return { child, done };
+}
+
+async function syntheticRuntime(control: {
+  mode?: string;
+  incumbentMode?: string;
+  wrapper?: string | null;
+  anchor?: boolean;
+  workerJson?: Record<string, unknown>;
+  loss?: boolean;
+  executable?: string;
+}) {
+  const root = await realpath(await mkdtemp(resolve(tmpdir(), "native-db-harness-")));
+  roots.push(root);
+  const runtime = resolve(root, "runtime");
+  const approved = resolve(root, "approved");
+  await Promise.all([mkdir(runtime), mkdir(approved)]);
+  await Promise.all([
+    copyFile(command, resolve(runtime, "supervise.mjs")),
+    copyFile(syntheticEntry, resolve(runtime, "synthetic-supervisor.mjs")),
+  ]);
+  const anchor = {
+    worktree: resolve(root, "anchor"),
+    branch: "synthetic/anchor",
+    head: hex("synthetic anchor head", 40),
+    wrapper: control.wrapper === undefined ? incumbent : (control.wrapper ?? ""),
+    artifacts: resolve(root, "anchor/.orchestrator/native-db"),
+  };
+  const body = {
+    profile: "reconciliation-pg16/v1",
+    run: syntheticRun,
+    issue: 2147483647,
+    attempt: 1,
+    executorHead: hex("synthetic executor head", 40),
+    product: {
+      repository: "synthetic/native-component",
+      head: hex("synthetic product head", 40),
+      tree: hex("synthetic product tree", 40),
+    },
+    declaration: {
+      version: 1,
+      profile: "reconciliation-pg16/v1",
+      files: ["one", "two", "three"].map((name) => ({
+        file: `reconciliation/${name}.db.test.ts`,
+        cases: [`${name} reconciles`],
+      })),
+      mutants: [],
+    },
+    patchDigests: [],
+    stagedInputDirectory: resolve(approved, "staged-input"),
+  };
+  const results = resolve(root, "results.json");
+  const parent = startParent(root, {
+    executable: control.executable ?? process.execPath,
+    args: ["--import", pathToFileURL(hook).href, resolve(runtime, "synthetic-supervisor.mjs")],
+    env: {
+      SYNTHETIC_CONTROL: JSON.stringify({
+        mode: control.mode ?? "request",
+        run: syntheticRun,
+        approvedParents: [approved],
+        results,
+        body,
+        ...(control.workerJson ? { workerJson: control.workerJson } : {}),
+      }),
+      ...(control.incumbentMode ? { INCUMBENT_MODE: control.incumbentMode } : {}),
+    },
+    ...(control.anchor === false ? {} : { verifierWorktree: anchor }),
+    ...(control.loss ? { loss: true } : {}),
+  });
+  return { root, anchor, body, results, ...parent };
+}
+
+async function eventually<T>(read: () => Promise<T>) {
+  for (let count = 0; ; count += 1) {
+    try {
+      return await read();
+    } catch (error) {
+      if (count === 100) throw error;
+      await new Promise((done) => setTimeout(done, 100));
+    }
+  }
+}
+
+it("production main offers the channel through the attached parent and never requests", async () => {
+  const current = await fixture();
+  const root = dirname(current.request);
+  const { done } = startParent(root, {
+    executable: process.execPath,
+    args: ["--import", pathToFileURL(hook).href, command, current.request],
+    env: { SUPERVISE_FIXTURE_STATE: current.runState },
+    verifierWorktree: {
+      worktree: resolve(root, "anchor"),
+      branch: "synthetic/anchor",
+      head: hex("anchor", 40),
+      wrapper: incumbent,
+      artifacts: resolve(root, "anchor/.orchestrator/native-db"),
+    },
+  });
+  const { code, record } = await done;
+  expect(record.stderr).toBe("");
+  expect(code).toBe(0);
+  expect(record.lines).toMatchObject([
+    { status: "observing-author", cursor: 0 },
+    { status: "complete", cursor: 1, participants: 2 },
+    { status: "idle", run: "synthetic-command-run" },
+  ]);
+  expect(record).toMatchObject({ requests: [], replies: [], unaccepted: [] });
+  // Inventory: main creates and closes the channel; only the test harness
+  // requests. Item stops advancing the same run are the source-failure cases above.
+  const source = await readFile(command, "utf8");
+  expect(source.match(/createNativeDbAdmission\(/g)).toHaveLength(2);
+  expect(source).not.toMatch(/admission\.request\(/);
+  expect(source).toMatch(/admission\?\.close\(\)/);
+}, 30_000);
+
+it("copied-runtime harness requests once through the actual stream and reaches the inert incumbent", async () => {
+  const workerJson = {
+    type: "item.completed",
+    item: { type: "agent_message", text: '{"verdict":"PASS"}' },
+  };
+  const current = await syntheticRuntime({ workerJson });
+  const { code, record } = await current.done;
+  expect(record.stderr).toBe("");
+  expect(code).toBe(0);
+  const results = JSON.parse(await readFile(current.results, "utf8"));
+  const evidencePath = resolve(current.anchor.worktree, ".orchestrator/native-db/evidence-1");
+  expect(results).toEqual([
+    {
+      correlation: 1,
+      status: "completed",
+      owner: {
+        lockId: "0123456789abcdef0123456789abcdef",
+        head: current.anchor.head,
+        lane: syntheticRun,
+      },
+      evidencePath,
+      diagnostic: null,
+    },
+  ]);
+  expect(record.requests).toEqual([
+    { correlation: 1, path: resolve(current.anchor.artifacts, `${syntheticRun}-1.json`) },
+  ]);
+  expect(JSON.parse(await readFile(record.requests[0]!.path, "utf8"))).toEqual({
+    schemaVersion: "dogfood-native-db-request/v1",
+    correlation: 1,
+    ...current.body,
+  });
+  expect(record.replies).toEqual([
+    {
+      schemaVersion: "dogfood-native-db-reply/v1",
+      correlation: 1,
+      status: "completed",
+      owner: {
+        lockId: "0123456789abcdef0123456789abcdef",
+        head: current.anchor.head,
+        lane: syntheticRun,
+      },
+      evidencePath,
+      diagnostic: null,
+    },
+  ]);
+  // Worker-shaped JSON on the stream is a status line at most, never a request.
+  expect(record.lines).toEqual([
+    { status: "observing-author", cursor: 0 },
+    workerJson,
+    { status: "idle", run: syntheticRun },
+  ]);
+  expect(record.unaccepted).toEqual([]);
+});
+
+it("a second request in the same run gets the next correlation and its own request file", async () => {
+  const current = await syntheticRuntime({ mode: "twice" });
+  const { code, record } = await current.done;
+  expect(code).toBe(0);
+  const results = JSON.parse(await readFile(current.results, "utf8"));
+  expect(
+    results.map((r: { correlation: number; status: string }) => [r.correlation, r.status]),
+  ).toEqual([
+    [1, "completed"],
+    [2, "completed"],
+  ]);
+  expect(record.requests.map((r) => r.correlation)).toEqual([1, 2]);
+  expect(results[1].evidencePath).toBe(
+    resolve(current.anchor.worktree, ".orchestrator/native-db/evidence-2"),
+  );
+});
+
+it.each([
+  { incumbentMode: "unknown", diagnostic: "synthetic incumbent could not determine the outcome" },
+  { incumbentMode: "no-reply", diagnostic: "native-db-runner-no-reply" },
+  { incumbentMode: "crash", diagnostic: "native-db-runner-no-reply" },
+  { incumbentMode: "foreign-correlation", diagnostic: "native-db-runner-reply-invalid" },
+  { incumbentMode: "outside-anchor", diagnostic: "native-db-runner-evidence-outside-anchor" },
+])(
+  "an incumbent outcome of $incumbentMode is unknown, never completion",
+  async ({ incumbentMode, diagnostic }) => {
+    const current = await syntheticRuntime({ incumbentMode });
+    const { code, record } = await current.done;
+    expect(code).toBe(0);
+    expect(JSON.parse(await readFile(current.results, "utf8"))).toEqual([
+      { correlation: 1, status: "unknown", owner: null, evidencePath: null, diagnostic },
+    ]);
+    expect(record.requests).toHaveLength(1);
+    expect(record.incumbent).toEqual([{ correlation: 1, exit: incumbentMode === "crash" ? 7 : 0 }]);
+  },
+);
+
+it.each([
+  { name: "absent runner", control: { wrapper: null }, diagnostic: "native-db-runner-absent" },
+  { name: "absent anchor", control: { anchor: false }, diagnostic: "native-db-anchor-unsupported" },
+])("$name is a typed refusal without a written request", async ({ control, diagnostic }) => {
+  const current = await syntheticRuntime(control);
+  const { code, record } = await current.done;
+  expect(code).toBe(0);
+  expect(JSON.parse(await readFile(current.results, "utf8"))).toEqual([
+    { correlation: 1, status: "refused", owner: null, evidencePath: null, diagnostic },
+  ]);
+  expect(record.requests).toEqual([]);
+  await expect(readdir(current.anchor.artifacts)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+it("parent loss during a request resolves unknown with the channel diagnostic", async () => {
+  const current = await syntheticRuntime({ loss: true });
+  const { code, record } = await current.done;
+  expect(code).toBe(3);
+  expect(record.loss).toBe(true);
+  expect(record.replies).toEqual([]);
+  const results = await eventually(async () => JSON.parse(await readFile(current.results, "utf8")));
+  expect(results).toEqual([
+    {
+      correlation: 1,
+      status: "unknown",
+      owner: null,
+      evidencePath: null,
+      diagnostic: "native-db-channel-closed",
+    },
+  ]);
+});
+
+it("no request after close and no concurrent request ever reaches the parent", async () => {
+  const closed = await syntheticRuntime({ mode: "after-close" });
+  const closedOutcome = await closed.done;
+  expect(closedOutcome.record.requests).toEqual([]);
+  expect(JSON.parse(await readFile(closed.results, "utf8"))).toEqual([
+    {
+      correlation: null,
+      status: "refused",
+      owner: null,
+      evidencePath: null,
+      diagnostic: "native-db-channel-closed",
+    },
+  ]);
+  const concurrent = await syntheticRuntime({ mode: "concurrent" });
+  const concurrentOutcome = await concurrent.done;
+  expect(concurrentOutcome.code).toBe(0);
+  expect(concurrentOutcome.record.requests).toHaveLength(1);
+  expect(JSON.parse(await readFile(concurrent.results, "utf8"))).toMatchObject([
+    { correlation: 1, status: "completed" },
+    { correlation: null, status: "refused", diagnostic: "native-db-request-pending" },
+  ]);
+});
+
+it("cancelling the parent ends the stream and both processes exit", async () => {
+  const current = await syntheticRuntime({ mode: "hold" });
+  const parent = await current.child;
+  await new Promise((done) => setTimeout(done, 500));
+  // Ctrl+C on POSIX; Windows has no catchable signal, so the stand-in's stdin ends.
+  if (process.platform === "win32") parent.stdin!.end();
+  else parent.kill("SIGTERM");
+  const { code, record } = await current.done;
+  expect(record.cancelled).toBe(true);
+  expect(record.exit).toEqual({ code: 0, signal: null });
+  expect(code).toBe(0);
+  expect(record.lines.at(-1)).toEqual({ status: "idle", run: syntheticRun });
+  expect(JSON.parse(await readFile(current.results, "utf8"))).toEqual([
+    { status: "unknown", diagnostic: "native-db-channel-closed" },
+  ]);
+});
+
+it("a supervisor that fails to start ends the parent with a diagnostic", async () => {
+  const current = await syntheticRuntime({ executable: resolve(tmpdir(), "missing-executor") });
+  const { code, record } = await current.done;
+  expect(code).toBe(1);
+  expect(record.startFailure).toContain("ENOENT");
+  expect(record.exit).toBeNull();
 });
