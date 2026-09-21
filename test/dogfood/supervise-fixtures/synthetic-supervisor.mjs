@@ -2,7 +2,7 @@
 // replaces the supervisor in a disposable runtime and requests once through
 // the actual createNativeDbAdmission stream. Production main never requests.
 import { writeFile } from "node:fs/promises";
-import { createNativeDbAdmission } from "./supervise.mjs";
+import { createNativeDbAdmission, nativeDbProfileAdapter } from "./supervise.mjs";
 
 const control = JSON.parse(process.env.SYNTHETIC_CONTROL);
 const status = (row) => process.stdout.write(`${JSON.stringify(row)}\n`);
@@ -18,6 +18,18 @@ if (control.mode === "hold") {
 } else if (control.mode === "after-close") {
   admission.close();
   results.push(await admission.request(control.body));
+} else if (control.mode === "composed") {
+  // ISS-165: the same request through the composed optional adapter method.
+  // External execution is a stub; the spread and stream wiring are the real ones.
+  const unused = async () => {
+    throw new Error("synthetic native adapter performs no external execution");
+  };
+  const composed = nativeDbProfileAdapter(
+    { git: unused, preflight: unused, launch: unused, observe: unused, checks: unused },
+    admission,
+  );
+  results.push(await composed.nativeDbProfile(control.body));
+  results.push({ methods: Object.keys(composed) });
 } else if (control.mode === "concurrent") {
   results.push(
     ...(await Promise.all([admission.request(control.body), admission.request(control.body)])),
