@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { PassThrough } from "node:stream";
 import { promisify } from "node:util";
 import { afterEach, expect, it, vi } from "vitest";
 import {
@@ -27,6 +28,13 @@ import overlengthReview from "./fixtures/iss-150-overlength.json" with { type: "
 import prefixedReview from "./fixtures/iss-150-prefixed.json" with { type: "json" };
 import prefixedAuthor from "./fixtures/iss-177-prefixed-author.json" with { type: "json" };
 import overlengthAuthor from "./fixtures/iss-183-overlength-author.json" with { type: "json" };
+import {
+  NATIVE_DB_REPLY_LIMIT,
+  NATIVE_DB_REQUEST_LIMIT,
+  createNativeDbAdmission,
+  validateNativeDbReply,
+  validateNativeDbRequest,
+} from "../../scripts/dogfood/supervise.mjs";
 
 const id = "01a048fe-90c8-7cb3-8da5-938c1f5cb5f0",
   head = "b".repeat(40);
@@ -1712,4 +1720,614 @@ it("filters the actual observer-to-worker child environment", async () => {
   expect(JSON.parse(await readFile(resolve(root, "identity.json"), "utf8")).pid).toBeGreaterThan(0);
   expect(await readFile(resolve(root, "trace.jsonl"), "utf8")).toBe("finite prompt\n");
   expect(parent).toEqual(before);
+});
+
+// ISS-164: closed-schema shallow validation and the private request stream.
+// Every object is closed; bounds are the incumbent's; v1 carries no instant,
+// so a date-only value can only arrive as a key v1 does not have.
+const nativeRun = "m1-iss164-20260921T0423";
+const approved = "/root/orchestration-m1/runtime";
+const bytes = (value: unknown) => Buffer.byteLength(JSON.stringify(value), "utf8");
+type Request = {
+  schemaVersion: string;
+  correlation: number;
+  profile: string;
+  run: string;
+  issue: number;
+  attempt: number;
+  executorHead: string;
+  product: { repository: string; head: string; tree: string };
+  declaration: {
+    version: number;
+    profile: string;
+    files: { file: string; cases: string[] }[];
+    mutants: { id: string; file: string; cases: string[]; assertion: string }[];
+  };
+  patchDigests: { id: string; digest: string }[];
+  stagedInputDirectory: string;
+};
+const minimalRequest = (): Request => ({
+  schemaVersion: "dogfood-native-db-request/v1",
+  correlation: 1,
+  profile: "reconciliation-pg16/v1",
+  run: nativeRun,
+  issue: 1,
+  attempt: 1,
+  executorHead: "0".repeat(40),
+  product: { repository: "o/n", head: "1".repeat(40), tree: "2".repeat(40) },
+  declaration: {
+    version: 1,
+    profile: "reconciliation-pg16/v1",
+    files: ["a", "b", "c"].map((file) => ({ file, cases: ["c"] })),
+    mutants: [],
+  },
+  patchDigests: [],
+  stagedInputDirectory: `${approved}/s`,
+});
+// Every scalar at its bound and every list at its count; the byte cap is a
+// separate control because 3 x 256 x 512-character cases alone exceed it.
+const maximalRequest = (): Request => {
+  const cases = (prefix: string) => Array.from({ length: 256 }, (_, index) => `${prefix}-${index}`);
+  return {
+    schemaVersion: "dogfood-native-db-request/v1",
+    correlation: Number.MAX_SAFE_INTEGER,
+    profile: "reconciliation-pg16/v1",
+    run: "R".repeat(128),
+    issue: 2147483647,
+    attempt: 2147483647,
+    executorHead: "f".repeat(40),
+    product: {
+      repository: `${"o".repeat(100)}/${"n".repeat(100)}`,
+      head: "e".repeat(40),
+      tree: "d".repeat(40),
+    },
+    declaration: {
+      version: 1,
+      profile: "reconciliation-pg16/v1",
+      files: ["one", "two", "three"].map((name) => ({
+        file: `${name}/`.repeat(200).slice(0, 1023) + "t",
+        cases: [name.padEnd(512, "x")],
+      })),
+      mutants: ["m1", "m2", "m3"].map((id) => ({
+        id: id.padEnd(128, "."),
+        file: "one",
+        cases: cases(id),
+        assertion: "a".repeat(2048),
+      })),
+    },
+    patchDigests: ["p1", "p2", "p3"].map((id) => ({
+      id: id.padEnd(128, ":"),
+      digest: "9".repeat(64),
+    })),
+    stagedInputDirectory: `${approved}/${"s".repeat(1023 - approved.length)}`,
+  };
+};
+// Fills the third file's cases until the request measures exactly `target` bytes.
+const sizedRequest = (target: number) => {
+  const request = minimalRequest();
+  const cases = request.declaration.files[2]!.cases;
+  cases.length = 0;
+  for (let index = 0; bytes(request) < target; index += 1) {
+    const room = target - bytes(request) - (cases.length === 0 ? 2 : 3);
+    const label = `${index}-`;
+    if (room < label.length) {
+      cases[cases.length - 1] += "y".repeat(target - bytes(request));
+      break;
+    }
+    cases.push(label.padEnd(Math.min(512, room), "x"));
+  }
+  expect(bytes(request)).toBe(target);
+  return request;
+};
+const minimalReply = () => ({
+  schemaVersion: "dogfood-native-db-reply/v1",
+  correlation: 1,
+  status: "refused",
+  owner: null,
+  evidencePath: null,
+  diagnostic: "d",
+});
+const completedReply = (overrides: Record<string, unknown> = {}) => ({
+  schemaVersion: "dogfood-native-db-reply/v1",
+  correlation: 1,
+  status: "completed",
+  owner: { lockId: "3".repeat(32), head: "4".repeat(40), lane: nativeRun },
+  evidencePath: "C:\\root\\anchor\\.orchestrator\\native-db\\evidence-1",
+  diagnostic: null,
+  ...overrides,
+});
+// Every field within its character bound, three UTF-8 bytes per character.
+const oversizeReply = () =>
+  completedReply({
+    evidencePath: `/${"\u4e00".repeat(1023)}`,
+    diagnostic: "\u4e00".repeat(2048),
+  });
+const options = { run: nativeRun, approvedParents: [approved] };
+
+it("accepts the minimum, maximum and exact-size native-db messages", () => {
+  expect(validateNativeDbRequest(minimalRequest(), options)).toBeUndefined();
+  const maximal = maximalRequest();
+  expect(bytes(maximal)).toBeLessThanOrEqual(NATIVE_DB_REQUEST_LIMIT);
+  expect(validateNativeDbRequest(maximal, { ...options, run: maximal.run })).toBeUndefined();
+  expect(validateNativeDbRequest(sizedRequest(NATIVE_DB_REQUEST_LIMIT), options)).toBeUndefined();
+  expect(validateNativeDbRequest(sizedRequest(NATIVE_DB_REQUEST_LIMIT + 1), options)).toBe(
+    `request exceeds ${NATIVE_DB_REQUEST_LIMIT} UTF-8 bytes`,
+  );
+  expect(validateNativeDbReply(minimalReply())).toBeUndefined();
+  const maximalReply = completedReply({
+    correlation: Number.MAX_SAFE_INTEGER,
+    owner: { lockId: "a".repeat(32), head: "b".repeat(40), lane: "L".repeat(128) },
+    evidencePath: `/${"e".repeat(1023)}`,
+    diagnostic: "\u{1F600}".repeat(1024),
+  });
+  expect(bytes(maximalReply)).toBeLessThanOrEqual(NATIVE_DB_REPLY_LIMIT);
+  expect(validateNativeDbReply(maximalReply)).toBeUndefined();
+  expect(validateNativeDbReply(oversizeReply())).toBe(
+    `reply exceeds ${NATIVE_DB_REPLY_LIMIT} UTF-8 bytes`,
+  );
+  expect(validateNativeDbReply({ ...minimalReply(), status: "unknown" })).toBeUndefined();
+  expect(validateNativeDbReply(completedReply())).toBeUndefined();
+  expect(
+    validateNativeDbReply(completedReply({ evidencePath: "/posix/anchor/e" })),
+  ).toBeUndefined();
+});
+
+it.each<[string, (request: Request) => unknown, string]>([
+  [
+    "nested unknown key",
+    (r) => ({ ...r, product: { ...r.product, extra: 1 } }),
+    "request.product.extra is not a v1 key",
+  ],
+  [
+    "nested unknown key in a file entry",
+    (r) => ({
+      ...r,
+      declaration: {
+        ...r.declaration,
+        files: [{ ...r.declaration.files[0], generated: true }, ...r.declaration.files.slice(1)],
+      },
+    }),
+    "request.declaration.files[0].generated is not a v1 key",
+  ],
+  [
+    "date-only instant as an extra key",
+    (r) => ({ ...r, requestedAt: "2026-09-20" }),
+    "request.requestedAt is not a v1 key",
+  ],
+  ["missing required key", ({ attempt: _, ...r }) => r, "request.attempt is required"],
+  [
+    "missing nested required key",
+    (r) => ({ ...r, product: { repository: r.product.repository, head: r.product.head } }),
+    "request.product.tree is required",
+  ],
+  [
+    "wrong schema",
+    (r) => ({ ...r, schemaVersion: "dogfood-native-db-request/v2" }),
+    "request.schemaVersion must be dogfood-native-db-request/v1",
+  ],
+  [
+    "wrong profile",
+    (r) => ({ ...r, profile: "reconciliation-pg17/v1" }),
+    "request.profile must be reconciliation-pg16/v1",
+  ],
+  [
+    "string correlation",
+    (r) => ({ ...r, correlation: "1" }),
+    "request.correlation must be a safe integer",
+  ],
+  [
+    "zero correlation",
+    (r) => ({ ...r, correlation: 0 }),
+    "request.correlation must be 1..9007199254740991",
+  ],
+  [
+    "unsafe correlation",
+    (r) => ({ ...r, correlation: 2 ** 53 }),
+    "request.correlation must be a safe integer",
+  ],
+  ["foreign run", (r) => ({ ...r, run: "other-run" }), "request.run is not the bound run"],
+  ["run shape", (r) => ({ ...r, run: "bad run" }), "request.run has an unsupported shape"],
+  ["issue below range", (r) => ({ ...r, issue: 0 }), "request.issue must be 1..2147483647"],
+  [
+    "issue above range",
+    (r) => ({ ...r, issue: 2147483648 }),
+    "request.issue must be 1..2147483647",
+  ],
+  ["attempt as float", (r) => ({ ...r, attempt: 1.5 }), "request.attempt must be a safe integer"],
+  [
+    "uppercase head",
+    (r) => ({ ...r, executorHead: "A".repeat(40) }),
+    "request.executorHead has an unsupported shape",
+  ],
+  [
+    "short head",
+    (r) => ({ ...r, executorHead: "a".repeat(39) }),
+    "request.executorHead must be 40..40 characters",
+  ],
+  ["product as list", (r) => ({ ...r, product: [] }), "request.product must be an object"],
+  [
+    "repository with three segments",
+    (r) => ({ ...r, product: { ...r.product, repository: "a/b/c" } }),
+    "request.product.repository must be owner/name",
+  ],
+  [
+    "repository segment too long",
+    (r) => ({ ...r, product: { ...r.product, repository: `${"o".repeat(101)}/n` } }),
+    "request.product.repository must be owner/name",
+  ],
+  [
+    "declaration version",
+    (r) => ({ ...r, declaration: { ...r.declaration, version: 2 } }),
+    "request.declaration.version must be 1",
+  ],
+  [
+    "two files",
+    (r) => ({ ...r, declaration: { ...r.declaration, files: r.declaration.files.slice(0, 2) } }),
+    "request.declaration.files must have 3..3 entries",
+  ],
+  [
+    "repeated file",
+    (r) => ({
+      ...r,
+      declaration: {
+        ...r.declaration,
+        files: [r.declaration.files[0], r.declaration.files[0], r.declaration.files[2]],
+      },
+    }),
+    'request.declaration.files repeats "a"',
+  ],
+  [
+    "traversing file",
+    (r) => ({
+      ...r,
+      declaration: {
+        ...r.declaration,
+        files: [{ file: "../a", cases: ["c"] }, ...r.declaration.files.slice(1)],
+      },
+    }),
+    "request.declaration.files[0].file must be a relative path without traversal",
+  ],
+  [
+    "backslash file",
+    (r) => ({
+      ...r,
+      declaration: {
+        ...r.declaration,
+        files: [{ file: "a\\b", cases: ["c"] }, ...r.declaration.files.slice(1)],
+      },
+    }),
+    "request.declaration.files[0].file must be a relative path without traversal",
+  ],
+  [
+    "empty cases",
+    (r) => ({
+      ...r,
+      declaration: {
+        ...r.declaration,
+        files: [{ file: "a", cases: [] }, ...r.declaration.files.slice(1)],
+      },
+    }),
+    "request.declaration.files[0].cases must have 1..256 entries",
+  ],
+  [
+    "257 cases",
+    (r) => ({
+      ...r,
+      declaration: {
+        ...r.declaration,
+        files: [
+          { file: "a", cases: Array.from({ length: 257 }, (_, i) => `c${i}`) },
+          ...r.declaration.files.slice(1),
+        ],
+      },
+    }),
+    "request.declaration.files[0].cases must have 1..256 entries",
+  ],
+  [
+    "repeated case",
+    (r) => ({
+      ...r,
+      declaration: {
+        ...r.declaration,
+        files: [{ file: "a", cases: ["c", "c"] }, ...r.declaration.files.slice(1)],
+      },
+    }),
+    'request.declaration.files[0].cases repeats "c"',
+  ],
+  [
+    "long case",
+    (r) => ({
+      ...r,
+      declaration: {
+        ...r.declaration,
+        files: [{ file: "a", cases: ["c".repeat(513)] }, ...r.declaration.files.slice(1)],
+      },
+    }),
+    "request.declaration.files[0].cases[0] must be 1..512 characters",
+  ],
+  [
+    "four mutants",
+    (r) => ({
+      ...r,
+      declaration: {
+        ...r.declaration,
+        mutants: ["1", "2", "3", "4"].map((id) => ({
+          id,
+          file: "a",
+          cases: ["c"],
+          assertion: "x",
+        })),
+      },
+    }),
+    "request.declaration.mutants must have 0..3 entries",
+  ],
+  [
+    "mutant assertion too long",
+    (r) => ({
+      ...r,
+      declaration: {
+        ...r.declaration,
+        mutants: [{ id: "m", file: "a", cases: ["c"], assertion: "x".repeat(2049) }],
+      },
+    }),
+    "request.declaration.mutants[0].assertion must be 1..2048 characters",
+  ],
+  [
+    "mutant with a command",
+    (r) => ({
+      ...r,
+      declaration: {
+        ...r.declaration,
+        mutants: [{ id: "m", file: "a", cases: ["c"], assertion: "x", command: "psql" }],
+      },
+    }),
+    "request.declaration.mutants[0].command is not a v1 key",
+  ],
+  [
+    "patch digests as object",
+    (r) => ({ ...r, patchDigests: {} }),
+    "request.patchDigests must be a list",
+  ],
+  [
+    "short digest",
+    (r) => ({ ...r, patchDigests: [{ id: "p", digest: "9".repeat(63) }] }),
+    "request.patchDigests[0].digest must be 64..64 characters",
+  ],
+  [
+    "repeated digest id",
+    (r) => ({
+      ...r,
+      patchDigests: [
+        { id: "p", digest: "9".repeat(64) },
+        { id: "p", digest: "8".repeat(64) },
+      ],
+    }),
+    'request.patchDigests repeats "p"',
+  ],
+  [
+    "relative staged directory",
+    (r) => ({ ...r, stagedInputDirectory: "runtime/s" }),
+    "request.stagedInputDirectory must be absolute",
+  ],
+  [
+    "traversing staged directory",
+    (r) => ({ ...r, stagedInputDirectory: `${approved}/../s` }),
+    "request.stagedInputDirectory must be normalized without traversal",
+  ],
+  [
+    "staged directory outside approved parents",
+    (r) => ({ ...r, stagedInputDirectory: "/root/elsewhere/s" }),
+    "request.stagedInputDirectory is not under an approved parent",
+  ],
+  [
+    "approved parent itself",
+    (r) => ({ ...r, stagedInputDirectory: approved }),
+    "request.stagedInputDirectory is not under an approved parent",
+  ],
+  [
+    "runner path field",
+    (r) => ({ ...r, runnerPath: "C:\\wrapper.ps1" }),
+    "request.runnerPath is not a v1 key",
+  ],
+  ["not an object", () => "request", "request must be an object"],
+])("refuses a request with %s", (_, mutate, diagnostic) => {
+  expect(validateNativeDbRequest(minimalRequest(), options)).toBeUndefined();
+  expect(validateNativeDbRequest(mutate(minimalRequest()), options)).toBe(diagnostic);
+});
+
+it.each<[string, Record<string, unknown>, string]>([
+  [
+    "unknown key",
+    { ...minimalReply(), executedAt: "2026-09-20T00:00:00Z" },
+    "reply.executedAt is not a v1 key",
+  ],
+  [
+    "missing diagnostic key",
+    (({ diagnostic: _, ...r }) => r)(minimalReply()),
+    "reply.diagnostic is required",
+  ],
+  [
+    "wrong schema",
+    { ...minimalReply(), schemaVersion: "dogfood-native-db-request/v1" },
+    "reply.schemaVersion must be dogfood-native-db-reply/v1",
+  ],
+  [
+    "verdict status",
+    { ...minimalReply(), status: "PASS" },
+    "reply.status must be completed, refused or unknown",
+  ],
+  [
+    "owner date-only key",
+    completedReply({ owner: { ...completedReply().owner, acquiredAt: "2026-09-20" } }),
+    "reply.owner.acquiredAt is not a v1 key",
+  ],
+  [
+    "owner missing lane",
+    completedReply({ owner: { lockId: "3".repeat(32), head: "4".repeat(40) } }),
+    "reply.owner.lane is required",
+  ],
+  [
+    "owner lock id",
+    completedReply({ owner: { ...completedReply().owner, lockId: "3".repeat(31) } }),
+    "reply.owner.lockId must be 32..32 characters",
+  ],
+  [
+    "owner head",
+    completedReply({ owner: { ...completedReply().owner, head: "G".repeat(40) } }),
+    "reply.owner.head has an unsupported shape",
+  ],
+  [
+    "relative evidence",
+    completedReply({ evidencePath: "anchor/evidence" }),
+    "reply.evidencePath must be absolute",
+  ],
+  [
+    "traversing evidence",
+    completedReply({ evidencePath: "C:\\anchor\\..\\evidence" }),
+    "reply.evidencePath must be normalized without traversal",
+  ],
+  [
+    "completed without owner",
+    completedReply({ owner: null }),
+    "reply.status completed requires owner and evidencePath",
+  ],
+  [
+    "completed without evidence",
+    completedReply({ evidencePath: null }),
+    "reply.status completed requires owner and evidencePath",
+  ],
+  [
+    "refused with owner",
+    { ...minimalReply(), owner: completedReply().owner },
+    "reply.status refused carries no owner or evidencePath",
+  ],
+  [
+    "unknown without diagnostic",
+    { ...minimalReply(), status: "unknown", diagnostic: null },
+    "reply.status unknown requires a diagnostic",
+  ],
+  [
+    "empty diagnostic",
+    { ...minimalReply(), diagnostic: "" },
+    "reply.diagnostic must be 1..2048 characters",
+  ],
+  [
+    "worker event",
+    { type: "item.completed", item: { type: "agent_message", text: "{}" } },
+    "reply.schemaVersion is required",
+  ],
+])("refuses a reply with %s", (_, reply, diagnostic) => {
+  expect(validateNativeDbReply(reply)).toBe(diagnostic);
+});
+
+function channel(run = nativeRun) {
+  const input = new PassThrough();
+  const output = new PassThrough();
+  const written: string[] = [];
+  output.on("data", (chunk) => written.push(String(chunk)));
+  const admission = createNativeDbAdmission(run, input, output, { approvedParents: [approved] });
+  const body = (): Omit<Request, "schemaVersion" | "correlation"> => {
+    const { schemaVersion: _s, correlation: _c, ...rest } = minimalRequest();
+    return rest;
+  };
+  const flush = () => new Promise((done) => setImmediate(done));
+  return { input, output, written, admission, body, flush };
+}
+
+it("routes one request through the stream and refuses invalid or concurrent requests locally", async () => {
+  const c = channel();
+  expect(await c.admission.request({ ...c.body(), issue: 0 })).toEqual({
+    correlation: null,
+    status: "refused",
+    owner: null,
+    evidencePath: null,
+    diagnostic: "native-db-request-invalid: request.issue must be 1..2147483647",
+  });
+  expect(await c.admission.request({ ...c.body(), run: "other-run" })).toMatchObject({
+    status: "refused",
+    diagnostic: "native-db-request-invalid: request.run is not the bound run",
+  });
+  expect(c.written).toEqual([]);
+  // The channel owns schema and correlation; a caller cannot choose them.
+  const first = c.admission.request({ ...c.body(), correlation: 7, schemaVersion: "v9" });
+  const second = c.admission.request(c.body());
+  expect(await second).toMatchObject({
+    status: "refused",
+    diagnostic: "native-db-request-pending",
+  });
+  await c.flush();
+  expect(c.written).toHaveLength(1);
+  const sent = JSON.parse(c.written[0]!);
+  expect(c.written[0]!.endsWith("\n")).toBe(true);
+  expect(sent).toEqual({ ...minimalRequest(), correlation: 1 });
+  // A foreign correlation is not this request's reply.
+  c.input.write(`${JSON.stringify(completedReply({ correlation: 2 }))}\n`);
+  await c.flush();
+  c.input.write(`${JSON.stringify(completedReply())}\r\n`);
+  expect(await first).toEqual({
+    correlation: 1,
+    status: "completed",
+    owner: completedReply().owner,
+    evidencePath: completedReply().evidencePath,
+    diagnostic: null,
+  });
+  // A duplicate reply after resolution is ignored; the next correlation increases.
+  c.input.write(`${JSON.stringify(completedReply())}\n`);
+  await c.flush();
+  const third = c.admission.request(c.body());
+  await c.flush();
+  expect(JSON.parse(c.written[1]!).correlation).toBe(2);
+  c.input.write(`${JSON.stringify({ ...minimalReply(), correlation: 2 })}\n`);
+  expect(await third).toMatchObject({ correlation: 2, status: "refused", diagnostic: "d" });
+  c.admission.close();
+  expect(await c.admission.request(c.body())).toMatchObject({
+    correlation: null,
+    status: "refused",
+    diagnostic: "native-db-channel-closed",
+  });
+  expect(c.written).toHaveLength(2);
+});
+
+it.each<[string, (c: ReturnType<typeof channel>) => void, string]>([
+  [
+    "a partial reply before EOF",
+    (c) => c.input.end(JSON.stringify(completedReply()).slice(0, 20)),
+    "native-db-channel-closed",
+  ],
+  ["an empty EOF", (c) => c.input.end(), "native-db-channel-closed"],
+  ["close while pending", (c) => c.admission.close(), "native-db-channel-closed"],
+  ["malformed JSON", (c) => c.input.write("{not json}\n"), "native-db-reply-malformed"],
+  [
+    "worker JSON",
+    (c) => c.input.write('{"type":"item.completed","item":{"type":"agent_message","text":"{}"}}\n'),
+    "native-db-reply-invalid: reply.schemaVersion is required",
+  ],
+  [
+    "a wrong-shape reply",
+    (c) => c.input.write(`${JSON.stringify(completedReply({ owner: null }))}\n`),
+    "native-db-reply-invalid: reply.status completed requires owner and evidencePath",
+  ],
+  [
+    "an oversize reply line",
+    (c) => c.input.write(`${JSON.stringify(oversizeReply())}\n`),
+    `native-db-reply-oversize: ${NATIVE_DB_REPLY_LIMIT} bytes`,
+  ],
+  [
+    "an oversize partial reply",
+    (c) => c.input.write("x".repeat(NATIVE_DB_REPLY_LIMIT + 1)),
+    `native-db-reply-oversize: ${NATIVE_DB_REPLY_LIMIT} bytes`,
+  ],
+])("resolves unknown, never completion, on %s", async (_, act, diagnostic) => {
+  const c = channel();
+  const pending = c.admission.request(c.body());
+  await c.flush();
+  expect(c.written).toHaveLength(1);
+  act(c);
+  expect(await pending).toEqual({
+    correlation: 1,
+    status: "unknown",
+    owner: null,
+    evidencePath: null,
+    diagnostic,
+  });
 });

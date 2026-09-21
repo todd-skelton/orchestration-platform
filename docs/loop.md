@@ -585,9 +585,18 @@ hosted CI only.
 - Config: `/root/orchestration-m1/loop.json`; state under
   `/root/orchestration-m1/runtime/<run>`; worktrees under
   `/root/orchestration-m1/worktrees`; log `/root/orchestration-m1/supervisor.log`.
-- Start from Windows (the launcher detaches itself and prints the PID):
-  `wsl -d Ubuntu -- bash /root/orchestration-m1/repo/scripts/executor/run-loop.sh [config.json]`
+- Start from Windows with `scripts/executor/start-loop.ps1 [-Config <config>]
+  [-VerifierWorktree <path>]` (PowerShell 7). It stays attached to one
+  `C:\Windows\System32\wsl.exe -d Ubuntu -- bash
+  /root/orchestration-m1/repo/scripts/executor/run-loop.sh <config>` child
+  through redirected stdio with `WSLENV` empty, and exits with the
+  supervisor's code on idle, a terminal stop, cancel or a start failure
+  (ISS-164). `run-loop.sh` no longer detaches: it keeps the provider and tool
+  setup and runs the attached supervisor, whose stdout is exclusively the
+  protocol stream while its stderr and the pnpm banner go to `supervisor.log`.
 - Check: `wsl -d Ubuntu -- tail -n 3 /root/orchestration-m1/supervisor.log`.
+  Every protocol line is also appended there, so the log still ends in the
+  final status.
   A final `idle` line means nothing is runnable in the configured scope; it
   does not establish milestone completion while admitted work is blocked.
   A non-zero exit means a stop whose learning note is on the issue.
@@ -612,6 +621,54 @@ hosted CI only.
   and the single dead-worker retry. No worker holds a native Codex login.
 - Chase Sets runs use `/root/orchestration-m2/repo` and
   `/root/orchestration-m2/loop.json` with the same tools (ISS-110).
+
+### Private request stream
+
+ISS-164 gives one run one private request/reply stream between the attached
+Windows parent and the supervisor, for the incumbent's native database
+verification. `supervise.mjs` exports `createNativeDbAdmission(run, input,
+output)`: one pending correlation per channel, increasing per run, and a typed
+result `{correlation, status: completed|refused|unknown, owner, evidencePath,
+diagnostic}`. Production main owns and closes the channel but never requests;
+the first ordinary selected-issue request belongs to ISS-170 and adapter
+composition to ISS-165. Worker JSON never reaches the stream: `launchObserver`
+retains `stdio: "ignore"`, and a reply that is not a closed v1 reply resolves
+the pending request `unknown`, as do EOF, a partial line and an oversize
+line. Nothing after close is sent, and a second request while one is pending
+is refused locally.
+
+The closed v1 request is `schemaVersion: dogfood-native-db-request/v1`,
+`correlation`, `profile: reconciliation-pg16/v1`, `run`, `issue`,
+`attempt`, `executorHead`, `product {repository, head, tree}`,
+`declaration {version: 1, profile, files[3] {file, cases}, mutants[0..3] {id,
+file, cases, assertion}}`, `patchDigests[0..3] {id, digest}` and
+`stagedInputDirectory`. The reply is `schemaVersion:
+dogfood-native-db-reply/v1`, `correlation`, `status`, `owner: null |
+{lockId, head, lane}`, `evidencePath` and `diagnostic`; completed requires
+owner and evidence path, and completion is lifecycle only, never PASS. Every
+object is closed with the incumbent's bounds: 65536/8192 UTF-8 bytes, IDs 1..128
+`[A-Za-z0-9._:-]`, repository segments 1..100, assertions and diagnostics
+1..2048, cases 1..512 and unique per file, paths 1..1024 with absolute paths
+under approved parents and relative paths without traversal, issue/attempt
+1..2147483647, correlation a safe integer, 40 lowercase hex revisions, 64 hex
+digests and 32 hex lock IDs. No command, environment, script, runner-path or
+duration field exists.
+
+The parent binds the first request's run, refuses a foreign run, a repeated
+correlation or an unknown top-level key, and answers `refused` with
+`native-db-anchor-unsupported` when `-VerifierWorktree` is absent or is not
+a clean worktree on a live branch, and `native-db-runner-absent` when the
+ROOT container has no `.orchestrator/invoke-heavy-verifier.ps1`. Otherwise it
+writes the request under the anchor's ignored `.orchestrator/native-db` and
+runs `invoke-heavy-verifier.ps1 -NativeDbProfile 'reconciliation-pg16/v1'
+-NativeRequestPath <request> -Worktree <anchor> -Lane <run> -Branch <branch>
+-ClaimedHead <head>` in branch mode, reading `<request>.reply.json`. A
+missing, foreign or malformed reply is `unknown`. The parent never edits
+`verify-lock.d`, releases an owner, signals Linux or authors cleanup facts; a
+WSL exit is not Linux cleanup, and Linux survivors after Windows loss remain
+the incumbent's responsibility. The test-only trigger is a disposable copied
+runtime whose entry requests once through the actual factory with a Node
+parent stand-in; there is no production selector, flag or declaration.
 - A Chase Sets config may set `"targetMilestone": 155`, using the positive
   repository milestone number, to limit the native pull window to that
   milestone (ISS-135). Product readiness, dependencies and exclusions still
