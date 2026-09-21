@@ -83,7 +83,9 @@ type Shape = "conflict" | "clean" | "outside-path" | "unsupported";
 
 // The retained bytes of the run `m1-iss146-147-20260914T2325`, in synthetic form: a
 // failed attempt 2 whose reviewed head met a conflict after resolution was consumed.
-async function exhaustedFixture(shape: Shape = "conflict", spentRetry = false) {
+// `autocrlf` reproduces a Windows-style checkout, where the marker file the author
+// resolves carries CRLF line endings outside the hunks.
+async function exhaustedFixture(shape: Shape = "conflict", spentRetry = false, autocrlf = false) {
   const root = await realpath(await mkdtemp(resolve(tmpdir(), "integration-continuation-")));
   roots.push(root);
   const repository = resolve(root, "repository");
@@ -99,7 +101,8 @@ async function exhaustedFixture(shape: Shape = "conflict", spentRetry = false) {
   await git(["init", "-b", "main"]);
   await appendFile(
     resolve(repository, ".git/config"),
-    "[user]\n\tname = Fixture\n\temail = fixture@example.test\n",
+    "[user]\n\tname = Fixture\n\temail = fixture@example.test\n" +
+      (autocrlf ? "[core]\n\tautocrlf = true\n" : ""),
   );
   await writeFile(resolve(repository, ".gitignore"), "node_modules/\n");
   await writeFile(resolve(repository, "docs/loop.md"), "# The loop\n\nKeep it small.\n");
@@ -699,7 +702,9 @@ it.each<Mode>([
       : mode === "outside-path" || mode === "unsupported"
         ? mode
         : "conflict";
-  const f = await exhaustedFixture(shape, mode === "spent-retry");
+  // The pass mode runs on a CRLF checkout, as the hosted Windows gate does for every mode.
+  const autocrlf = mode === "pass";
+  const f = await exhaustedFixture(shape, mode === "spent-retry", autocrlf);
   const q = await f.compose();
   expect(await f.compose()).toEqual(q);
   const item = q.items[0]!;
@@ -745,11 +750,17 @@ it.each<Mode>([
         expect(config.author).toMatchObject({ ...SELF_ROUTING.author[rung], rung });
         expect(prompt).toContain('Allowed author paths: ["docs/loop.md"]');
         expect(prompt).toContain("Resolve only Git's marked conflicting hunks");
-        if (mode !== "no-change")
+        if (mode !== "no-change") {
+          // Git's checkout line endings outside the hunks are immutable text, so the
+          // resolution keeps them; a core.autocrlf=true checkout has CRLF.
+          const marked = await readFile(resolve(config.worktree, "docs/loop.md"), "utf8");
+          if (autocrlf) expect(marked).toContain("\r\n");
+          const eol = marked.includes("\r\n") ? "\r\n" : "\n";
           await writeFile(
             resolve(config.worktree, "docs/loop.md"),
-            "# The loop\n\nReviewed feature and integration main.\n",
+            "# The loop\n\nReviewed feature and integration main.\n".replaceAll("\n", eol),
           );
+        }
         if (mode === "escape")
           await writeFile(resolve(config.worktree, "feature.txt"), "escaped\n");
       } else {
