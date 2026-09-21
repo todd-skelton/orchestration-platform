@@ -201,6 +201,42 @@ this resolution. A later conflict in the same delivery lineage stops as
 `conflict-resolution-exhausted`, including across main movements and restarts.
 Conflict-free refresh still uses the existing delta review without an author.
 
+ISS-167 continues one such exhausted reviewed integration in the same run without
+another source attempt, after #457's attempt 2 stopped as
+`continuation-failed`/`conflict-resolution-exhausted` with its PASS review intact.
+The optional closed `integrationContinuation` packet
+(`dogfood-integration-continuation/v1`) names the repository, issue key and URL,
+the same run, the retained attempt directory and absolute attempt, the completed
+stop marker, the reviewed head and review identity, the ruling URL and the ruled
+`allowedPaths`. It applies only when that issue is selected again through explicit
+planning unpark; unrelated work composes as usual. Before setup, composition
+observes the failed attempt record, its pinned source, candidate and PASS review
+terminal, the refresh with `resolutionUsed` and no seed, head or publication, and
+the completed stop; any mismatch refuses without a claim. The lineage is then
+claimed once in a `wx` file under `stateRoot`, outside every run, so a changed
+packet, marker, run or directory cannot spend it again, and no composition without
+the packet renews a reviewed-exhausted attempt on this host
+(`integration-continuation-required`). The old attempt, its worktree and the
+run's accumulated participants (including later cycles) stay unchanged and charged.
+
+The item keeps the attempt identity and starts delivery directly in one
+`integration` directory beneath the retained attempt, with new worktrees and a new
+local branch from the reviewed head; no source author, terminal or review is
+invented. Ordinary native refresh merges current main, which must descend from the
+recorded main, so the seed's parents are exactly the reviewed head and that main.
+Its own single resolution allowance applies with the retained ISS-158 counter and
+the one shared worker retry: unmerged files and hunks are captured before any
+launch, an unmerged path outside `allowedPaths` stops as
+`conflict-resolution-scope-escape` and a non-text conflict as
+`conflict-resolution-unsupported` with zero launches, and the existing validator
+restricts edits to marked hunks inside those paths. A clean merge needs only the
+DELTA reviewer. Fresh exact-head DELTA PASS, all local and after-mirror gates,
+publication, hosted checks and native landing remain mandatory; gate correction is
+`gate-correction-not-authorized`, a later main conflict is exhausted without renewal,
+and any work failure parks the issue as `continuation-failed` while unrelated work
+advances. Replay resumes the same integration and its claim; a parked integration
+cannot be replayed into another author, attempt or publication.
+
 An exact remote/PR head with DIRTY or CONFLICTING status is a confirmed
 publication with a conflict, including when a publish response was lost or the
 PR already left draft state. Delivery retains its publication receipt and

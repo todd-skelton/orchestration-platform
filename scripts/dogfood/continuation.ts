@@ -167,6 +167,64 @@ export function continuationSlug(packet: AcceptedReplan) {
   return packet.attemptSlug;
 }
 
+// ISS-167: one same-run integration of an exhausted reviewed source. The packet names
+// the retained attempt, its terminal marker, the reviewed head/review and the ruled fence.
+export interface IntegrationContinuation {
+  schemaVersion: "dogfood-integration-continuation/v1";
+  repository: string;
+  issueKey: string;
+  issueUrl: string;
+  run: string;
+  attemptDirectory: string;
+  absoluteAttempt: number;
+  stopMarker: string;
+  candidateHead: string;
+  reviewId: string;
+  authorityUrl: string;
+  allowedPaths: string[];
+}
+export function validateIntegrationContinuation(
+  value: unknown,
+): asserts value is IntegrationContinuation {
+  const reason = "invalid-integration-continuation";
+  requireThat(
+    exact(
+      value,
+      "schemaVersion repository issueKey issueUrl run attemptDirectory absoluteAttempt stopMarker candidateHead reviewId authorityUrl allowedPaths",
+    ),
+    reason,
+  );
+  requireThat(
+    value.schemaVersion === "dogfood-integration-continuation/v1" &&
+      typeof value.repository === "string" &&
+      /^[\w.-]+\/[\w.-]+$/.test(value.repository) &&
+      name(value.issueKey) &&
+      typeof value.issueUrl === "string" &&
+      value.issueUrl.startsWith(`https://github.com/${value.repository}/issues/`) &&
+      /^[1-9]\d*$/.test(value.issueUrl.split("/").at(-1)!) &&
+      name(value.run) &&
+      absolute(value.attemptDirectory) &&
+      count(value.absoluteAttempt) &&
+      value.absoluteAttempt > 0 &&
+      typeof value.stopMarker === "string" &&
+      /^loop-stop:[\w.-]{1,64}:[1-9]\d*:[1-9]\d*$/.test(value.stopMarker) &&
+      value.stopMarker.split(":")[1] === value.run &&
+      sha(value.candidateHead) &&
+      typeof value.reviewId === "string" &&
+      /^[A-Za-z0-9._:-]{1,128}$/.test(value.reviewId) &&
+      typeof value.authorityUrl === "string" &&
+      /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/issues\/[1-9]\d*#issuecomment-[1-9]\d*$/.test(
+        value.authorityUrl,
+      ),
+    reason,
+  );
+  try {
+    validateCorrectionPaths(value.allowedPaths);
+  } catch {
+    throw new QueueBlocked(reason);
+  }
+}
+
 const hash = (bytes: string | Buffer) => createHash("sha256").update(bytes).digest("hex");
 // JSON.parse alone silently accepts duplicated authority fields. Check each object,
 // including escaped key spellings, before consuming an external host receipt.

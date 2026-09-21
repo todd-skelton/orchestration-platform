@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { mkdir, readFile, readdir, readlink, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { basename, resolve } from "node:path";
 import { promisify } from "node:util";
 // @ts-expect-error Node 24 executes this private TypeScript composition directly.
 import * as queue from "./queue.ts";
@@ -527,6 +527,9 @@ export async function nextCycle(
           }
           slugs.push(continuationSlug(config.acceptedReplan));
         }
+        // ISS-167: the integration's launches live beneath its retained attempt.
+        if (config.integrationContinuation?.issueKey === selected.key)
+          slugs.push(`${basename(config.integrationContinuation.attemptDirectory)}/integration`);
         for (const slug of slugs) {
           const history = await readQueueHistory({
             stateDirectory: resolve(directory, slug),
