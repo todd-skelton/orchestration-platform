@@ -20,7 +20,7 @@ import {
   DEFAULT_PROVIDER_OUTAGE_CEILING_MS,
   workerEnvironment,
 } from "../../scripts/dogfood/dispatch-adapter.js";
-import type { Config } from "../../scripts/dogfood/flow.js";
+import type { Adapter, Config, NativeDbIdentity } from "../../scripts/dogfood/flow.js";
 import { queueStep } from "../../scripts/dogfood/queue.js";
 import { sourceFailureFixture } from "./fixtures/source-failure.js";
 import { parseReview } from "../../scripts/dogfood/repair-policy.mjs";
@@ -32,6 +32,7 @@ import {
   NATIVE_DB_REPLY_LIMIT,
   NATIVE_DB_REQUEST_LIMIT,
   createNativeDbAdmission,
+  nativeDbProfileAdapter,
   validateNativeDbReply,
   validateNativeDbRequest,
 } from "../../scripts/dogfood/supervise.mjs";
@@ -2330,4 +2331,131 @@ it.each<[string, (c: ReturnType<typeof channel>) => void, string]>([
     evidencePath: null,
     diagnostic,
   });
+});
+
+// ISS-165: the same stream boundary behind the composed optional adapter method.
+// The harness is the only caller; the parser, correlation and typed results are
+// the channel's own, and no adapter member is lost or reinterpreted.
+function composed(run = nativeRun) {
+  const c = channel(run);
+  const base = codexAdapter(process.execPath);
+  const native = nativeDbProfileAdapter(base, c.admission);
+  // The test's Request type keeps loose strings for its negatives; the closed
+  // identity type is what a caller supplies.
+  const identity = () => c.body() as NativeDbIdentity;
+  return { ...c, base, native, identity };
+}
+const refusedLocally = (diagnostic: string) => ({
+  correlation: null,
+  status: "refused",
+  owner: null,
+  evidencePath: null,
+  diagnostic,
+});
+
+it("composes the channel onto codexAdapter and carries minimum and maximum identities unchanged", async () => {
+  const c = composed();
+  // Legacy shape: without the supervisor's composition there is no method at all.
+  expect("nativeDbProfile" in codexAdapter(process.execPath)).toBe(false);
+  expect(Object.keys(c.native)).toEqual([...Object.keys(c.base), "nativeDbProfile"]);
+  for (const name of Object.keys(c.base) as (keyof Adapter)[])
+    expect(c.native[name], name).toBe(c.base[name]);
+  const minimal = c.native.nativeDbProfile(c.identity());
+  await c.flush();
+  expect(c.written).toHaveLength(1);
+  expect(JSON.parse(c.written[0]!)).toEqual({ ...minimalRequest(), correlation: 1 });
+  c.input.write(`${JSON.stringify(completedReply())}\n`);
+  expect(await minimal).toEqual({
+    correlation: 1,
+    status: "completed",
+    owner: completedReply().owner,
+    evidencePath: completedReply().evidencePath,
+    diagnostic: null,
+  });
+  // A refused lifecycle reply and a duplicate reply line propagate unchanged.
+  c.input.write(`${JSON.stringify(completedReply())}\n`);
+  await c.flush();
+  const refused = c.native.nativeDbProfile({ ...c.identity(), correlation: 1 } as never);
+  await c.flush();
+  expect(JSON.parse(c.written[1]!).correlation).toBe(2);
+  c.input.write(`${JSON.stringify({ ...minimalReply(), correlation: 2 })}\n`);
+  expect(await refused).toEqual({
+    correlation: 2,
+    status: "refused",
+    owner: null,
+    evidencePath: null,
+    diagnostic: "d",
+  });
+  const m = composed(maximalRequest().run);
+  const { schemaVersion: _schema, correlation: _correlation, ...maximal } = maximalRequest();
+  const unknown = m.native.nativeDbProfile(maximal as NativeDbIdentity);
+  await m.flush();
+  expect(JSON.parse(m.written[0]!)).toEqual({ ...maximalRequest(), correlation: 1 });
+  m.input.write(`${JSON.stringify({ ...minimalReply(), status: "unknown" })}\n`);
+  expect(await unknown).toEqual({
+    correlation: 1,
+    status: "unknown",
+    owner: null,
+    evidencePath: null,
+    diagnostic: "d",
+  });
+  expect(m.written).toHaveLength(1);
+});
+
+it.each<[string, (identity: Request) => unknown, string]>([
+  [
+    "a nested unknown key",
+    (r) => ({ ...r, product: { ...r.product, extra: 1 } }),
+    "request.product.extra is not a v1 key",
+  ],
+  ["a missing key", ({ attempt: _, ...r }) => r, "request.attempt is required"],
+  ["a wrong shape", (r) => ({ ...r, product: [] }), "request.product must be an object"],
+  [
+    "a date-only instant",
+    (r) => ({ ...r, requestedAt: "2026-09-21" }),
+    "request.requestedAt is not a v1 key",
+  ],
+  ["a range violation", (r) => ({ ...r, issue: 0 }), "request.issue must be 1..2147483647"],
+  ["a foreign run", (r) => ({ ...r, run: "other-run" }), "request.run is not the bound run"],
+  [
+    "an oversize request",
+    () => sizedRequest(NATIVE_DB_REQUEST_LIMIT + 1),
+    `request exceeds ${NATIVE_DB_REQUEST_LIMIT} UTF-8 bytes`,
+  ],
+])("refuses %s locally through the composed method", async (_, mutate, diagnostic) => {
+  const c = composed();
+  const {
+    schemaVersion: _schema,
+    correlation: _correlation,
+    ...identity
+  } = mutate(minimalRequest()) as Request;
+  expect(await c.native.nativeDbProfile(identity as never)).toEqual(
+    refusedLocally(`native-db-request-invalid: ${diagnostic}`),
+  );
+  await c.flush();
+  expect(c.written).toEqual([]);
+});
+
+it("refuses a pending duplicate and two closed-state replays without reaching the stream", async () => {
+  const c = composed();
+  const first = c.native.nativeDbProfile(c.identity());
+  expect(await c.native.nativeDbProfile(c.identity())).toEqual(
+    refusedLocally("native-db-request-pending"),
+  );
+  await c.flush();
+  expect(c.written).toHaveLength(1);
+  c.admission.close();
+  expect(await first).toEqual({
+    correlation: 1,
+    status: "unknown",
+    owner: null,
+    evidencePath: null,
+    diagnostic: "native-db-channel-closed",
+  });
+  for (let replay = 0; replay < 2; replay += 1)
+    expect(await c.native.nativeDbProfile(c.identity())).toEqual(
+      refusedLocally("native-db-channel-closed"),
+    );
+  await c.flush();
+  expect(c.written).toHaveLength(1);
 });

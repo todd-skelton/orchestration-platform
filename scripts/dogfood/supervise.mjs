@@ -22,6 +22,7 @@ import {
   stopCycle,
 } from "./supervision.ts";
 import { loadRepositoryAdapter } from "./repository-adapter.mjs";
+import { codexAdapter } from "./dispatch-adapter.ts";
 
 // ISS-164: the private request stream between the attached Windows parent and
 // this supervisor. stdout carries status lines and requests; stdin carries
@@ -344,6 +345,13 @@ export function createNativeDbAdmission(run, input, output, { approvedParents = 
   };
 }
 
+// ISS-165: the queue's native adapter carries the run-owned channel as the
+// optional typed `nativeDbProfile` method; every existing spread (`...native`)
+// keeps it. Main binds the method here and still never requests.
+export function nativeDbProfileAdapter(native, channel) {
+  return { ...native, nativeDbProfile: (identity) => channel.request(identity) };
+}
+
 let active;
 let config;
 let loop;
@@ -455,6 +463,7 @@ async function main() {
         queueAdapter = repositoryQueueAdapter(config, executingRoot, {
           gitExecutable: loop.gitExecutable,
           repository: repositoryAdapter,
+          native: nativeDbProfileAdapter(codexAdapter(loop.gitExecutable), admission),
         });
         const started = await startCycle(loop, active, supervisor);
         if (started.status === "closed" && !(await hasStartedDelivery(config)))

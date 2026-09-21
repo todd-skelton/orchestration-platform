@@ -13,9 +13,20 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
+import { PassThrough } from "node:stream";
 import { promisify } from "node:util";
 import { afterEach, expect, it, vi } from "vitest";
-import { sha, step, type Adapter, type Config } from "../../scripts/dogfood/flow.js";
+import {
+  sha,
+  step,
+  type Adapter,
+  type Config,
+  type NativeDbIdentity,
+} from "../../scripts/dogfood/flow.js";
+import {
+  createNativeDbAdmission,
+  nativeDbProfileAdapter,
+} from "../../scripts/dogfood/supervise.mjs";
 import {
   assertControllerExecutor,
   gateDiagnostics,
@@ -3606,58 +3617,73 @@ it.each(["author", "reviewer"] as const)(
     let reviewHead = source.base;
     const launches: string[] = [];
     const interruptedId = "33333333-3333-3333-3333-333333333333";
-    const native: Adapter = {
-      async preflight() {},
-      async git(tree, args) {
-        if (args[0] === "rev-parse")
-          return args[1] === "--show-toplevel"
-            ? tree
-            : tree === current.controllerRoot
-              ? current.controllerRevision
-              : tree === current.worktree
-                ? sourceHead
-                : reviewHead;
-        if (args[0] === "status") return "";
-        if (args[0] === "diff")
-          return args.includes("--binary")
-            ? "interrupted tracked patch"
-            : args.includes("--cached")
-              ? ""
-              : "source.txt\0";
-        if (args[0] === "commit") sourceHead = head;
-        if (args[0] === "checkout") reviewHead = args.at(-1)!;
-        if (args[0] === "merge-base") return source.base;
-        return "";
-      },
-      async launch(role, config) {
-        launches.push(role);
-        const id =
-          role === retriedRole && launches.filter((value) => value === role).length === 1
-            ? interruptedId
-            : role === "author"
-              ? authorId
-              : reviewId;
-        return {
-          id,
-          pid: 100 + launches.length,
-          trace: resolve(config.stateDirectory, `${role}-${id}.jsonl`),
-          launchedAt: 1,
-        };
-      },
-      async observe(role, _config, attempt) {
-        if (attempt.id === interruptedId)
-          return { id: attempt.id, status: role === "author" ? "dead" : "malformed" };
-        return {
-          id: attempt.id,
-          status: "passed",
-          head: role === "author" ? source.base : head,
-          ...(role === "reviewer" ? { summary: reviewerReport(current) } : {}),
-        };
-      },
-      async checks() {
-        throw new Error("unexpected worker CI observation");
-      },
-    };
+    // ISS-165: the run-owned channel composed onto the native adapter. Flow's
+    // `git` receiver is the actual adapter it holds; only the harness requests.
+    const receivers = new Set<Adapter>();
+    const channelInput = new PassThrough();
+    const channelOutput = new PassThrough();
+    const written: string[] = [];
+    channelOutput.on("data", (chunk) => written.push(String(chunk)));
+    const syntheticRun = "synthetic-native-component";
+    const admission = createNativeDbAdmission(syntheticRun, channelInput, channelOutput, {
+      approvedParents: [root],
+    });
+    const native = nativeDbProfileAdapter(execution(), admission);
+    function execution(): Adapter {
+      return {
+        async preflight() {},
+        async git(tree, args) {
+          receivers.add(this);
+          if (args[0] === "rev-parse")
+            return args[1] === "--show-toplevel"
+              ? tree
+              : tree === current.controllerRoot
+                ? current.controllerRevision
+                : tree === current.worktree
+                  ? sourceHead
+                  : reviewHead;
+          if (args[0] === "status") return "";
+          if (args[0] === "diff")
+            return args.includes("--binary")
+              ? "interrupted tracked patch"
+              : args.includes("--cached")
+                ? ""
+                : "source.txt\0";
+          if (args[0] === "commit") sourceHead = head;
+          if (args[0] === "checkout") reviewHead = args.at(-1)!;
+          if (args[0] === "merge-base") return source.base;
+          return "";
+        },
+        async launch(role, config) {
+          launches.push(role);
+          const id =
+            role === retriedRole && launches.filter((value) => value === role).length === 1
+              ? interruptedId
+              : role === "author"
+                ? authorId
+                : reviewId;
+          return {
+            id,
+            pid: 100 + launches.length,
+            trace: resolve(config.stateDirectory, `${role}-${id}.jsonl`),
+            launchedAt: 1,
+          };
+        },
+        async observe(role, _config, attempt) {
+          if (attempt.id === interruptedId)
+            return { id: attempt.id, status: role === "author" ? "dead" : "malformed" };
+          return {
+            id: attempt.id,
+            status: "passed",
+            head: role === "author" ? source.base : head,
+            ...(role === "reviewer" ? { summary: reviewerReport(current) } : {}),
+          };
+        },
+        async checks() {
+          throw new Error("unexpected worker CI observation");
+        },
+      };
+    }
     await expect(step(source, native, current.controllerRoot)).resolves.toMatchObject({
       status: "awaiting-publication",
       retries: 1,
@@ -3673,6 +3699,54 @@ it.each(["author", "reviewer"] as const)(
     const producer = await step(source, native, current.controllerRoot);
     expect(producer).toMatchObject({ status: "awaiting-publication", retries: 1 });
     expect(launches).toHaveLength(3);
+    // The resumed completion held the composed adapter and never requested.
+    expect([...receivers]).toEqual([native]);
+    expect(written).toEqual([]);
+    const identity: NativeDbIdentity = {
+      profile: "reconciliation-pg16/v1",
+      run: syntheticRun,
+      issue: 142,
+      attempt: 1,
+      executorHead: current.controllerRevision,
+      product: { repository: current.repository, head, tree: "f".repeat(40) },
+      declaration: {
+        version: 1,
+        profile: "reconciliation-pg16/v1",
+        files: ["one", "two", "three"].map((name) => ({
+          file: `${name}.db.test.ts`,
+          cases: [`${name} reconciles`],
+        })),
+        mutants: [],
+      },
+      patchDigests: [],
+      stagedInputDirectory: resolve(root, "staged-input"),
+    };
+    const harnessRequest = native.nativeDbProfile(identity);
+    await new Promise((done) => setImmediate(done));
+    expect(written).toHaveLength(1);
+    expect(JSON.parse(written[0]!)).toEqual({
+      schemaVersion: "dogfood-native-db-request/v1",
+      correlation: 1,
+      ...identity,
+    });
+    channelInput.write(
+      `${JSON.stringify({
+        schemaVersion: "dogfood-native-db-reply/v1",
+        correlation: 1,
+        status: "unknown",
+        owner: null,
+        evidencePath: null,
+        diagnostic: "synthetic incumbent could not determine the outcome",
+      })}\n`,
+    );
+    expect(await harnessRequest).toEqual({
+      correlation: 1,
+      status: "unknown",
+      owner: null,
+      evidencePath: null,
+      diagnostic: "synthetic incumbent could not determine the outcome",
+    });
+    expect(await stateSnapshot(current.stateDirectory)).toEqual(before);
     const github = githubDeliveryAdapter();
     await expect(github.source(current)).resolves.toMatchObject({ head, reviewId });
     const plan: DeliveryPlan = {
@@ -3780,6 +3854,13 @@ it.each(["author", "reviewer"] as const)(
     for (const [name, bytes] of Object.entries(before)) expect(completed[name]).toBe(bytes);
     expect(launches).toHaveLength(3);
     expect(current.retries).toBe(1);
+    expect(written).toHaveLength(1);
+    admission.close();
+    expect(await native.nativeDbProfile(identity)).toMatchObject({
+      correlation: null,
+      status: "refused",
+      diagnostic: "native-db-channel-closed",
+    });
   },
 );
 

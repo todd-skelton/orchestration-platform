@@ -14,6 +14,7 @@ import {
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { PassThrough } from "node:stream";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { githubDeliveryAdapter } from "../../scripts/dogfood/delivery-adapter.mjs";
@@ -25,7 +26,11 @@ import {
   type QueueConfig,
   type QueueItem,
 } from "../../scripts/dogfood/queue.js";
-import type { Adapter, Config, Attempt } from "../../scripts/dogfood/flow.js";
+import type { Adapter, Config, Attempt, NativeDbIdentity } from "../../scripts/dogfood/flow.js";
+import {
+  createNativeDbAdmission,
+  nativeDbProfileAdapter,
+} from "../../scripts/dogfood/supervise.mjs";
 import { withinConflictHunks } from "../../scripts/dogfood/conflict.js";
 import type {
   DeliveryAdapter,
@@ -358,80 +363,148 @@ async function fixture(
   let resolution: (() => Promise<void>) | undefined;
   let failAuthor = false;
   const reviewerModels: string[] = [];
-  const native: Adapter = {
-    async preflight() {},
-    async git(tree, args) {
-      if (unavailableMain && args[0] === "fetch") throw new Error("offline");
-      const result = await git(tree, args);
-      if (
-        args[0] === "commit" &&
-        lostCommit &&
-        args.at(-1)!.endsWith("conflict input") === (lostCommit === "input")
-      ) {
-        lostCommit = undefined;
-        throw new Error("lost conflict commit response");
-      }
-      if (
-        lostIntegrationResponse &&
-        ["rebase", "merge"].includes(args[0]!) &&
-        args[1] !== "--abort"
-      ) {
-        lostIntegrationResponse = false;
-        throw new Error("lost completed integration response");
-      }
-      return result;
-    },
-    async launch(role, _config, prompt) {
-      if (role === "author") {
-        authorPrompts.push(prompt);
-        await resolution?.();
-      } else {
-        reviewerModels.push(_config.reviewer.model);
-        prompts.push(prompt);
-      }
-      return {
-        id: randomUUID(),
-        pid: 200 + prompts.length,
-        trace: _config.stateDirectory.endsWith("gate-correction")
-          ? resolve(_config.stateDirectory, `${role}.jsonl`)
-          : resolve(state, `${role}-delta-${prompts.length + authorPrompts.length}.jsonl`),
-        launchedAt: 1,
-      };
-    },
-    async observe(_role, current, attempt) {
-      if (running || (_role === "reviewer" && reviewRunning))
-        return { id: attempt.id, status: "running" };
-      if (_role === "author")
+  // ISS-165: the run-owned channel composed onto this fixture's native adapter.
+  // `receivers` are the actual objects delivery hands to flow and its callers.
+  const receivers: Adapter[] = [];
+  const channelInput = new PassThrough();
+  const channelOutput = new PassThrough();
+  const written: string[] = [];
+  channelOutput.on("data", (chunk) => written.push(String(chunk)));
+  const syntheticRun = "synthetic-native-component";
+  const admission = createNativeDbAdmission(syntheticRun, channelInput, channelOutput, {
+    approvedParents: [root],
+  });
+  const native: Adapter = nativeDbProfileAdapter(execution(), admission);
+  function execution(): Adapter {
+    return {
+      async preflight() {},
+      async git(tree, args) {
+        if (!receivers.includes(this)) receivers.push(this);
+        if (unavailableMain && args[0] === "fetch") throw new Error("offline");
+        const result = await git(tree, args);
+        if (
+          args[0] === "commit" &&
+          lostCommit &&
+          args.at(-1)!.endsWith("conflict input") === (lostCommit === "input")
+        ) {
+          lostCommit = undefined;
+          throw new Error("lost conflict commit response");
+        }
+        if (
+          lostIntegrationResponse &&
+          ["rebase", "merge"].includes(args[0]!) &&
+          args[1] !== "--abort"
+        ) {
+          lostIntegrationResponse = false;
+          throw new Error("lost completed integration response");
+        }
+        return result;
+      },
+      async launch(role, _config, prompt) {
+        if (role === "author") {
+          authorPrompts.push(prompt);
+          await resolution?.();
+        } else {
+          reviewerModels.push(_config.reviewer.model);
+          prompts.push(prompt);
+        }
+        return {
+          id: randomUUID(),
+          pid: 200 + prompts.length,
+          trace: _config.stateDirectory.endsWith("gate-correction")
+            ? resolve(_config.stateDirectory, `${role}.jsonl`)
+            : resolve(state, `${role}-delta-${prompts.length + authorPrompts.length}.jsonl`),
+          launchedAt: 1,
+        };
+      },
+      async observe(_role, current, attempt) {
+        if (running || (_role === "reviewer" && reviewRunning))
+          return { id: attempt.id, status: "running" };
+        if (_role === "author")
+          return {
+            id: attempt.id,
+            status: failAuthor ? "failed" : "passed",
+            head: current.base,
+            summary: JSON.stringify({
+              run: current.run,
+              role: "author",
+              head: current.base,
+              verdict: failAuthor ? "FAIL" : "PASS",
+              summary: "",
+            }),
+          };
+        if (malformedReview) {
+          malformedReview = false;
+          return { id: attempt.id, status: "malformed" };
+        }
+        if (moveDuringReview) {
+          moveDuringReview = false;
+          await advanceMain(["ISS-100", "ISS-101", "ISS-102"]);
+        }
+        const currentHead = await git(current.worktree, ["rev-parse", "HEAD"]);
         return {
           id: attempt.id,
-          status: failAuthor ? "failed" : "passed",
-          head: current.base,
-          summary: JSON.stringify({
-            run: current.run,
-            role: "author",
-            head: current.base,
-            verdict: failAuthor ? "FAIL" : "PASS",
-            summary: "",
-          }),
+          status: failReview ? "failed" : "passed",
+          head: currentHead,
+          summary: summary(currentHead, failReview ? "FAIL" : "PASS"),
         };
-      if (malformedReview) {
-        malformedReview = false;
-        return { id: attempt.id, status: "malformed" };
-      }
-      if (moveDuringReview) {
-        moveDuringReview = false;
-        await advanceMain(["ISS-100", "ISS-101", "ISS-102"]);
-      }
-      const currentHead = await git(current.worktree, ["rev-parse", "HEAD"]);
-      return {
-        id: attempt.id,
-        status: failReview ? "failed" : "passed",
-        head: currentHead,
-        summary: summary(currentHead, failReview ? "FAIL" : "PASS"),
-      };
-    },
-    async checks() {
-      throw new Error("unused");
+      },
+      async checks() {
+        throw new Error("unused");
+      },
+    };
+  }
+  const channel = {
+    written,
+    receivers,
+    close: () => admission.close(),
+    identity: (): NativeDbIdentity => ({
+      profile: "reconciliation-pg16/v1",
+      run: syntheticRun,
+      issue: 100,
+      attempt: 1,
+      executorHead: "0".repeat(40),
+      product: { repository: "fixture/repository", head: "1".repeat(40), tree: "2".repeat(40) },
+      declaration: {
+        version: 1,
+        profile: "reconciliation-pg16/v1",
+        files: ["one", "two", "three"].map((name) => ({
+          file: `${name}.db.test.ts`,
+          cases: [`${name} reconciles`],
+        })),
+        mutants: [],
+      },
+      patchDigests: [],
+      stagedInputDirectory: resolve(root, "staged-input"),
+    }),
+    async invoke(adapter: Adapter) {
+      expect(typeof adapter.nativeDbProfile).toBe("function");
+      const ordinal = written.length + 1;
+      const pending = adapter.nativeDbProfile!(channel.identity());
+      await new Promise((done) => setImmediate(done));
+      expect(written).toHaveLength(ordinal);
+      expect(JSON.parse(written[ordinal - 1]!)).toEqual({
+        schemaVersion: "dogfood-native-db-request/v1",
+        correlation: ordinal,
+        ...channel.identity(),
+      });
+      channelInput.write(
+        `${JSON.stringify({
+          schemaVersion: "dogfood-native-db-reply/v1",
+          correlation: ordinal,
+          status: "refused",
+          owner: null,
+          evidencePath: null,
+          diagnostic: "synthetic incumbent refusal",
+        })}\n`,
+      );
+      expect(await pending).toEqual({
+        correlation: ordinal,
+        status: "refused",
+        owner: null,
+        evidencePath: null,
+        diagnostic: "synthetic incumbent refusal",
+      });
     },
   };
   const draftEdits: string[][] = [];
@@ -651,6 +724,7 @@ async function fixture(
     config,
     delivery,
     native,
+    channel,
     policy,
     draftEdits,
     item,
@@ -2677,6 +2751,63 @@ it.each(["scope", "author", "review"])(
     expect(f.authorPrompts).toHaveLength(1);
     expect(f.prompts).toHaveLength(failure === "review" ? 1 : 0);
     expect(f.gateHeads).toEqual([]);
+  },
+);
+
+// ISS-165: delivery refresh, conflict resolution and gate correction hand flow
+// the same composed adapter. The harness is the only caller, after each step.
+it.each(["delta", "conflict", "gate-correction"])(
+  "retains the composed native profile method through %s delivery entries without a request",
+  async (entry) => {
+    const f =
+      entry === "conflict"
+        ? await conflictingFixture()
+        : entry === "gate-correction"
+          ? await gateCorrectionFixture()
+          : await fixture();
+    const run =
+      entry === "gate-correction"
+        ? (f as Awaited<ReturnType<typeof gateCorrectionFixture>>).run
+        : f.deliver;
+    if (entry === "delta") {
+      await f.advanceMain();
+      f.setReviewRunning(true);
+    } else if (entry === "conflict") f.setRunning(true);
+    await expect(run()).resolves.toMatchObject({
+      status: entry === "delta" ? "observing-reviewer" : "observing-author",
+    });
+    if (entry === "gate-correction") {
+      f.setRunning(true);
+      await expect(run()).resolves.toMatchObject({ status: "observing-author" });
+    }
+    expect(f.channel.written).toEqual([]);
+    // Delta review: the bounded refresh adapter. Conflict: that plus the conflict
+    // wrapper. Gate correction: the bounded refresh adapters of both delivery steps.
+    expect(f.channel.receivers).toHaveLength(entry === "delta" ? 1 : 2);
+    expect(f.channel.receivers).not.toContain(f.native);
+    for (const receiver of f.channel.receivers) {
+      expect(receiver.launch).toBeDefined();
+      expect(receiver.observe).toBeDefined();
+      await f.channel.invoke(receiver);
+    }
+    const requests = f.channel.written.length;
+    // Replay from retained records reaches fresh receivers and still never requests.
+    const before = f.channel.receivers.length;
+    await expect(run()).resolves.toMatchObject({
+      status: entry === "delta" ? "observing-reviewer" : "observing-author",
+    });
+    expect(f.channel.receivers.length).toBeGreaterThan(before);
+    expect(f.channel.written).toHaveLength(requests);
+    f.channel.close();
+    for (const receiver of f.channel.receivers.slice(before))
+      expect(await receiver.nativeDbProfile!(f.channel.identity())).toMatchObject({
+        correlation: null,
+        status: "refused",
+        diagnostic: "native-db-channel-closed",
+      });
+    expect(f.channel.written).toHaveLength(requests);
+    expect(f.authorPrompts).toHaveLength(entry === "delta" ? 0 : 1);
+    expect(f.prompts).toHaveLength(entry === "delta" ? 1 : 0);
   },
 );
 

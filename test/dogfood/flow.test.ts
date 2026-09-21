@@ -1,9 +1,27 @@
 import { mkdtemp, realpath, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it } from "vitest";
-import { correctGate, QueueBlocked, step, workerPrompt } from "../../scripts/dogfood/flow.js";
-import type { Adapter, Check, Config, Role, Terminal } from "../../scripts/dogfood/flow.js";
+import {
+  correctGate,
+  QueueBlocked,
+  reviewRefresh,
+  step,
+  workerPrompt,
+} from "../../scripts/dogfood/flow.js";
+import type {
+  Adapter,
+  Check,
+  Config,
+  NativeDbIdentity,
+  Role,
+  Terminal,
+} from "../../scripts/dogfood/flow.js";
+import {
+  createNativeDbAdmission,
+  nativeDbProfileAdapter,
+} from "../../scripts/dogfood/supervise.mjs";
 import {
   deliveryStep,
   type DeliveryAdapter,
@@ -132,6 +150,196 @@ it.each(["source", "repair", "gate", "conflict-boundary"])(
       expect(f.launchPrompts[2]).toContain(pilotRevision);
     }
     if (caller !== "conflict-boundary") expect(validations).toBeGreaterThan(0);
+  },
+);
+
+// ISS-165: one run-owned channel behind the optional typed method. The harness
+// captures each actual entry adapter at its own `git` receiver and is the only
+// caller; production flow never requests, including from retained completed state.
+const syntheticRun = "synthetic-native-component";
+function nativeChannel(root: string) {
+  const input = new PassThrough();
+  const output = new PassThrough();
+  const written: string[] = [];
+  output.on("data", (chunk) => written.push(String(chunk)));
+  const admission = createNativeDbAdmission(syntheticRun, input, output, {
+    approvedParents: [root],
+  });
+  const identity = (): NativeDbIdentity => ({
+    profile: "reconciliation-pg16/v1",
+    run: syntheticRun,
+    issue: 1,
+    attempt: 1,
+    executorHead: pilotRevision,
+    product: { repository: "owner/repo", head, tree: "d".repeat(40) },
+    declaration: {
+      version: 1,
+      profile: "reconciliation-pg16/v1",
+      files: ["one", "two", "three"].map((name) => ({
+        file: `${name}.db.test.ts`,
+        cases: [`${name} reconciles`],
+      })),
+      mutants: [],
+    },
+    patchDigests: [],
+    stagedInputDirectory: resolve(root, "staged-input"),
+  });
+  const flush = () => new Promise((done) => setImmediate(done));
+  const invoke = async (adapter: Adapter) => {
+    expect(typeof adapter.nativeDbProfile).toBe("function");
+    const before = written.length;
+    const pending = adapter.nativeDbProfile!(identity());
+    await flush();
+    expect(written).toHaveLength(before + 1);
+    const sent = JSON.parse(written[before]!);
+    expect(sent).toEqual({
+      schemaVersion: "dogfood-native-db-request/v1",
+      correlation: before + 1,
+      ...identity(),
+    });
+    input.write(
+      `${JSON.stringify({
+        schemaVersion: "dogfood-native-db-reply/v1",
+        correlation: sent.correlation,
+        status: "completed",
+        owner: { lockId: "0".repeat(32), head, lane: syntheticRun },
+        evidencePath: resolve(root, "evidence"),
+        diagnostic: null,
+      })}\n`,
+    );
+    expect(await pending).toEqual({
+      correlation: sent.correlation,
+      status: "completed",
+      owner: { lockId: "0".repeat(32), head, lane: syntheticRun },
+      evidencePath: resolve(root, "evidence"),
+      diagnostic: null,
+    });
+  };
+  return { admission, written, invoke, flush };
+}
+
+it.each(["source", "repair", "gate", "conflict-boundary", "review-refresh"])(
+  "retains the composed native profile method at the %s entry without a production request",
+  async (caller) => {
+    const f = await fixture();
+    const root = resolve(f.config.stateDirectory, "..");
+    const c = nativeChannel(root);
+    const receivers = new Set<Adapter>();
+    const composed = nativeDbProfileAdapter(
+      {
+        ...f.adapter,
+        async git(tree, args) {
+          receivers.add(this);
+          return f.adapter.git(tree, args);
+        },
+      },
+      c.admission,
+    );
+    for (const name of Object.keys(f.adapter) as (keyof Adapter)[])
+      if (name !== "git") expect(composed[name]).toBe(f.adapter[name]);
+    f.config.mainBase = pilotRevision;
+    f.config.allowedPaths = ["."];
+    if (caller === "gate") f.config.correctionPaths = ["scripts/repair.mjs"];
+    const inherited = resolve(f.config.stateDirectory, "inherited");
+    if (caller === "review-refresh") {
+      await mkdir(inherited);
+      await writeFile(
+        resolve(inherited, "author-attempt.json"),
+        JSON.stringify({
+          id: "author",
+          pid: 1,
+          trace: resolve(inherited, "a.jsonl"),
+          launchedAt: 1,
+        }),
+      );
+      await writeFile(
+        resolve(inherited, "author-terminal.json"),
+        JSON.stringify({ status: "passed", id: "author", head: base }),
+      );
+      await writeFile(resolve(inherited, "config.json"), JSON.stringify({ config: { base } }));
+      f.setHead(head);
+    }
+    const handoff = {
+      mainBase: pilotRevision,
+      correctiveBase: base,
+      failedReview: {
+        findings: [
+          {
+            file: "scripts/repair.mjs",
+            line: 1,
+            severity: "blocking" as const,
+            text: "Synthetic prescribed repair.",
+          },
+        ],
+      },
+      predecessorCompleteSweep: "synthetic-predecessor-review",
+      sourceRecords: resolve(f.config.stateDirectory, "predecessor"),
+      implementation: { attempts: 2, ceiling: 4 },
+      sourcePaths: ["scripts/repair.mjs"],
+      acceptanceCriteria: ["Preserve the original criterion."],
+    };
+    const run = () =>
+      caller === "repair"
+        ? reviewedRepairAdapter(composed, f.pilot).dispatch(f.config, handoff)
+        : caller === "gate"
+          ? correctGate(
+              f.config,
+              composed,
+              f.pilot,
+              "test",
+              "Synthetic failing assertion artifact.",
+            )
+          : caller === "conflict-boundary"
+            ? resolveConflict(
+                f.config,
+                composed,
+                f.pilot,
+                pilotRevision,
+                head,
+                {
+                  seed: base,
+                  files: {
+                    "scripts/repair.mjs":
+                      "prefix\n<<<<<<< HEAD\na\n=======\nb\n>>>>>>> main\nsuffix\n",
+                  },
+                },
+                async () => {
+                  throw new Error("saved conflict seed must be reused");
+                },
+              )
+            : caller === "review-refresh"
+              ? reviewRefresh(f.config, composed, f.pilot, inherited)
+              : step(f.config, composed, f.pilot);
+    await expect(run()).resolves.toMatchObject({
+      status: caller === "review-refresh" ? "observing-reviewer" : "observing-author",
+    });
+    expect(c.written).toEqual([]);
+    expect(receivers.size).toBeGreaterThan(0);
+    // The spread callers hand flow a new object; the direct callers hand it the composition.
+    expect([...receivers].some((adapter) => adapter !== composed)).toBe(
+      ["repair", "conflict-boundary"].includes(caller),
+    );
+    for (const adapter of receivers) {
+      expect(adapter.launch).toBeDefined();
+      expect(adapter.observe).toBeDefined();
+      await c.invoke(adapter);
+    }
+    const requests = receivers.size;
+    expect(c.written).toHaveLength(requests);
+    if (caller !== "source") return;
+    f.authorDone();
+    await expect(run()).resolves.toMatchObject({ status: "observing-reviewer" });
+    f.reviewerDone();
+    await expect(run()).resolves.toMatchObject({ status: "awaiting-publication" });
+    await f.publish();
+    await expect(run()).resolves.toMatchObject({ status: "ready" });
+    receivers.clear();
+    await expect(run()).resolves.toMatchObject({ status: "ready" });
+    await c.flush();
+    expect(c.written).toHaveLength(requests);
+    expect([...receivers]).toEqual([composed]);
+    await c.invoke(composed);
+    expect(f.launches).toEqual(["author", "reviewer"]);
   },
 );
 

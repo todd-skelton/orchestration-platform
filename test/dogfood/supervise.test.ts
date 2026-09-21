@@ -714,10 +714,86 @@ it("production main offers the channel through the attached parent and never req
   expect(record).toMatchObject({ requests: [], replies: [], unaccepted: [] });
   // Inventory: main creates and closes the channel; only the test harness
   // requests. Item stops advancing the same run are the source-failure cases above.
+  // ISS-165 binds the channel onto the queue's native adapter without requesting.
   const source = await readFile(command, "utf8");
   expect(source.match(/createNativeDbAdmission\(/g)).toHaveLength(2);
-  expect(source).not.toMatch(/admission\.request\(/);
+  expect(source.match(/\w+\.request\(/g)).toEqual(["channel.request("]);
+  expect(source.match(/nativeDbProfileAdapter\(/g)).toHaveLength(2);
+  expect(source).toMatch(
+    /native: nativeDbProfileAdapter\(codexAdapter\(loop\.gitExecutable\), admission\)/,
+  );
   expect(source).toMatch(/admission\?\.close\(\)/);
+}, 30_000);
+
+// ISS-165: production main composes the run-owned channel onto codexAdapter as
+// options.native. The fixture queue adapter is the boundary caller; the channel
+// has no approved parents until ISS-170, so its typed refusal is the expected
+// lifecycle result and the parent never sees a request.
+it("production main composes the channel onto the queue's native adapter for a boundary caller", async () => {
+  const current = await fixture();
+  const root = dirname(current.request);
+  const body = {
+    profile: "reconciliation-pg16/v1",
+    run: "synthetic-command-run",
+    issue: 362,
+    attempt: 1,
+    executorHead: hex("synthetic executor head", 40),
+    product: {
+      repository: "fixture/repository",
+      head: hex("synthetic product head", 40),
+      tree: hex("synthetic product tree", 40),
+    },
+    declaration: {
+      version: 1,
+      profile: "reconciliation-pg16/v1",
+      files: ["one", "two", "three"].map((name) => ({
+        file: `reconciliation/${name}.db.test.ts`,
+        cases: [`${name} reconciles`],
+      })),
+      mutants: [],
+    },
+    patchDigests: [],
+    stagedInputDirectory: resolve(root, "staged-input"),
+  };
+  await writeFile(
+    resolve(current.runState, "command-controls.json"),
+    JSON.stringify({ main: "a".repeat(40), nativeDbProfile: body }),
+  );
+  const { done } = startParent(root, {
+    executable: process.execPath,
+    args: ["--import", pathToFileURL(hook).href, command, current.request],
+    env: { SUPERVISE_FIXTURE_STATE: current.runState },
+    verifierWorktree: {
+      worktree: resolve(root, "anchor"),
+      branch: "synthetic/anchor",
+      head: hex("anchor", 40),
+      wrapper: incumbent,
+      artifacts: resolve(root, "anchor/.orchestrator/native-db"),
+    },
+  });
+  const { code, record } = await done;
+  expect(record.stderr).toBe("");
+  expect(code).toBe(0);
+  expect(record.lines).toMatchObject([
+    { status: "observing-author", cursor: 0 },
+    { status: "complete", cursor: 1, participants: 2 },
+    { status: "idle", run: "synthetic-command-run" },
+  ]);
+  expect(record).toMatchObject({ requests: [], replies: [], unaccepted: [] });
+  const { codexAdapter } = await import("../../scripts/dogfood/dispatch-adapter.js");
+  expect(
+    JSON.parse(await readFile(resolve(current.runState, "command-native-db.json"), "utf8")),
+  ).toEqual({
+    methods: [...Object.keys(codexAdapter(process.execPath)), "nativeDbProfile"],
+    reply: {
+      correlation: null,
+      status: "refused",
+      owner: null,
+      evidencePath: null,
+      diagnostic:
+        "native-db-request-invalid: request.stagedInputDirectory is not under an approved parent",
+    },
+  });
 }, 30_000);
 
 it("copied-runtime harness requests once through the actual stream and reaches the inert incumbent", async () => {
@@ -772,6 +848,37 @@ it("copied-runtime harness requests once through the actual stream and reaches t
     workerJson,
     { status: "idle", run: syntheticRun },
   ]);
+  expect(record.unaccepted).toEqual([]);
+});
+
+it("the composed adapter method carries the same request and completed reply through the parent", async () => {
+  const current = await syntheticRuntime({ mode: "composed" });
+  const { code, record } = await current.done;
+  expect(record.stderr).toBe("");
+  expect(code).toBe(0);
+  const evidencePath = resolve(current.anchor.worktree, ".orchestrator/native-db/evidence-1");
+  expect(JSON.parse(await readFile(current.results, "utf8"))).toEqual([
+    {
+      correlation: 1,
+      status: "completed",
+      owner: {
+        lockId: "0123456789abcdef0123456789abcdef",
+        head: current.anchor.head,
+        lane: syntheticRun,
+      },
+      evidencePath,
+      diagnostic: null,
+    },
+    { methods: ["git", "preflight", "launch", "observe", "checks", "nativeDbProfile"] },
+  ]);
+  expect(record.requests).toEqual([
+    { correlation: 1, path: resolve(current.anchor.artifacts, `${syntheticRun}-1.json`) },
+  ]);
+  expect(JSON.parse(await readFile(record.requests[0]!.path, "utf8"))).toEqual({
+    schemaVersion: "dogfood-native-db-request/v1",
+    correlation: 1,
+    ...current.body,
+  });
   expect(record.unaccepted).toEqual([]);
 });
 

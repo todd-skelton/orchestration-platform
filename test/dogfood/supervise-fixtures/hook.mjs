@@ -5,7 +5,12 @@ const adapter = new URL("./adapter.mjs", import.meta.url).href;
 registerHooks({
   resolve(specifier, context, nextResolve) {
     if (
-      ["./queue.ts", "./supervision.ts", "./repository-adapter.mjs"].includes(specifier) &&
+      [
+        "./queue.ts",
+        "./supervision.ts",
+        "./repository-adapter.mjs",
+        "./dispatch-adapter.ts",
+      ].includes(specifier) &&
       context.parentURL?.endsWith("/supervise.mjs")
     )
       return { url: adapter, shortCircuit: true };

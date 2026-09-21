@@ -637,6 +637,21 @@ the pending request `unknown`, as do EOF, a partial line and an oversize
 line. Nothing after close is sent, and a second request while one is pending
 is refused locally.
 
+ISS-165 composes that channel onto the queue's native adapter. `flow.ts`
+declares the optional typed `Adapter.nativeDbProfile(identity)` with closed
+`NativeDbIdentity` and `NativeDbReply` types, and `supervise.mjs` exports
+`nativeDbProfileAdapter(native, channel)`; main passes
+`nativeDbProfileAdapter(codexAdapter(loop.gitExecutable), admission)` as
+`options.native` to `repositoryQueueAdapter`. The existing `...native` spreads
+in the bounded queue, repair and conflict adapters carry the method unchanged
+to every source, repair, refresh, correction and reviewer entry; queue.ts,
+dispatch-adapter.ts and repair-adapter.ts are byte-identical. An absent method
+is unsupported, never success; the channel still owns schema, correlation and
+parsing; and no production caller exists before ISS-170. Main's channel has no
+approved parents, so a request before ISS-170 is a typed local refusal. Only
+test harnesses invoke the method, through the actual composed adapter captured
+at its existing entry.
+
 The closed v1 request is `schemaVersion: dogfood-native-db-request/v1`,
 `correlation`, `profile: reconciliation-pg16/v1`, `run`, `issue`,
 `attempt`, `executorHead`, `product {repository, head, tree}`,
