@@ -7,7 +7,7 @@ import { execFile, spawn } from "node:child_process";
 import { closeSync, constants, existsSync, openSync } from "node:fs";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { Socket } from "node:net";
-import { dirname, resolve, sep } from "node:path";
+import { dirname, isAbsolute, resolve, sep } from "node:path";
 import { createInterface } from "node:readline";
 import { promisify } from "node:util";
 
@@ -88,10 +88,7 @@ const validate = (message) => {
       return `native-db-request-invalid: request.${key} must be an object`;
   if (!Array.isArray(message.patchDigests))
     return "native-db-request-invalid: request.patchDigests must be a list";
-  if (
-    typeof message.stagedInputDirectory !== "string" ||
-    !resolve(message.stagedInputDirectory).startsWith(sep)
-  )
+  if (typeof message.stagedInputDirectory !== "string" || !isAbsolute(message.stagedInputDirectory))
     return "native-db-request-invalid: request.stagedInputDirectory must be absolute";
   return undefined;
 };
@@ -143,11 +140,13 @@ const invoke = async (line, message, correlation) => {
   }
 };
 
-// wsl.exe hands the supervisor pipes, so the child gets real pipe fds: FIFOs
-// on POSIX (spawn's socketpairs read as unknown handles inside the worker
-// sandbox), spawn pipes on Windows, which has no FIFOs.
+// wsl.exe hands the supervisor anonymous pipes, which is what spawn's stdio
+// pipes are on Windows and macOS. Linux alone gets FIFO fds: the executor's
+// worker sandbox hides spawn's socketpairs from libuv's handle guess, so a
+// Node child there discards its stdout, while every FIFO-attached case timed
+// out on the hosted macOS runner (bootstrap run 35566013576).
 async function attachedStdio() {
-  if (process.platform === "win32")
+  if (process.platform !== "linux")
     return {
       stdio: ["pipe", "pipe", "pipe"],
       attach: (child) => ({ input: child.stdout, output: child.stdin }),
@@ -173,9 +172,13 @@ async function attachedStdio() {
   };
 }
 const { stdio, attach } = await attachedStdio();
+// libuv puts Windows children in a kill-on-close job object; wsl.exe is not in
+// the PowerShell parent's, so parent loss must leave the supervisor running.
 const child = spawn(control.executable, control.args, {
   stdio,
   env: environment,
+  detached: process.platform === "win32",
+  windowsHide: true,
 });
 child.once("error", async (error) => {
   record.startFailure = error.message;
@@ -237,9 +240,16 @@ lines.once("close", () => {
   drained = true;
   complete();
 });
-process.once("SIGTERM", () => {
+// Cancel is Ctrl+C on the PowerShell console: close the supervisor's stdin,
+// then kill it after five seconds. Windows has no catchable signal for this
+// stand-in, so there the test cancels by ending the stand-in's own stdin.
+const cancel = () => {
   record.cancelled = true;
   output.end();
   const timer = setTimeout(() => child.kill(), 5000);
   child.once("exit", () => clearTimeout(timer));
-});
+};
+if (process.platform === "win32") {
+  process.stdin.once("end", cancel);
+  process.stdin.resume();
+} else process.once("SIGTERM", cancel);

@@ -586,7 +586,7 @@ function startParent(root: string, control: ParentControl) {
   const child = ready.then(() =>
     spawn(process.execPath, [parentScript, controlPath], {
       windowsHide: true,
-      stdio: ["ignore", "pipe", "pipe"],
+      stdio: [process.platform === "win32" ? "pipe" : "ignore", "pipe", "pipe"],
     }),
   );
   const done = child.then(
@@ -871,7 +871,9 @@ it("cancelling the parent ends the stream and both processes exit", async () => 
   const current = await syntheticRuntime({ mode: "hold" });
   const parent = await current.child;
   await new Promise((done) => setTimeout(done, 500));
-  parent.kill("SIGTERM");
+  // Ctrl+C on POSIX; Windows has no catchable signal, so the stand-in's stdin ends.
+  if (process.platform === "win32") parent.stdin!.end();
+  else parent.kill("SIGTERM");
   const { code, record } = await current.done;
   expect(record.cancelled).toBe(true);
   expect(record.exit).toEqual({ code: 0, signal: null });
