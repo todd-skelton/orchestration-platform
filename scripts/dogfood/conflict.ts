@@ -73,6 +73,11 @@ export async function resolveConflict(
     }
     await save();
   }
+  // ISS-167: a ruled fence bounds which captured files may be resolved. Checked before
+  // any seed or launch, so an outside-path conflict stops with its evidence saved.
+  for (const file of Object.keys(conflict.files))
+    if (config.correctionPaths && !config.correctionPaths.includes(file))
+      throw new QueueBlocked("conflict-resolution-scope-escape", file);
   if (!conflict.seed) {
     let head = await git(["rev-parse", "HEAD"]);
     if (head === previousHead) {

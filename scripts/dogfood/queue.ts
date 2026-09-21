@@ -3,9 +3,13 @@ import { execFile } from "node:child_process";
 import { mkdir, readFile, readdir, realpath, rename, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
-// @ts-expect-error Node 24 executes this private TypeScript composition directly.
-import { continuationSlug, validateAcceptedReplan } from "./continuation.ts";
-import type { AcceptedReplan } from "./continuation.js";
+import {
+  continuationSlug,
+  validateAcceptedReplan,
+  validateIntegrationContinuation,
+  // @ts-expect-error Node 24 executes this private TypeScript composition directly.
+} from "./continuation.ts";
+import type { AcceptedReplan, IntegrationContinuation } from "./continuation.js";
 export { continuationSlug };
 import { resolveRouting, validateRoutingRow, type RoutingRow } from "./routing.mjs";
 import { assertControllerExecutor, githubDeliveryAdapter } from "./delivery-adapter.mjs";
@@ -83,6 +87,13 @@ export interface QueueParticipant {
 export interface QueueItem {
   conflictContinuation?: { directory: string; correctionUsed: boolean };
   acceptedReplan?: AcceptedReplan;
+  // ISS-167: the retained reviewed source this item integrates without a new author.
+  integrationContinuation?: {
+    reviewId: string;
+    sourceDirectory: string;
+    main: string;
+    context: string;
+  };
   id: string;
   issue: string;
   base: string;
@@ -140,6 +151,7 @@ export interface LoopConfig {
   targetMilestone?: number;
   opsAdmission?: OpsAdmission;
   acceptedReplan?: AcceptedReplan;
+  integrationContinuation?: IntegrationContinuation;
 }
 
 export interface Prerequisite {
@@ -302,6 +314,7 @@ export function validateLoopConfig(config: LoopConfig) {
       ...(config.targetMilestone === undefined ? [] : ["targetMilestone"]),
       ...(config.opsAdmission === undefined ? [] : ["opsAdmission"]),
       ...(config.acceptedReplan === undefined ? [] : ["acceptedReplan"]),
+      ...(config.integrationContinuation === undefined ? [] : ["integrationContinuation"]),
       ...(config.gateStopAuthorization === undefined ? [] : ["gateStopAuthorization"]),
       ...(config.prerequisite === undefined ? [] : ["prerequisite"]),
       ...(config.blockedCycleResume === undefined ? [] : ["blockedCycleResume"]),
@@ -314,6 +327,7 @@ export function validateLoopConfig(config: LoopConfig) {
     demand(
       config.adapter === "self" &&
         !config.acceptedReplan &&
+        !config.integrationContinuation &&
         typeof grant.authorityUrl === "string" &&
         grant.authorityUrl.length <= 500 &&
         /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/issues\/[1-9]\d*#issuecomment-[1-9]\d*$/.test(
@@ -385,6 +399,23 @@ export function validateLoopConfig(config: LoopConfig) {
         "invalid-accepted-replan-evidence",
       );
     }
+  }
+  if (config.integrationContinuation !== undefined) {
+    const packet = config.integrationContinuation;
+    validateIntegrationContinuation(packet);
+    const slug = /^(.+)-attempt-([1-9]\d*)$/.exec(basename(packet.attemptDirectory));
+    demand(
+      !config.acceptedReplan &&
+        config.run === packet.run &&
+        config.repository === packet.repository &&
+        slug !== null &&
+        slug[1] === packet.issueKey.toLowerCase() &&
+        resolve(config.stateRoot, config.run, basename(packet.attemptDirectory)) ===
+          packet.attemptDirectory &&
+        [Number(slug[2]), Number(slug[2]) + 1].includes(packet.absoluteAttempt) &&
+        packet.absoluteAttempt <= config.attemptCeiling,
+      "invalid-integration-continuation",
+    );
   }
   demand(
     config.providerOutageCeilingMs === undefined ||
@@ -722,21 +753,40 @@ export async function queueConfigFromLoop(
   const baseSourcePrompt = `Implement the selected issue completely and stay within its scope.\n\n${promptContext}`;
   let reviewerPrompt = `Review the selected issue implementation independently against every stated criterion.\n\n${promptContext}`;
   const runState = resolve(stateRoot, config.run);
+  // ISS-167: the packet applies only to its own issue; unrelated work composes as usual.
+  const integrationPacket =
+    config.integrationContinuation?.issueKey === selected.key
+      ? config.integrationContinuation
+      : undefined;
+  const integrationClaim = `integration-continuation-${queueDigest({ repository: config.repository, issue: selected.key })}`;
   if (!config.acceptedReplan) {
-    // A fresh run cannot renew an exhausted lineage already recorded on this host.
+    if (!integrationPacket)
+      demand(
+        (await optionalRecord(stateRoot, integrationClaim)) === ABSENT,
+        "integration-continuation-required",
+      );
+    // A fresh run cannot renew an exhausted lineage already recorded on this host, and
+    // no composition without the ISS-167 packet renews a reviewed-exhausted attempt.
     for (const run of await readdir(stateRoot, { withFileTypes: true })) {
-      if (!run.isDirectory() || run.name === config.run) continue;
-      for (const sourceAttempt of [3, 4]) {
-        const prior = await optionalRecord(
-          resolve(stateRoot, run.name, `${selected.key.toLowerCase()}-attempt-${sourceAttempt}`),
-          "attempt",
+      if (!run.isDirectory()) continue;
+      for (const sourceAttempt of [1, 2, 3, 4]) {
+        const priorQueue = resolve(
+          stateRoot,
+          run.name,
+          `${selected.key.toLowerCase()}-attempt-${sourceAttempt}`,
         );
+        const prior = await optionalRecord(priorQueue, "attempt");
+        if (prior === ABSENT || prior.issue !== issueUrl) continue;
         demand(
-          prior === ABSENT ||
-            prior.issue !== issueUrl ||
+          run.name === config.run ||
+            sourceAttempt < 3 ||
             prior.phase !== "failed" ||
             prior.candidateAttempt < 4,
           "accepted-replan-required",
+        );
+        demand(
+          integrationPacket !== undefined || !(await reviewedExhausted(priorQueue, prior)),
+          "integration-continuation-required",
         );
       }
     }
@@ -858,7 +908,116 @@ export async function queueConfigFromLoop(
     reviewerPrompt += `\n\n${replan.prompt}`;
   }
   demand(!config.acceptedReplan || replan, "accepted-replan-issue-mismatch");
-  while (!replan) {
+  let integration: QueueItem["integrationContinuation"];
+  let integrationPrompt = "";
+  let integrationDirectory: string | undefined;
+  if (integrationPacket) {
+    demand(issueUrl === integrationPacket.issueUrl, "integration-continuation-issue-mismatch");
+    // The validated state root names the retained attempt, as the old records named it.
+    const attemptDirectory = resolve(runState, basename(integrationPacket.attemptDirectory));
+    const attempt = await optionalRecord(attemptDirectory, "attempt");
+    const exhausted = await reviewedExhausted(attemptDirectory, attempt);
+    const priorSourceAttempt = Number(basename(attemptDirectory).split("-attempt-").at(-1));
+    demand(
+      exhausted !== undefined &&
+        attempt.run === config.run &&
+        attempt.issue === issueUrl &&
+        attempt.item === `${selected.key}:${priorSourceAttempt}` &&
+        attempt.candidateAttempt === integrationPacket.absoluteAttempt &&
+        attempt.head === integrationPacket.candidateHead &&
+        attempt.reviewId === integrationPacket.reviewId,
+      "integration-continuation-history-unavailable",
+    );
+    validateFailedAttempt(attempt, priorSourceAttempt, config.attemptCeiling);
+    const original = await optionalRecord(exhausted.directory, "config");
+    demand(
+      original !== ABSENT &&
+        original.config?.run === config.run &&
+        original.config.issue === issueUrl &&
+        original.config.repository === config.repository &&
+        original.config.stateDirectory === exhausted.directory &&
+        SHA.test(original.config.base) &&
+        (original.config.mainBase === undefined || SHA.test(original.config.mainBase)),
+      "integration-continuation-history-unavailable",
+    );
+    // The completed terminal stop is the exhausted marker the packet names.
+    const [, , stopCycle, stopNumber] = integrationPacket.stopMarker.split(":");
+    const intent = await optionalRecord(runState, `cycle-${stopCycle}-stop-${stopNumber}`);
+    const completed = await optionalRecord(
+      runState,
+      `cycle-${stopCycle}-stop-${stopNumber}-complete`,
+    );
+    demand(
+      intent !== ABSENT &&
+        completed !== ABSENT &&
+        intent.marker === integrationPacket.stopMarker &&
+        intent.selection?.key === selected.key &&
+        intent.selection.number === selected.number &&
+        intent.attempts === integrationPacket.absoluteAttempt &&
+        intent.reason === "continuation-failed" &&
+        typeof intent.body === "string" &&
+        intent.body.includes("conflict-resolution-exhausted") &&
+        completed.stop === Number(stopNumber) &&
+        JSON.stringify(completed.selection) === JSON.stringify(intent.selection),
+      "integration-continuation-stop-mismatch",
+    );
+    demand(
+      (await git(["rev-parse", "--verify", `${integrationPacket.candidateHead}^{commit}`]).catch(
+        () => "",
+      )) === integrationPacket.candidateHead,
+      "selected-base-unavailable",
+    );
+    // History is monotonic within the run: the retained attempt is a prefix of what
+    // supervision carried forward, or the only history when composed directly.
+    if (attempt.history.length > initialHistory.length) initialHistory = attempt.history;
+    else
+      demand(
+        attempt.history.every(
+          (p: QueueParticipant, index: number) =>
+            JSON.stringify(participantWithoutUsage(p)) ===
+            JSON.stringify(participantWithoutUsage(initialHistory[index]!)),
+        ),
+        "integration-continuation-history-unavailable",
+      );
+    validateHistory(initialHistory, config.nativeLaunchCeiling);
+    // Reserve the lineage outside the run before setup; a changed packet cannot spend it again.
+    const claim = await optionalRecord(stateRoot, integrationClaim);
+    demand(
+      claim === ABSENT || queueDigest(claim) === queueDigest(integrationPacket),
+      "integration-continuation-already-consumed",
+    );
+    if (claim === ABSENT)
+      await writeFile(
+        resolve(stateRoot, `${integrationClaim}.json`),
+        JSON.stringify(integrationPacket),
+        {
+          flag: "wx",
+          flush: true,
+        },
+      );
+    const workers = await Promise.all(
+      ["author", "reviewer"].map((role) => optionalRecord(exhausted.directory, `${role}-attempt`)),
+    );
+    sourceAttempt = integrationPacket.absoluteAttempt;
+    attemptBase = integrationPacket.candidateHead;
+    mainBase = original.config.mainBase ?? original.config.base;
+    authorFailures = attempt.authorFailures ?? authorFailures;
+    reviewerRung =
+      attempt.history.findLast((p) => p.item === attempt.item && p.role === "reviewer")?.rung ?? 0;
+    inheritedWorkerRetry =
+      attempt.retries > 0 ||
+      exhausted.refresh.flowRetried === true ||
+      workers.some((worker) => worker !== ABSENT && worker.retries === 1);
+    integrationPrompt = `ISS-167 integration continuation authorized by ${integrationPacket.authorityUrl}: independently reviewed source ${integrationPacket.candidateHead} (review ${integrationPacket.reviewId}, implementation attempt ${integrationPacket.absoluteAttempt}) integrates once with current main, which must descend from recorded main ${exhausted.refresh.main}. Retained source records, review and execution traces: ${exhausted.directory}; retained attempt: ${resolve(attemptDirectory, "attempt.json")}; terminal stop ${integrationPacket.stopMarker}. Resolution may change only Git's marked conflict hunks inside ${JSON.stringify(integrationPacket.allowedPaths)}; a broader need is FAIL. Inspect both parents, the resolved hunks and their direct callers against every acceptance criterion. Historical PASS, old gates and a clean merge are context, never current authority: fresh exact-head DELTA review and all delivery gates remain mandatory. No source repair, gate correction, further conflict resolution or implementation attempt is authorized.`;
+    integration = {
+      reviewId: integrationPacket.reviewId,
+      sourceDirectory: exhausted.directory,
+      main: exhausted.refresh.main,
+      context: integrationPrompt,
+    };
+    integrationDirectory = resolve(attemptDirectory, "integration");
+  }
+  while (!replan && !integration) {
     const priorSlug = `${selected.key.toLowerCase()}-attempt-${sourceAttempt}`;
     const priorQueue = resolve(runState, priorSlug);
     let attempt = await optionalRecord(priorQueue, "attempt");
@@ -1000,12 +1159,16 @@ export async function queueConfigFromLoop(
   }
   const slug = replan
     ? continuationSlug(config.acceptedReplan!)
-    : `${selected.key.toLowerCase()}-attempt-${sourceAttempt}`;
+    : integrationPacket
+      ? `${basename(integrationPacket.attemptDirectory)}-integration`
+      : `${selected.key.toLowerCase()}-attempt-${sourceAttempt}`;
+  // ISS-167 owns one directory beneath the retained attempt; that attempt stays unchanged.
+  const queueDirectory = integrationDirectory ?? resolve(runState, slug);
   const paths = {
-    queue: resolve(runState, slug),
-    setup: resolve(runState, slug, "setup"),
-    source: resolve(runState, slug, "source"),
-    repair: resolve(runState, slug, "repair"),
+    queue: queueDirectory,
+    setup: resolve(queueDirectory, "setup"),
+    source: resolve(queueDirectory, "source"),
+    repair: resolve(queueDirectory, "repair"),
     pilot: resolve(worktreeRoot, `${slug}-pilot`),
     sourceWorktree: resolve(worktreeRoot, `${slug}-source`),
     reviewWorktree: resolve(worktreeRoot, `${slug}-review`),
@@ -1020,7 +1183,9 @@ export async function queueConfigFromLoop(
     key: selected.key,
     number: selected.number,
     title: issueContext.title,
-    attempt: sourceAttempt,
+    attempt: integrationPacket
+      ? Number(basename(integrationPacket.attemptDirectory).split("-attempt-").at(-1))
+      : sourceAttempt,
   });
   // ISS-151/180: retain the attempt's branch and pilot across executor upgrades.
   const savedSetup = await optionalRecord(paths.setup, "setup-plan");
@@ -1052,11 +1217,13 @@ export async function queueConfigFromLoop(
     ? `${baseSourcePrompt}\n\n${conflictPrompt}`
     : replan
       ? `${baseSourcePrompt}\n\n${replan.prompt}`
-      : repairFailurePrompt
-        ? `${baseSourcePrompt}\n\n${repairFailurePrompt}`
-        : prescribedFindings?.length
-          ? `${baseSourcePrompt}\n\nStart from rejected candidate ${rejectedHead}. Apply these reviewer-prescribed fixes verbatim: ${JSON.stringify(prescribedFindings)}`
-          : baseSourcePrompt;
+      : integration
+        ? `${baseSourcePrompt}\n\n${integrationPrompt}`
+        : repairFailurePrompt
+          ? `${baseSourcePrompt}\n\n${repairFailurePrompt}`
+          : prescribedFindings?.length
+            ? `${baseSourcePrompt}\n\nStart from rejected candidate ${rejectedHead}. Apply these reviewer-prescribed fixes verbatim: ${JSON.stringify(prescribedFindings)}`
+            : baseSourcePrompt;
   if (repairFailurePrompt) reviewerPrompt += `\n\n${repairFailurePrompt}`;
   const setup: SetupConfig = {
     controller,
@@ -1091,13 +1258,14 @@ export async function queueConfigFromLoop(
     issue: issueUrl,
     pilotRevision,
     base: attemptBase,
-    ...(sourceAttempt > 1 ? { mainBase } : {}),
-    ...(conflictContinuation ? { inheritedWorkerRetry } : {}),
+    ...(sourceAttempt > 1 || integration ? { mainBase } : {}),
+    ...(conflictContinuation || integration ? { inheritedWorkerRetry } : {}),
     worktree: paths.sourceWorktree,
     reviewWorktree: paths.reviewWorktree,
     stateDirectory: paths.source,
     allowedPaths: ["."],
     ...(config.acceptedReplan ? { correctionPaths: config.acceptedReplan.allowedPaths } : {}),
+    ...(integrationPacket ? { correctionPaths: integrationPacket.allowedPaths } : {}),
     ...(config.acceptedReplan?.preReviewEvidence
       ? { preReviewEvidence: config.acceptedReplan.preReviewEvidence }
       : {}),
@@ -1118,7 +1286,12 @@ export async function queueConfigFromLoop(
   const item: QueueItem = {
     ...(conflictContinuation ? { conflictContinuation } : {}),
     ...(replan ? { acceptedReplan: config.acceptedReplan } : {}),
-    id: replan ? slug.replace(/-attempt-(\d+)$/, ":$1") : `${selected.key}:${sourceAttempt}`,
+    ...(integration ? { integrationContinuation: integration } : {}),
+    id: replan
+      ? slug.replace(/-attempt-(\d+)$/, ":$1")
+      : integrationPacket
+        ? `${selected.key}:${basename(integrationPacket.attemptDirectory).split("-attempt-").at(-1)}`
+        : `${selected.key}:${sourceAttempt}`,
     issue: issueUrl,
     base: attemptBase,
     implementationAttempt: sourceAttempt,
@@ -1266,6 +1439,7 @@ export function validateQueueConfig(config: QueueConfig) {
         "delivery",
         ...(item.acceptedReplan === undefined ? [] : ["acceptedReplan"]),
         ...(item.conflictContinuation === undefined ? [] : ["conflictContinuation"]),
+        ...(item.integrationContinuation === undefined ? [] : ["integrationContinuation"]),
       ]) &&
         /^[A-Za-z0-9._:-]{1,128}$/.test(item.id) &&
         typeof item.issue === "string" &&
@@ -1296,6 +1470,25 @@ export function validateQueueConfig(config: QueueConfig) {
         "accepted-replan-binding-mismatch",
       );
     }
+    if (item.integrationContinuation)
+      demand(
+        exactKeys(item.integrationContinuation, [
+          "reviewId",
+          "sourceDirectory",
+          "main",
+          "context",
+        ]) &&
+          /^[A-Za-z0-9._:-]{1,128}$/.test(item.integrationContinuation.reviewId) &&
+          isAbsolute(item.integrationContinuation.sourceDirectory) &&
+          SHA.test(item.integrationContinuation.main) &&
+          typeof item.integrationContinuation.context === "string" &&
+          item.integrationContinuation.context.length > 0 &&
+          Array.isArray(item.source.correctionPaths) &&
+          item.source.inheritedWorkerRetry !== undefined &&
+          !item.acceptedReplan &&
+          !item.conflictContinuation,
+        "malformed-queue-item",
+      );
     demand(!itemIds.has(item.id), "duplicate-queue-item");
     itemIds.add(item.id);
     demand(item.setup.run === item.source.run, "queue-run-drift");
@@ -1401,6 +1594,61 @@ async function failedConflict(queue: string, attempt: AttemptRecord | typeof ABS
       (await optionalRecord(directory, "gate-correction")) !== ABSENT ||
       Math.max(attempt.retries, refresh.retries) > (retried ? 1 : 0),
   };
+}
+
+// ISS-167: a failed attempt whose independently reviewed head met a conflict after its
+// single resolution was already consumed. The retained refresh holds no seed, head,
+// conflict or publication; the reviewed candidate and its PASS review remain on disk.
+async function reviewedExhausted(queue: string, attempt: AttemptRecord | typeof ABSENT) {
+  if (
+    attempt === ABSENT ||
+    attempt.phase !== "failed" ||
+    attempt.acceptedStage !== null ||
+    typeof attempt.reviewId !== "string" ||
+    typeof attempt.item !== "string"
+  )
+    return;
+  const sourceAttempt = Number(attempt.item.split(":").at(-1));
+  const directory = resolve(queue, attempt.candidateAttempt > sourceAttempt ? "repair" : "source");
+  const refresh = await optionalRecord(directory, "native-refresh");
+  if (
+    refresh === ABSENT ||
+    refresh.head ||
+    refresh.conflict ||
+    refresh.resolutionUsed !== true ||
+    refresh.previousHead !== attempt.head ||
+    refresh.previousReview !== attempt.reviewId ||
+    !SHA.test(refresh.main) ||
+    typeof refresh.directory !== "string"
+  )
+    return;
+  const [candidate, reviewer, reviewed] = await Promise.all([
+    optionalRecord(directory, "candidate"),
+    optionalRecord(directory, "reviewer-attempt"),
+    optionalRecord(directory, "reviewer-terminal"),
+  ]);
+  if (
+    [candidate, reviewer, reviewed].includes(ABSENT) ||
+    candidate.head !== attempt.head ||
+    reviewer.id !== attempt.reviewId ||
+    reviewed.id !== attempt.reviewId ||
+    reviewed.status !== "passed" ||
+    reviewed.head !== attempt.head
+  )
+    return;
+  try {
+    if (parseReview(reviewed.summary, attempt.run, attempt.head).verdict !== "PASS") return;
+  } catch (error) {
+    if (error instanceof RepairBlocked) return;
+    throw error;
+  }
+  for (const path of [directory, refresh.directory])
+    if (
+      (await optionalRecord(path, "publication")) !== ABSENT ||
+      (await optionalRecord(path, "publication-intent")) !== ABSENT
+    )
+      return;
+  return { directory, refresh };
 }
 
 export async function currentCandidateAttempt(config: QueueConfig) {
@@ -2025,6 +2273,29 @@ function assertItemReviewHistory(
   );
 }
 
+// ISS-167: the only new launches are refresh workers; a fresh exact-head DELTA PASS
+// on the resulting head authorizes it, never the inherited source review.
+function assertIntegrationReviewHistory(
+  history: QueueParticipant[],
+  item: QueueItem,
+  reviewId: string,
+  priorParticipants: number,
+) {
+  const launched = history.filter(
+    (participant) => participant.ordinal > priorParticipants && participant.item === item.id,
+  );
+  const selected = launched.at(-1);
+  demand(
+    launched.length > 0 &&
+      launched.every((participant) => participant.stage === "refresh") &&
+      selected?.role === "reviewer" &&
+      selected.outcome === "passed" &&
+      selected.id === reviewId &&
+      reviewId !== item.integrationContinuation?.reviewId,
+    "item-review-history-mismatch",
+  );
+}
+
 function assertSourceFailureHistory(
   history: QueueParticipant[],
   item: QueueItem,
@@ -2119,7 +2390,7 @@ export async function queueStep(config: QueueConfig, adapter: QueueAdapter): Pro
       return await operation();
     } catch (error) {
       if (
-        (item.acceptedReplan || item.conflictContinuation) &&
+        (item.acceptedReplan || item.conflictContinuation || item.integrationContinuation) &&
         error instanceof QueueBlocked &&
         ([
           "author-failed",
@@ -2173,16 +2444,17 @@ export async function queueStep(config: QueueConfig, adapter: QueueAdapter): Pro
             {
               head: failedHead,
               reviewId: attempt.reviewId ?? "",
-              findings: item.conflictContinuation
-                ? attempt.findings
-                : [
-                    {
-                      file: item.acceptedReplan!.allowedPaths[0]!,
-                      line: 1,
-                      severity: "blocking",
-                      text: `${error.reason}: ${error.diagnostics ?? ""}`,
-                    },
-                  ],
+              findings:
+                item.conflictContinuation || item.integrationContinuation
+                  ? attempt.findings
+                  : [
+                      {
+                        file: item.acceptedReplan!.allowedPaths[0]!,
+                        line: 1,
+                        severity: "blocking",
+                        text: `${error.reason}: ${error.diagnostics ?? ""}`,
+                      },
+                    ],
             },
             await adapter.history(),
             Math.max(attempt.retries, error.retries),
@@ -2200,7 +2472,7 @@ export async function queueStep(config: QueueConfig, adapter: QueueAdapter): Pro
   for (;;) {
     const item = config.items[attempt.index]!;
     if (attempt.phase === "failed") {
-      demand(!item.conflictContinuation, "continuation-failed");
+      demand(!item.conflictContinuation && !item.integrationContinuation, "continuation-failed");
       demand(
         attempt.candidateAttempt < item.implementationAttemptCeiling,
         "implementation-attempt-ceiling-exhausted",
@@ -2230,7 +2502,19 @@ export async function queueStep(config: QueueConfig, adapter: QueueAdapter): Pro
           setup.diagnostics && setup.diagnostics.length <= 500 ? setup.diagnostics : undefined,
         );
       const history = await adapter.history();
-      attempt = advance(attempt, history, { phase: "source" });
+      // ISS-167 links the retained review; no source author or terminal is invented.
+      attempt = advance(
+        attempt,
+        history,
+        item.integrationContinuation
+          ? {
+              phase: "delivery",
+              reviewId: item.integrationContinuation.reviewId,
+              acceptedStage: "source",
+              stateDirectory: item.source.stateDirectory,
+            }
+          : { phase: "source" },
+      );
       await record(directory, "attempt", attempt);
       continue;
     }
@@ -2401,7 +2685,7 @@ export async function queueStep(config: QueueConfig, adapter: QueueAdapter): Pro
           attempt.retries,
         ),
       );
-      demand(!item.conflictContinuation, "continuation-failed");
+      demand(!item.conflictContinuation && !item.integrationContinuation, "continuation-failed");
       demand(
         attempt.candidateAttempt < item.implementationAttemptCeiling,
         "implementation-attempt-ceiling-exhausted",
@@ -2415,13 +2699,21 @@ export async function queueStep(config: QueueConfig, adapter: QueueAdapter): Pro
       };
     }
     demand("head" in delivery && "reviewId" in delivery, "delivery-identity-drift");
-    assertItemReviewHistory(
-      history,
-      item,
-      attempt.acceptedStage === "repair",
-      delivery.reviewId,
-      config.initialHistory.length,
-    );
+    if (item.integrationContinuation)
+      assertIntegrationReviewHistory(
+        history,
+        item,
+        delivery.reviewId,
+        config.initialHistory.length,
+      );
+    else
+      assertItemReviewHistory(
+        history,
+        item,
+        attempt.acceptedStage === "repair",
+        delivery.reviewId,
+        config.initialHistory.length,
+      );
     demand(
       (delivery.head === attempt.head && delivery.reviewId === attempt.reviewId) ||
         history.length > attempt.history.length,
@@ -3198,6 +3490,7 @@ export function repositoryQueueAdapter(
           !grant ||
           grant.stateDirectory !== accepted.stateDirectory ||
           item.acceptedReplan ||
+          item.integrationContinuation ||
           !/^gate-(host-failed|attribution-unknown):.+$/.test(stopped.reason)
         )
           throw new QueueBlocked(stopped.reason, stopped.diagnostics);
@@ -3274,17 +3567,41 @@ export function repositoryQueueAdapter(
         policy: item.delivery.policy,
       };
       // The accepted source stays immutable. Each refreshed head owns new gate/review records.
-      const originalCandidate = await json(accepted.stateDirectory, "candidate");
+      // ISS-167 reads that evidence from the retained source; its own directory starts empty.
+      const integrating = item.integrationContinuation;
+      const evidenceDirectory = integrating?.sourceDirectory ?? accepted.stateDirectory;
+      const originalCandidate = await json(evidenceDirectory, "candidate");
       await assertExecutor(delivery, executingRoot, gitExecutable);
-      const originalConfig = await json(accepted.stateDirectory, "config");
+      const originalConfig = await json(evidenceDirectory, "config");
       const originalEvidence = await deliveryAdapter.source({
         ...delivery,
+        ...(integrating
+          ? {
+              worktree: originalConfig.config.worktree,
+              reviewWorktree: originalConfig.config.reviewWorktree,
+              stateDirectory: integrating.sourceDirectory,
+            }
+          : {}),
         candidateHead: originalCandidate.head,
       });
-      let sourceConfig: SourceConfig = originalConfig.config;
-      if (item.conflictContinuation)
+      demand(
+        !integrating ||
+          (originalCandidate.head === accepted.head &&
+            originalEvidence.reviewId === accepted.reviewId &&
+            originalEvidence.reviewId === integrating.reviewId),
+        "unreviewed-delivery-source",
+      );
+      let sourceConfig: SourceConfig = integrating ? item.source : originalConfig.config;
+      if (item.conflictContinuation || integrating)
         sourceConfig = { ...sourceConfig, inheritedWorkerRetry: !!flowRetries };
-      let sourceEvidence = originalEvidence;
+      let sourceEvidence = integrating
+        ? {
+            ...originalEvidence,
+            worktree: delivery.worktree,
+            reviewWorktree: delivery.reviewWorktree,
+            stateDirectory: accepted.stateDirectory,
+          }
+        : originalEvidence;
       delivery.candidateHead = originalCandidate.head;
       if (correctionRecord !== ABSENT) {
         const correction = correctionRecord;
@@ -3492,8 +3809,14 @@ export function repositoryQueueAdapter(
                     ? delivery.stateDirectory
                     : recovery.inheritedDirectory,
               }
-            : undefined,
-          !!item.conflictContinuation,
+            : integrating
+              ? {
+                  context: integrating.context,
+                  main: integrating.main,
+                  inheritedDirectory: integrating.sourceDirectory,
+                }
+              : undefined,
+          !!item.conflictContinuation || !!integrating,
         );
       } catch (error) {
         // A lost integration response is reconciled by native refresh on replay.
@@ -3589,7 +3912,8 @@ export function repositoryQueueAdapter(
             item.conflictContinuation?.correctionUsed
           )
             return stopGate(`gate-correction-exhausted:${error.gate}`, failure.log);
-          if (item.acceptedReplan) return stopGate("gate-correction-not-authorized", failure.log);
+          if (item.acceptedReplan || integrating)
+            return stopGate("gate-correction-not-authorized", failure.log);
           const correctionRoot = recovering ? recoveryDirectory : accepted.stateDirectory;
           const directory = resolve(correctionRoot, "gate-correction");
           const context = `Failed exact reviewed head: ${delivery.candidateHead}; delivery main base: ${main}; predecessor complete review: ${refreshedSource.reviewId}. Exact failed command: ${JSON.stringify(failure.command)}. Full diagnostic artifact: ${failure.log}; failing identities/diagnostics: ${JSON.stringify(failure.diagnostics)}. Base control and attribution: ${resolve(delivery.stateDirectory, "gate-attribution.json")}. Original acceptance and preserved author/reviewer records and captured traces: ${accepted.stateDirectory}; predecessor delivery and review records: ${delivery.stateDirectory}. Read both directories' config, candidate, author/reviewer attempt and terminal files and the trace paths they name. Start from the failed head, retain the full implementation diff against main, and correct only this failure and its direct causes. All original acceptance criteria remain mandatory.`;
