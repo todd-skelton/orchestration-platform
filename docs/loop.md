@@ -192,18 +192,51 @@ existing `native-refresh.json`. After aborting the conflicting integration, the
 executor merges the reviewed head with that same current main and pins the
 marked text as an intermediate merge commit. This input preserves both parents
 and supplies a clean, repeatable base for the ordinary author lifecycle; it is
-never an accepted delivery head. The existing author placement resolves only
-the marked hunks. Text outside them (including line endings), other files and
-file modes cannot change.
+never an accepted delivery head. The existing author placement resolves the
+marked hunks; text outside those hunks (including line endings) stays immutable
+in every captured conflict file K.
 Only ordinary text conflicts with both sides present are supported; unsupported
 conflicts stop as `conflict-resolution-unsupported`. Scope escape or author
 failure stops as `conflict-resolution-scope-escape` or
 `conflict-resolution-failed` (ISS-147).
 
+ISS-199 admits necessary unmarked preservation edits after ISS-146's cycle-10
+conflict author recorded that its hunk-only scope prohibited them. Before a
+new conflict author, the existing refresh record retains a census bound to
+reviewed candidate C, integration main M and seed S (whose parents are C and M).
+K is exactly the native captured conflict set, never rederived. U contains
+only paths outside K present at the same exact path in all three immutable
+Git trees as mode `100644` blobs without NUL, with C different from M and S
+different from each. Empty files are text. NUL-delimited tree records preserve
+spaces and tabs; comparisons do not infer renames, inspect import graphs or
+run gates on the marked tree. The record saves sorted K/U and each path's
+C/M/S blob IDs before launch. Git/read/save failure retains ordinary setup
+error handling; it cannot mean an empty census.
+
+Ordinary unfenced resolution may edit U only to preserve both parents' intent.
+Overlap is neither proof of breakage nor a repair obligation: U may remain
+unchanged. Changed U files must remain regular text without conflict markers.
+Additions, deletions, renames, mode changes, symlinks, binary conversions and
+edits outside K union U remain scope escapes. K always retains its literal
+hunk-only boundary. A separately ruled `correctionPaths`/`allowedPaths` fence
+retains its narrower K-only contract even for a U path named in the packet;
+the captured-K fence still runs before seed and launch. Unsupported native
+capture never enters the census. The consumed ISS-146 packet gains no edit
+permission, relaunch or resolution renewal.
+
+Author and DELTA prompts retain the complete census; stop diagnostics point
+to `native-refresh.json` while the ordinary published excerpt stays bounded.
+Replay uses that saved census and seed, not newer main or author edits. A
+missing census can be computed before the first worker configuration is pinned;
+legacy pinned, in-flight and completed workers keep their old K-only contract
+without backfill. Existing retry and commit reconciliation remain in place.
+
 The independent delta reviewer inherits the original review, author trace and
-source records, plus the resolution author's captured execution evidence. It
-checks the resolved hunks and direct callers for semantic expansion or lost
-feature/main behavior at the exact resulting head. A failed review remains
+source records, both parents and any saved census, plus the resolution author's
+captured execution evidence. It checks the resolved K hunks, every changed U
+file and their direct callers for semantic expansion or lost feature/main
+behavior at the exact resulting head. Census membership and old PASS are not
+acceptance. A failed review remains
 `refresh-review-failed`; neither a clean merge nor author PASS supplies review
 authority. The existing per-main refresh directory retains worker attempts,
 terminals, candidate and review evidence. Restart resumes those workers and
