@@ -4,11 +4,12 @@ import { mkdir, open, readFile, realpath, writeFile } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import { promisify } from "node:util";
 import { RepairBlocked, parseReview } from "./repair-policy.mjs";
-import { normalizeBody } from "../planning/board-check.mjs";
+import { loadBoardSnapshot, normalizeBody, planningKeyOf } from "../planning/board-check.mjs";
 import { checkCandidateBoard } from "../planning/candidate-board.mjs";
 import { resolvePnpmLauncher } from "../pnpm-launcher.mjs";
 import {
   DeliveryBlocked,
+  type CheckEvidence,
   type CleanupPlan,
   type DeliveryAdapter,
   type DeliveryConfig,
@@ -26,7 +27,11 @@ const DIGEST = /^[a-f0-9]{64}$/;
 const ATTEMPT_ID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 
 // ISS-152: pipe directly to a runtime file, not execFile's bounded output buffer.
-async function gateCommand(command: GateFailureEvidence["command"], log: string) {
+async function gateCommand(
+  command: GateFailureEvidence["command"],
+  log: string,
+  env?: Record<string, string>,
+) {
   const file = await open(log, "wx");
   try {
     return await new Promise<{ code: number | null; signal: string | null; startup?: string }>(
@@ -35,6 +40,7 @@ async function gateCommand(command: GateFailureEvidence["command"], log: string)
           cwd: command.cwd,
           windowsHide: true,
           stdio: ["ignore", file.fd, file.fd],
+          ...(env ? { env: { ...process.env, ...env } } : {}),
         });
         child.once("error", (error) => done({ code: null, signal: null, startup: error.message }));
         child.once("close", (code, signal) => done({ code, signal }));
@@ -46,8 +52,53 @@ async function gateCommand(command: GateFailureEvidence["command"], log: string)
   }
 }
 
-// Deliberately recognize only completed compiler, formatter and assertion diagnostics.
-// Timeouts, resource failures and mixed causes have no candidate attribution.
+const STATIC_SCOPED_GATE = "verify:static:scoped";
+const STATIC_RUN_MARKER = /^\[VERIFY_STATIC_RUN\] (\S+)$/gm;
+
+// ISS-192: the Chase Sets scoped static runner is fail-fast and marks each link,
+// so the failing link is the last marked block.
+function staticScopedFailingLink(output: string): string | undefined {
+  return [...output.matchAll(STATIC_RUN_MARKER)].at(-1)?.[1];
+}
+
+// Recognize only a final block wholly made of `<path> is stale|missing` throws
+// from a `generate-*.mjs --check` producer: its command echo, Node's uncaught
+// throw frame and the pnpm lifecycle tail. Any other line keeps the failure unknown.
+function staticArtifactDiagnostics(output: string): string[] {
+  const block = output.split(/^(?=\[VERIFY_STATIC_RUN\] )/m);
+  if (block.length < 2) return [];
+  const lines = block.at(-1)!.split(/\r?\n/);
+  const diagnostics: string[] = [];
+  let producer = false;
+  for (let index = 1; index < lines.length; index++) {
+    const line = lines[index]!;
+    if (
+      line.trim() === "" ||
+      /^\s+at /.test(line) ||
+      /^Node\.js v\d/.test(line) ||
+      /^\[ELIFECYCLE\] Command failed with exit code \d+\.$/.test(line)
+    )
+      continue;
+    if (line.startsWith("$ ")) {
+      if (/\bgenerate-[\w.-]+\.mjs --check$/.test(line)) producer = true;
+      continue;
+    }
+    if (/^(?:file:\/\/|\/|[A-Za-z]:[\\/])\S+:\d+$/.test(line)) {
+      // Node's throw frame: location, thrown source, caret. A frame without its caret is unknown.
+      while (lines[++index] !== undefined && !/^\s*\^+\s*$/.test(lines[index]!));
+      if (index >= lines.length) return [];
+      continue;
+    }
+    const match = /^(?:Error: )?((?:[\w.@-]+\/)*[\w.@-]+ is (?:stale|missing))$/.exec(line);
+    if (!match) return [];
+    diagnostics.push(match[1]!);
+  }
+  return producer ? diagnostics : [];
+}
+
+// Deliberately recognize only completed compiler, formatter, assertion and
+// generated-artifact staleness diagnostics. Timeouts, resource failures and
+// mixed causes have no candidate attribution.
 export function gateDiagnostics(name: string, raw: string): string[] {
   const output = raw.replace(/\u001b\[[0-9;]*m/g, "");
   if (
@@ -56,6 +107,7 @@ export function gateDiagnostics(name: string, raw: string): string[] {
     )
   )
     return [];
+  if (name === STATIC_SCOPED_GATE) return staticArtifactDiagnostics(output);
   if (name === "typecheck")
     return [...output.matchAll(/^([^\r\n]+\(\d+,\d+\): error TS\d+: .+)$/gm)].map((m) => m[1]!);
   if (name === "format:check" && output.includes("Code style issues found"))
@@ -265,12 +317,249 @@ export interface GithubDeliveryCommands {
   ghJson(config: DeliveryConfig, args: string[]): Promise<any>;
 }
 
+// ISS-185: the PR rollup is shared by SHA. Only Actions' structured association
+// and effective jobs can establish whose result this is.
+function positive(value: unknown): value is number {
+  return Number.isSafeInteger(value) && (value as number) > 0;
+}
+
+function associatedRun(run: any, config: DeliveryConfig, current: PublicationEvidence) {
+  if (
+    run?.repository?.full_name !== config.repository ||
+    run.head_repository?.full_name !== config.repository ||
+    run.head_sha !== current.head ||
+    run.event !== "pull_request" ||
+    !Array.isArray(run.pull_requests) ||
+    run.pull_requests.length === 0
+  )
+    throw new Error(`unknown workflow association: ${run?.id}`);
+  const matches = run.pull_requests.filter((pull: any) => pull.number === current.number);
+  if (matches.length === 0) {
+    if (!run.pull_requests.every((pull: any) => positive(pull.number)))
+      throw new Error(`malformed workflow association: ${run.id}`);
+    return false;
+  }
+  const pull = matches[0];
+  if (
+    matches.length !== 1 ||
+    pull.url !== `https://api.github.com/repos/${config.repository}/pulls/${current.number}` ||
+    pull.head?.repo?.id !== run.head_repository.id ||
+    pull.base?.repo?.id !== run.repository.id ||
+    !positive(run.repository.id) ||
+    !positive(run.head_repository.id) ||
+    pull.head?.sha !== current.head ||
+    pull.head?.ref !== current.sourceBranch ||
+    pull.base?.ref !== current.baseBranch ||
+    run.head_branch !== current.sourceBranch ||
+    !positive(run.id) ||
+    !positive(run.workflow_id) ||
+    !positive(run.run_number) ||
+    !positive(run.run_attempt) ||
+    typeof run.path !== "string" ||
+    !run.path.startsWith(".github/workflows/") ||
+    !["queued", "in_progress", "waiting", "pending", "requested", "completed"].includes(run.status)
+  )
+    throw new Error(`contradictory workflow association: ${run.id}`);
+  return true;
+}
+
+async function publicationRuns(
+  commands: GithubDeliveryCommands,
+  config: DeliveryConfig,
+  current: PublicationEvidence,
+) {
+  const pages = await commands.ghJson(config, [
+    "api",
+    `repos/${config.repository}/actions/runs?head_sha=${current.head}&event=pull_request&per_page=100`,
+    "--paginate",
+    "--slurp",
+  ]);
+  if (
+    !Array.isArray(pages) ||
+    pages.length === 0 ||
+    pages.some((page) => !Array.isArray(page?.workflow_runs))
+  )
+    throw new Error("malformed workflow observation");
+  const workflows = new Map<number, any>();
+  const ids = new Set<number>();
+  for (const run of pages.flatMap((page) => page.workflow_runs)) {
+    if (!associatedRun(run, config, current)) continue;
+    if (ids.has(run.id)) throw new Error(`duplicate workflow run: ${run.id}`);
+    ids.add(run.id);
+    const prior = workflows.get(run.workflow_id);
+    if (prior && (prior.path !== run.path || prior.run_number === run.run_number))
+      throw new Error(`competing workflow runs: ${run.workflow_id}`);
+    // run_number is GitHub's sequence within this workflow, not a global ID/date.
+    if (!prior || prior.run_number < run.run_number) workflows.set(run.workflow_id, run);
+  }
+  return workflows;
+}
+
+async function attributedChecks(
+  commands: GithubDeliveryCommands,
+  config: DeliveryConfig,
+  current: PublicationEvidence,
+) {
+  const workflows = await publicationRuns(commands, config, current);
+  const checks: CheckEvidence[] = [];
+  let workflowPending = false;
+  for (const run of workflows.values()) {
+    workflowPending ||= run.status !== "completed";
+    const jobPages = await commands.ghJson(config, [
+      "api",
+      `repos/${config.repository}/actions/runs/${run.id}/jobs?filter=latest&per_page=100`,
+      "--paginate",
+      "--slurp",
+    ]);
+    if (
+      !Array.isArray(jobPages) ||
+      jobPages.length === 0 ||
+      jobPages.some((page) => !Array.isArray(page?.jobs))
+    )
+      throw new Error(`malformed workflow jobs: ${run.id}`);
+    const jobs = jobPages.flatMap((page) => page.jobs);
+    const jobIds = new Set<number>();
+    for (const job of jobs) {
+      if (
+        !positive(job.id) ||
+        jobIds.has(job.id) ||
+        job.run_id !== run.id ||
+        job.head_sha !== current.head ||
+        !positive(job.run_attempt) ||
+        job.run_attempt > run.run_attempt ||
+        (job.run_attempt < run.run_attempt && job.conclusion !== "success") ||
+        typeof job.name !== "string" ||
+        job.html_url !==
+          `https://github.com/${config.repository}/actions/runs/${run.id}/job/${job.id}`
+      )
+        throw new Error(`contradictory workflow job: ${run.id}/${job.id}`);
+      jobIds.add(job.id);
+      let bucket: CheckEvidence["bucket"];
+      if (
+        ["queued", "in_progress", "waiting", "pending"].includes(job.status) &&
+        job.conclusion === null
+      )
+        bucket = "pending";
+      else if (job.status === "completed") {
+        switch (job.conclusion) {
+          case "success":
+            bucket = "pass";
+            break;
+          case "failure":
+          case "timed_out":
+          case "action_required":
+          case "startup_failure":
+            bucket = "fail";
+            break;
+          case "cancelled":
+            bucket = "cancel";
+            break;
+          case "skipped":
+          case "neutral":
+            bucket = "skipping";
+            break;
+          default:
+            throw new Error(`unknown job conclusion: ${job.id}`);
+        }
+      } else throw new Error(`unknown job status: ${job.id}`);
+      if (config.requiredChecks.includes(job.name))
+        checks.push({
+          name: job.name,
+          bucket,
+          link: job.html_url,
+          actions: {
+            run: run.id,
+            attempt: run.run_attempt,
+            job: job.id,
+            workflow: run.workflow_id,
+          },
+        });
+    }
+    // The latest-jobs endpoint supplies the effective set for failed-only reruns.
+    // Never combine jobs from separate runs or manually fill gaps with old jobs.
+  }
+  if (workflows.size > 0) {
+    const after = await publicationRuns(commands, config, current);
+    const signature = (runs: Map<number, any>) =>
+      JSON.stringify(
+        [...runs.values()]
+          .sort((a, b) => a.workflow_id - b.workflow_id)
+          .map((run) => [run.workflow_id, run.id, run.run_number, run.run_attempt, run.path]),
+      );
+    if (signature(workflows) !== signature(after))
+      throw new Error("applicable workflow changed during observation; reobserve checks");
+    // ISS-188: lifecycle progress preserves attribution, but sampled green is
+    // insufficient when either validated observation is still pending.
+    workflowPending ||= [...after.values()].some((run) => run.status !== "completed");
+  }
+  for (const name of config.requiredChecks) {
+    const count = checks.filter((check) => check.name === name).length;
+    if (count > 1 || (count === 0 && workflows.size > 0 && !workflowPending))
+      throw new Error(`missing or duplicate current job: ${name}`);
+  }
+  return { checks, workflowPending, startupInvisible: workflows.size === 0 };
+}
+
 async function json(path: string, reason: string) {
   try {
     return JSON.parse(await readFile(path, "utf8"));
   } catch {
     throw new DeliveryBlocked(reason);
   }
+}
+
+// ISS-172: publish the accepted review's existing answer, without another record.
+export async function acceptedReviewG0(config: DeliveryConfig): Promise<string> {
+  const terminal = await json(
+    resolve(config.stateDirectory, "reviewer-terminal.json"),
+    "missing-reviewer-terminal",
+  );
+  try {
+    const review = parseReview(terminal?.summary, config.run, config.candidateHead);
+    if (review.verdict === "PASS") return review.g0;
+  } catch (error) {
+    if (!(error instanceof RepairBlocked)) throw error;
+  }
+  throw new DeliveryBlocked("unreviewed-delivery-source");
+}
+
+function staticLinkRan(output: string, link: string) {
+  return [...output.matchAll(STATIC_RUN_MARKER)].some((m) => m[1] === link);
+}
+
+// The candidate's derived static scope: the same name-status diff the runner
+// reads, including both sides of renames.
+async function changedFiles(
+  gitExecutable: string,
+  config: DeliveryConfig,
+  main: string,
+  head: string,
+) {
+  const tokens = (
+    await git(
+      gitExecutable,
+      config,
+      [
+        "diff",
+        "--name-status",
+        "-z",
+        "--find-renames",
+        "--diff-filter=ACMRTD",
+        `${main}...${head}`,
+        "--",
+      ],
+      config.worktree,
+    )
+  )
+    .split("\0")
+    .filter(Boolean);
+  const files: string[] = [];
+  for (let index = 0; index < tokens.length;) {
+    const paths = /^[RC]\d*$/.test(tokens[index++]!) ? 2 : 1;
+    files.push(...tokens.slice(index, index + paths));
+    index += paths;
+  }
+  return [...new Set(files)];
 }
 
 async function stagedFile(config: DeliveryConfig, name: string, contents: string) {
@@ -467,7 +756,8 @@ async function assertWorktreeRepository(executable: string, config: DeliveryConf
       await git(executable, config, ["rev-parse", "--git-common-dir"]),
     ),
   );
-  for (const cwd of [config.repositoryRoot, config.worktree, config.reviewWorktree]) {
+  await assertGitTarget(executable, config, config.repositoryRoot);
+  for (const cwd of [config.worktree, config.reviewWorktree]) {
     const selected = await realpath(
       resolve(cwd, await git(executable, config, ["rev-parse", "--git-common-dir"], cwd)),
     );
@@ -612,27 +902,56 @@ export function githubDeliveryAdapter(
   gitExecutable = "git",
   pause: (ms: number) => Promise<void> = (ms) => new Promise((done) => setTimeout(done, ms)),
 ): DeliveryAdapter {
+  const observeSibling = async (config: DeliveryConfig, draft: DraftPlan) => {
+    const refuse = () => new DeliveryBlocked(`self-sibling-refused:${draft.key}`);
+    const board = await loadBoardSnapshot(config.repository);
+    const rows = board.issues.filter((row) => planningKeyOf(row.body) === draft.key);
+    if (rows.length !== 1 || rows[0]!.number !== draft.issue) throw refuse();
+    const row = rows[0]!;
+    if (row.state === "CLOSED")
+      return { state: "confirmed" as const, value: { issue: draft.issue } };
+    if (
+      row.state !== "OPEN" ||
+      (row.reopenedEvent ?? null) !== draft.attributes.reopenedEvent ||
+      row.title !== draft.title ||
+      row.milestone !== draft.attributes.milestone
+    )
+      throw refuse();
+    if (normalizeBody(row.body) === normalizeBody(draft.body))
+      return { state: "confirmed" as const, value: { issue: draft.issue } };
+    if (normalizeBody(row.body) !== normalizeBody(draft.attributes.baseBody)) throw refuse();
+    return { state: "needs-mutation" as const };
+  };
   const verifyWorkspace = async (config: DeliveryConfig, head: string) => {
     try {
       await assertWorktreeRepository(gitExecutable, config);
-      if (
-        (await git(gitExecutable, config, ["rev-parse", "HEAD"], config.controllerRoot)) !==
-        config.controllerRevision
-      )
-        return false;
-      if (
-        (await git(gitExecutable, config, ["status", "--porcelain"], config.controllerRoot)) !== ""
-      )
-        return false;
-      if (
-        (await git(gitExecutable, config, ["branch", "--show-current"], config.repositoryRoot)) !==
-          "main" ||
-        (await git(gitExecutable, config, ["status", "--porcelain"], config.repositoryRoot)) !== ""
-      )
-        return false;
+      // One live `status --porcelain=v2 --branch` per distinct working directory carries the
+      // resolved head, the current branch and the working-tree entries that previously took a
+      // `rev-parse HEAD` or `branch --show-current` plus a `status --porcelain` pair. An unborn
+      // HEAD reports `(initial)` and a detached one `(detached)`; a clean tree ahead of its
+      // upstream still prints `# branch.ab`, so cleanliness is "no line outside the headers".
+      const status = async (cwd: string) => {
+        const lines = (
+          await git(gitExecutable, config, ["status", "--porcelain=v2", "--branch"], cwd)
+        ).split(/\r?\n/);
+        const header = (name: string) =>
+          lines.find((line) => line.startsWith(`# branch.${name} `))?.slice(name.length + 10);
+        return {
+          head: header("oid"),
+          branch: header("head"),
+          clean: lines.every((line) => line.startsWith("# branch.")),
+        };
+      };
+      const controller = await status(config.controllerRoot);
+      if (controller.head !== config.controllerRevision) return false;
+      // Coincidence is decided on the configured values alone; neither root is stat'ed.
+      const coincident = samePath(config.controllerRoot, config.repositoryRoot);
+      if (!coincident && !controller.clean) return false;
+      const repository = coincident ? controller : await status(config.repositoryRoot);
+      if (repository.branch !== "main" || !repository.clean) return false;
       for (const cwd of [config.worktree, config.reviewWorktree]) {
-        if ((await git(gitExecutable, config, ["rev-parse", "HEAD"], cwd)) !== head) return false;
-        if ((await git(gitExecutable, config, ["status", "--porcelain"], cwd)) !== "") return false;
+        const candidate = await status(cwd);
+        if (candidate.head !== head || !candidate.clean) return false;
       }
       return true;
     } catch {
@@ -784,7 +1103,7 @@ export function githubDeliveryAdapter(
         // Tie every diagnostic to a file in the committed candidate, not an external path.
         let committed = diagnostics.length > 0;
         for (const diagnostic of diagnostics) {
-          const path = diagnostic.split(/\(\d+,\d+\):| > /)[0]!;
+          const path = diagnostic.split(/\(\d+,\d+\):| > |\s+is\s+(?:stale|missing)$/)[0]!;
           try {
             await git(
               gitExecutable,
@@ -842,6 +1161,14 @@ export function githubDeliveryAdapter(
       if (evidence.cause !== "diagnostic" || evidence.head !== config.candidateHead) return result;
       let added = false;
       try {
+        // ISS-192: the scoped static runner derives its scope from the tree's own
+        // merge-base, so a detached base tree selects nothing. The base control
+        // must run the candidate's selection or it discriminates nothing.
+        const link =
+          name === STATIC_SCOPED_GATE
+            ? staticScopedFailingLink(await readFile(evidence.log, "utf8"))
+            : undefined;
+        if (name === STATIC_SCOPED_GATE && !link) return result;
         // Dependencies and the script must be comparable. A changed toolchain stays unknown.
         for (const path of ["package.json", "pnpm-lock.yaml"]) {
           const before = await git(
@@ -885,7 +1212,14 @@ export function githubDeliveryAdapter(
           result.cause = "host";
         else {
           const command = { ...evidence.command, cwd: tree };
-          const terminal = await gateCommand(command, log);
+          const env = link
+            ? {
+                CHANGED_FILES_JSON: JSON.stringify(
+                  await changedFiles(gitExecutable, config, main, evidence.head),
+                ),
+              }
+            : undefined;
+          const terminal = await gateCommand(command, log, env);
           await stagedFile(
             config,
             `${directory.split(/[\\/]/).at(-1)}/base-terminal.json`,
@@ -896,8 +1230,10 @@ export function githubDeliveryAdapter(
             (await git(gitExecutable, config, ["status", "--porcelain"], tree)) === "" &&
             (await git(gitExecutable, config, ["rev-parse", "HEAD"], tree)) === main;
           if (!clean || terminal.startup) result.cause = "host";
-          else if (terminal.code === 0 && !terminal.signal) result.cause = "candidate";
-          else if (
+          else if (terminal.code === 0 && !terminal.signal) {
+            // A passing base is evidence only when the failing link actually ran there.
+            if (!link || staticLinkRan(output, link)) result.cause = "candidate";
+          } else if (
             terminal.code !== null &&
             !terminal.signal &&
             gateDiagnostics(name, output).length
@@ -923,6 +1259,7 @@ export function githubDeliveryAdapter(
       return result;
     },
     async observeDraft(config, draft) {
+      if (typeof draft.attributes.baseBody === "string") return observeSibling(config, draft);
       try {
         const row = await commands.ghJson(config, [
           "issue",
@@ -944,6 +1281,13 @@ export function githubDeliveryAdapter(
     async applyDraft(config, draft) {
       if (!(await verifyWorkspace(config, config.candidateHead)))
         throw new DeliveryBlocked("candidate-workspace-drift");
+      if (typeof draft.attributes.baseBody === "string") {
+        // Reobserve even when called after a saved intent or a lost mutation response.
+        if ((await observeSibling(config, draft)).state === "confirmed") return;
+        const path = await stagedFile(config, `approved-${draft.key}.md`, draft.body);
+        await commands.gh(config, ["issue", "edit", String(draft.issue), "--body-file", path]);
+        return;
+      }
       const path = await stagedFile(config, `approved-${draft.key}.md`, draft.body);
       const milestone = draft.attributes.milestone;
       if (typeof milestone !== "string" && milestone !== null)
@@ -1180,59 +1524,11 @@ export function githubDeliveryAdapter(
       for (let retry = 0; ; retry += 1) {
         try {
           const before = await readIdentity();
-          let stdout: string;
-          try {
-            stdout = await commands.gh(config, [
-              "pr",
-              "checks",
-              String(current.number),
-              "--json",
-              "name,bucket,link",
-            ]);
-          } catch (error) {
-            const result = error as { code?: number; stdout?: string; stderr?: string };
-            if (
-              result.code === 1 &&
-              result.stdout === "" &&
-              /^no checks reported on the '.+' branch\s*$/.test(result.stderr ?? "")
-            )
-              stdout = "[]";
-            else {
-              if (
-                ![1, 8].includes(result.code ?? -1) ||
-                typeof result.stdout !== "string" ||
-                result.stdout === ""
-              )
-                throw error;
-              stdout = result.stdout;
-            }
-          }
-          const checks = JSON.parse(stdout);
-          if (!Array.isArray(checks)) throw new Error("malformed hosted checks");
-          let workflowPending = false;
-          let startupInvisible = false;
-          if (config.requiredChecks.some((name) => !checks.some((check) => check?.name === name))) {
-            // ISS-132: aggregate jobs can be absent between jobs of a running workflow.
-            const pages = await commands.ghJson(config, [
-              "api",
-              `repos/${config.repository}/actions/runs?head_sha=${before.headRefOid}&event=pull_request&per_page=100`,
-              "--paginate",
-              "--slurp",
-            ]);
-            if (!Array.isArray(pages) || pages.some((page) => !Array.isArray(page?.workflow_runs)))
-              throw new Error("malformed workflow observation");
-            startupInvisible =
-              pages.every((page) => page.workflow_runs.length === 0) &&
-              config.requiredChecks.every((name) => !checks.some((check) => check?.name === name));
-            workflowPending = pages.some((page) =>
-              page.workflow_runs.some(
-                (run: any) =>
-                  run.head_sha === before.headRefOid &&
-                  run.pull_requests?.some((pull: any) => pull.number === current.number) &&
-                  ["queued", "in_progress"].includes(run.status),
-              ),
-            );
-          }
+          const { checks, workflowPending, startupInvisible } = await attributedChecks(
+            commands,
+            config,
+            current,
+          );
           const after = await readIdentity();
           if (JSON.stringify(before) !== JSON.stringify(after))
             throw new Error("publication moved");
@@ -1241,6 +1537,8 @@ export function githubDeliveryAdapter(
             await pause(10_000);
             continue;
           }
+          if (startupInvisible)
+            throw new Error("current publication workflow absent after 12 startup waits");
           return {
             head: before.headRefOid,
             checks,
@@ -1260,23 +1558,34 @@ export function githubDeliveryAdapter(
         }
       }
     },
-    async failedCheckLog(config, check) {
-      const match =
-        /^https:\/\/github\.com\/[^/]+\/[^/]+\/actions\/runs\/([1-9][0-9]*)(?:\/|$)/.exec(
-          check.link,
-        );
-      if (!match) throw new DeliveryBlocked(`hosted-check-log-unavailable:${check.name}`);
-      const run = await commands.ghJson(config, [
-        "run",
-        "view",
-        match[1]!,
-        "--json",
-        "status,headSha",
-      ]);
-      if (run.headSha !== config.candidateHead) throw new DeliveryBlocked("hosted-head-drift");
-      if (run.status !== "completed") return null;
+    async failedCheckLog(config, check, current) {
       try {
-        return await commands.gh(config, ["run", "view", match[1]!, "--log-failed"]);
+        if (!check.actions)
+          throw new Error("missing current Actions attribution; reobserve checks");
+        const selection = check.actions;
+        const verify = async () => {
+          const observed = await this.checks(config, current);
+          if (!observed.checks.some((row) => JSON.stringify(row) === JSON.stringify(check)))
+            throw new Error("selected failure changed; reobserve checks");
+          const run = await commands.ghJson(config, [
+            "api",
+            `repos/${config.repository}/actions/runs/${selection.run}`,
+          ]);
+          if (!associatedRun(run, config, current) || run.run_attempt !== selection.attempt)
+            throw new Error("selected run attempt changed; reobserve checks");
+          return run.status === "completed";
+        };
+        if (!(await verify())) return null;
+        const log = await commands.gh(config, [
+          "run",
+          "view",
+          String(selection.run),
+          "--attempt",
+          String(selection.attempt),
+          "--log-failed",
+        ]);
+        if (!(await verify())) throw new Error("workflow changed while fetching logs");
+        return log;
       } catch (error) {
         const failure = error as { stderr?: string; message?: string };
         const detail = [failure.stderr, failure.message].find(

@@ -1,22 +1,34 @@
-import { execFile, type ExecFileOptions } from "node:child_process";
+import { execFile, spawn, type ExecFileOptions } from "node:child_process";
+import { once } from "node:events";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { expectedBoardItems, type BoardSnapshot } from "../../scripts/planning/board-check.mjs";
 import { loadPlanningSnapshot, type PlanningSnapshot } from "../../scripts/planning/check.mjs";
-import { QueueBlocked, type LoopConfig } from "../../scripts/dogfood/queue.js";
+import * as planningLoader from "../../scripts/planning/check.mjs";
+import {
+  QueueBlocked,
+  queueStep,
+  validateLoopConfig,
+  type LoopConfig,
+} from "../../scripts/dogfood/queue.js";
+import { prerequisiteFixture, prerequisiteProof } from "./fixtures/prerequisite.js";
 import { ACCEPTED_REPLAN, replanPacket } from "./fixtures/continuation.js";
+import { sourceFailureFixture, historicalStops, snapshot } from "./fixtures/source-failure.js";
 import { selectCandidates } from "../../adapters/self.mjs";
+import * as boardLoader from "../../scripts/planning/board-check.mjs";
+import { planningSelectionFixture, retainedFiles } from "./fixtures/planning-selection.js";
 import {
   loadRepositoryAdapter,
   type RepositoryAdapter,
 } from "../../scripts/dogfood/repository-adapter.js";
 import {
   completeCycle,
+  prerequisiteOwners,
   isItemStopReason,
-  nextCycle,
+  nextCycle as nativeNextCycle,
   persistCycle,
   reconcilePendingStop,
   startCycle,
@@ -28,6 +40,660 @@ import {
 } from "../../scripts/dogfood/supervision.js";
 
 const roots: string[] = [];
+const nextCycle: typeof nativeNextCycle = (config, root, adapter, repository) =>
+  nativeNextCycle(config, root, adapter, repository, async () => {});
+
+it("ISS-187 observes live process identity, excludes itself and defers unknown owners", async () => {
+  const f = await prerequisiteFixture();
+  roots.push(f.root);
+  const workerPath = resolve(
+    f.blockedQueue.config.items[0]!.source.stateDirectory,
+    "author-attempt.json",
+  );
+  const worker = await f.json(workerPath);
+  await writeFile(workerPath, JSON.stringify({ ...worker, pid: 2147483647 }));
+  if (process.platform !== "linux") {
+    expect(await prerequisiteOwners(f.loop, f.blocked.selection)).toBe("unknown");
+    return;
+  }
+  const config = resolve(f.root, "process-config.json");
+  await writeFile(config, JSON.stringify(f.loop));
+  const entry = resolve(f.root, "supervise.mjs");
+  const module = pathToFileURL(
+    resolve(import.meta.dirname, "../../scripts/dogfood/supervision.ts"),
+  ).href;
+  await writeFile(
+    entry,
+    `import {readFileSync, writeFileSync} from 'node:fs';\nimport {prerequisiteOwners} from ${JSON.stringify(module)};\nconst config = JSON.parse(readFileSync(process.argv[2], 'utf8'));\nwriteFileSync(process.argv[3], await prerequisiteOwners(config, ${JSON.stringify(f.blocked.selection)}));\n`,
+  );
+  const output = resolve(f.root, "self-observation.txt");
+  await execute(process.execPath, [entry, config, output], { cwd: f.root });
+  expect(await readFile(output, "utf8")).toBe("absent");
+  await writeFile(entry, "setInterval(() => {}, 1000);\n");
+  const other = spawn(process.execPath, [entry, config], { cwd: f.root, stdio: "ignore" });
+  try {
+    await once(other, "spawn");
+    expect(await prerequisiteOwners(f.loop, f.blocked.selection)).toBe("live");
+  } finally {
+    const exited = once(other, "exit");
+    other.kill();
+    await exited;
+  }
+  // A PID belonging to this test process is not a worker identity.
+  await writeFile(workerPath, JSON.stringify({ ...worker, pid: process.pid }));
+  expect(await prerequisiteOwners(f.loop, f.blocked.selection)).toBe("unknown");
+  const liveWorkerScript = resolve(f.root, "synthetic-process.mjs");
+  await writeFile(liveWorkerScript, "setInterval(() => {}, 1000);\n");
+  const child = spawn(process.execPath, [liveWorkerScript], {
+    cwd: f.blockedQueue.config.items[0]!.source.worktree,
+    stdio: "ignore",
+  });
+  try {
+    await once(child, "spawn");
+    await writeFile(workerPath, JSON.stringify({ ...worker, pid: child.pid }));
+    expect(await prerequisiteOwners(f.loop, f.blocked.selection)).toBe("live");
+  } finally {
+    const exited = once(child, "exit");
+    child.kill();
+    await exited;
+  }
+});
+
+it("ISS-187 admission refusals leave the whole run, labels, traces and partials untouched", async () => {
+  const f = await prerequisiteFixture();
+  roots.push(f.root);
+  const declaration = structuredClone(f.loop.prerequisite!);
+  const rows = structuredClone(f.rows);
+  const loop = structuredClone(f.loop);
+  const files = await snapshot(f.runState);
+  const context = f.policy.issueContext;
+  const candidates = f.policy.selectCandidates;
+  const attemptPath = resolve(f.current.config.stateDirectory, "attempt.json");
+  const terminalPath = resolve(
+    f.current.config.items[0]!.source.stateDirectory,
+    "author-terminal.json",
+  );
+  const stopPath = resolve(f.runState, "cycle-5-stop-2.json");
+  const completionPath = resolve(f.runState, "cycle-5-stop-2-complete.json");
+  const changes: Array<[string, () => void | Promise<void>]> = [
+    [
+      "same issue",
+      () => {
+        f.loop.prerequisite = {
+          ...declaration,
+          key: declaration.blockedKey,
+          number: declaration.blockedNumber,
+        };
+      },
+    ],
+    [
+      "wrong cycle",
+      () => {
+        f.loop.prerequisite!.blockedCycle = 4;
+      },
+    ],
+    [
+      "wrong key",
+      () => {
+        f.loop.prerequisite!.blockedKey = "fixture-other";
+      },
+    ],
+    [
+      "wrong number",
+      () => {
+        f.loop.prerequisite!.blockedNumber = 999;
+      },
+    ],
+    [
+      "missing stop",
+      () => {
+        f.loop.prerequisite!.stop = 3;
+      },
+    ],
+    [
+      "wrong stop",
+      () => {
+        f.loop.prerequisite!.stop = 1;
+      },
+    ],
+    ["missing completion", () => rm(completionPath)],
+    [
+      "wrong stop binding",
+      () =>
+        writeFile(
+          stopPath,
+          JSON.stringify({
+            ...JSON.parse(files.get(stopPath)!),
+            selection: { ...f.blocked.selection, key: "fixture-other" },
+          }),
+        ),
+    ],
+    [
+      "wrong completion binding",
+      () =>
+        writeFile(
+          completionPath,
+          JSON.stringify({ ...JSON.parse(files.get(completionPath)!), stop: 1 }),
+        ),
+    ],
+    [
+      "would be attempt1",
+      () => {
+        f.loop.prerequisite = { ...declaration, key: "fixture-160", number: 160 };
+      },
+    ],
+    ["missing pinned FAIL", () => rm(terminalPath)],
+    [
+      "non-FAIL terminal",
+      () =>
+        writeFile(
+          terminalPath,
+          JSON.stringify({ ...JSON.parse(files.get(terminalPath)!), status: "passed" }),
+        ),
+    ],
+    [
+      "wrong terminal identity",
+      () =>
+        writeFile(
+          terminalPath,
+          JSON.stringify({ ...JSON.parse(files.get(terminalPath)!), id: "unknown-worker" }),
+        ),
+    ],
+    [
+      "wrong terminal head",
+      () =>
+        writeFile(
+          terminalPath,
+          JSON.stringify({ ...JSON.parse(files.get(terminalPath)!), head: "a".repeat(40) }),
+        ),
+    ],
+    [
+      "wrong pinned run",
+      () =>
+        writeFile(
+          attemptPath,
+          JSON.stringify({ ...JSON.parse(files.get(attemptPath)!), run: "another-run" }),
+        ),
+    ],
+    [
+      "changed worktree root",
+      () => {
+        f.loop.worktreeRoot = resolve(f.root, "other-worktrees");
+      },
+    ],
+    [
+      "changed ceiling",
+      () => {
+        f.loop.nativeLaunchCeiling = 32;
+      },
+    ],
+    [
+      "not ready",
+      () => {
+        f.rows[0]!.ready = false;
+      },
+    ],
+    [
+      "ineligible",
+      () => {
+        f.rows[0]!.blocked = true;
+      },
+    ],
+    [
+      "closed prerequisite",
+      () => {
+        f.rows[0]!.state = "CLOSED";
+      },
+    ],
+    [
+      "closed blocked cycle",
+      () => {
+        f.rows[1]!.state = "CLOSED";
+      },
+    ],
+    [
+      "live owner",
+      () => {
+        f.host.prerequisiteOwners = async () => "live";
+      },
+    ],
+    [
+      "unknown owner",
+      () => {
+        f.host.prerequisiteOwners = async () => "unknown";
+      },
+    ],
+    [
+      "planning or board mismatch",
+      () => {
+        f.policy.selectCandidates = () => {
+          throw new QueueBlocked("queue-internal-error");
+        };
+      },
+    ],
+    [
+      "unconfigured routing",
+      () => {
+        delete f.loop.author;
+        delete f.loop.reviewer;
+        f.policy.issueContext = async (input) => {
+          const { routing: _routing, ...brief } = await context(input);
+          return brief;
+        };
+      },
+    ],
+  ];
+  for (const [name, change] of changes) {
+    await change();
+    const before = await snapshot(f.runState);
+    const trees = await snapshot(loop.worktreeRoot);
+    const labels = structuredClone(f.rows);
+    const effects = f.calls.filter((call) =>
+      /^(launch|probe|install|park|note|delivery):/.test(call),
+    );
+    await expect(
+      (async () => {
+        validateLoopConfig(f.loop);
+        return f.advance();
+      })(),
+      name,
+    ).rejects.toThrow();
+    expect(await snapshot(f.runState), name).toEqual(before);
+    expect(await snapshot(loop.worktreeRoot), name).toEqual(trees);
+    expect(f.rows, name).toEqual(labels);
+    expect(
+      f.calls.filter((call) => /^(launch|probe|install|park|note|delivery):/.test(call)),
+      name,
+    ).toEqual(effects);
+    Object.assign(f.loop, structuredClone(loop));
+    f.rows.splice(0, f.rows.length, ...structuredClone(rows));
+    f.policy.issueContext = context;
+    f.policy.selectCandidates = candidates;
+    f.host.prerequisiteOwners = async () => "absent";
+    for (const [path, bytes] of files) await writeFile(path, bytes);
+  }
+});
+
+it("ISS-187 leaves ordinary saved selection and item-stop advancement in their native paths", async () => {
+  const f = await prerequisiteFixture();
+  roots.push(f.root);
+  const declaration = f.loop.prerequisite!;
+  delete f.loop.prerequisite;
+  const before = await snapshot(f.runState);
+  const launches = f.calls.filter((call) => call.startsWith("launch:"));
+  expect(await f.advance()).toMatchObject({ selection: f.blocked.selection });
+  const q = await f.compose((await f.advance())!);
+  await expect(queueStep(q.config, q.adapter)).resolves.toMatchObject({
+    status: "observing-author",
+  });
+  expect(f.calls.filter((call) => call.startsWith("launch:"))).toEqual(launches);
+  expect(await snapshot(f.runState)).toEqual(before);
+  f.loop.prerequisite = declaration;
+  // An ordinary completed work stop remains advanceable with a declaration.
+  await stopCycle(f.loop, f.blocked, "launcher-failed", 1, f.host, f.policy);
+  expect((await f.advance())!.selection.key).toBe("fixture-110");
+  expect((await f.advance())!.prerequisite).toBeUndefined();
+  await expect(readFile(resolve(f.runState, "prerequisite/admission.json"))).rejects.toMatchObject({
+    code: "ENOENT",
+  });
+});
+
+it("ISS-187 does not freeze ordinary source-FAIL parking or its completed replay", async () => {
+  const f = await sourceFailureFixture(5);
+  roots.push(f.root);
+  await f.fail();
+  await historicalStops(f, "complete");
+  f.loop.nativeLaunchCeiling = 64;
+  f.loop.prerequisite = {
+    blockedCycle: f.cycle.selection.cycle,
+    blockedKey: "fixture-110",
+    blockedNumber: 110,
+    stop: 1,
+    key: "fixture-159",
+    number: 159,
+    authorityUrl: "https://github.com/fixture/repository/issues/1#issuecomment-1",
+  };
+  for (let replay = 0; replay < 2; replay++) {
+    const selected = (await f.advance())!;
+    expect(selected.selection.key).toBe("fixture-159");
+    expect(selected.prerequisite).toBeUndefined();
+    expect(f.rows[0]!.ready).toBe(false);
+  }
+});
+
+it("ISS-187 keeps the real self planning, dependency, milestone and board admission", async () => {
+  const f = await planningSelectionFixture();
+  roots.push(f.root);
+  f.loop.nativeLaunchCeiling = 64;
+  const run = resolve(f.loop.stateRoot, f.loop.run);
+  const blocked = { cycle: 5, key: "ISS-003", number: 3, base: f.old };
+  for (let cycle = 1; cycle <= 4; cycle++) {
+    const selection = {
+      cycle,
+      key: cycle === 3 ? "ISS-002" : "ISS-001",
+      number: cycle === 3 ? 2 : 1,
+      base: f.old,
+    };
+    await persistCycle(f.loop, { selection, initialHistory: [] });
+    await writeFile(
+      resolve(run, `cycle-${cycle}-complete.json`),
+      JSON.stringify({ selection, history: [] }),
+    );
+  }
+  await persistCycle(f.loop, { selection: blocked, initialHistory: [] });
+  const intent = {
+    selection: blocked,
+    stop: 1,
+    reason: "pilot-revision-moved",
+    attempts: 1,
+    history: [],
+    marker: "synthetic-stop",
+    body: "Synthetic host stop",
+  };
+  await writeFile(resolve(run, "cycle-5-stop-1.json"), JSON.stringify(intent));
+  await writeFile(
+    resolve(run, "cycle-5-stop-1-complete.json"),
+    JSON.stringify({ selection: blocked, stop: 1, history: [] }),
+  );
+  const prior = resolve(run, "iss-002-attempt-1");
+  const source = resolve(prior, "source");
+  const setup = resolve(prior, "setup");
+  await Promise.all([mkdir(source, { recursive: true }), mkdir(setup, { recursive: true })]);
+  const issue = `https://github.com/${f.loop.repository}/issues/2`;
+  await writeFile(
+    resolve(prior, "attempt.json"),
+    JSON.stringify({
+      run: f.loop.run,
+      item: "ISS-002:1",
+      issue,
+      phase: "source",
+      base: f.old,
+      candidateAttempt: 1,
+      acceptedStage: null,
+    }),
+  );
+  await writeFile(
+    resolve(source, "config.json"),
+    JSON.stringify({
+      config: {
+        run: f.loop.run,
+        issue,
+        repository: f.loop.repository,
+        base: f.old,
+        stateDirectory: source,
+      },
+    }),
+  );
+  await writeFile(
+    resolve(source, "author-attempt.json"),
+    JSON.stringify({ id: "synthetic-prior-author" }),
+  );
+  await writeFile(
+    resolve(source, "author-terminal.json"),
+    JSON.stringify({ id: "synthetic-prior-author", status: "failed", head: f.old }),
+  );
+  await writeFile(
+    resolve(setup, "setup-plan.json"),
+    JSON.stringify({
+      worktrees: ["source", "pilot", "review"].map((role) => ({
+        path: resolve(f.loop.worktreeRoot, `iss-002-attempt-1-${role}`),
+      })),
+    }),
+  );
+  f.loop.prerequisite = {
+    blockedCycle: 5,
+    blockedKey: "ISS-003",
+    blockedNumber: 3,
+    stop: 1,
+    key: "ISS-002",
+    number: 2,
+    authorityUrl: "https://github.com/fixture/repository/issues/1#issuecomment-1",
+  };
+  f.host.prerequisiteOwners = async () => "absent";
+  f.host.issue = async (_config, number) => ({
+    state: "OPEN",
+    key: number === 2 ? "ISS-002" : "ISS-003",
+    labels: ["ready"],
+    comments: [],
+  });
+  const board = await f.board();
+  const census = vi.spyOn(boardLoader, "loadBoardSnapshot").mockResolvedValue(board);
+  const before = await snapshot(run);
+  const selected = (await nativeNextCycle(f.loop, f.executor, f.host, f.policy))!;
+  expect(selected.selection).toEqual({
+    cycle: 5,
+    key: "ISS-002",
+    number: 2,
+    base: f.current,
+    planningRevision: f.current,
+  });
+  for (const kind of ["unready", "body", "milestone", "dependency"] as const) {
+    const changed = structuredClone(board);
+    if (kind === "unready") changed.issues[1]!.labels = [];
+    if (kind === "body") changed.issues[1]!.body += "\nUnmirrored content";
+    if (kind === "milestone") changed.issues[1]!.milestone = "Second";
+    if (kind === "dependency") {
+      // ISS-003 remains blocked by the open ISS-002 and cannot preempt it.
+      const candidates = await f.policy.selectCandidates({
+        repository: f.loop.repository,
+        executorRoot: f.executor,
+        planningRevision: f.current,
+        gitExecutable: f.loop.gitExecutable,
+      });
+      expect(candidates.map((row) => row.key)).toEqual(["ISS-002"]);
+      continue;
+    }
+    census.mockResolvedValue(changed);
+    await expect(nativeNextCycle(f.loop, f.executor, f.host, f.policy), kind).rejects.toThrow();
+    census.mockResolvedValue(board);
+    expect(await snapshot(run)).toEqual(before);
+  }
+  expect(await snapshot(run)).toEqual(before);
+});
+
+it.each(["host-stop", "dispatch-interruption", "author-fail", "park-completion", "external-close"])(
+  "ISS-187 resumes only its existing lineage at %s",
+  async (boundary) => {
+    const f = await prerequisiteFixture();
+    roots.push(f.root);
+    const before = await snapshot(f.runState);
+    const trees = await snapshot(f.loop.worktreeRoot);
+    const selected = (await f.advance())!;
+    await persistCycle(f.loop, selected);
+    // A crash after selection must not mistake the old attempt1 FAIL for a
+    // terminal result of the detour itself.
+    expect(await f.advance()).toEqual(selected);
+    const q = await f.compose(selected);
+    await startCycle(f.loop, selected, f.host);
+    if (boundary === "host-stop" || boundary === "dispatch-interruption") {
+      f.setAuthorStatus("running");
+      if (boundary === "dispatch-interruption") {
+        const observe = f.native.observe;
+        f.native.observe = async () => {
+          throw new QueueBlocked("provider-unavailable");
+        };
+        await expect(queueStep(q.config, q.adapter)).rejects.toMatchObject({
+          reason: "provider-unavailable",
+        });
+        f.native.observe = observe;
+      } else await queueStep(q.config, q.adapter);
+      await stopCycle(f.loop, selected, "provider-unavailable", 2, f.host, f.policy);
+      const launches = f.calls.filter((c) => c.startsWith("launch:"));
+      expect(await f.advance()).toEqual(selected);
+      const resumed = await f.compose((await f.advance())!);
+      expect(await reconcilePendingStop(f.loop, selected, f.host, f.policy)).toBeUndefined();
+      expect(await queueStep(resumed.config, resumed.adapter)).toMatchObject({
+        status: "observing-author",
+      });
+      expect(f.calls.filter((c) => c.startsWith("launch:"))).toEqual(launches);
+    } else {
+      if (boundary === "external-close") f.rows[0]!.state = "CLOSED";
+      else {
+        await expect(queueStep(q.config, q.adapter)).rejects.toMatchObject({
+          reason: "author-failed",
+        });
+        if (boundary === "park-completion") {
+          await stopCycle(
+            f.loop,
+            { ...selected, initialHistory: await q.adapter.history() },
+            "author-failed",
+            2,
+            f.host,
+            f.policy,
+          );
+          // Interruption after the native note receipt but before cycle completion.
+          await rm(resolve(f.runState, "prerequisite/cycle-5-complete.json"));
+        }
+      }
+      await expect(f.advance()).rejects.toMatchObject({ reason: "prerequisite-held" });
+      const terminal = await snapshot(f.runState);
+      await expect(f.advance()).rejects.toMatchObject({ reason: "prerequisite-held" });
+      expect(await snapshot(f.runState)).toEqual(terminal);
+      await expect(
+        readFile(resolve(f.runState, "fixture-110-attempt-3/attempt.json")),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+    }
+    await prerequisiteProof(f, before, trees, boundary);
+  },
+);
+
+it("fresh FAIL parks and selects next ready", async () => {
+  const f = await sourceFailureFixture();
+  roots.push(f.root);
+  await f.fail();
+  expect(await f.stop()).toBe("item");
+  expect(f.rows[0]).toMatchObject({ state: "OPEN", ready: false });
+  expect(f.rows[0]!.comments).toHaveLength(1);
+  expect(f.rows[0]!.comments[0]).toContain("author-failed");
+  expect(f.rows[0]!.comments[0]).toContain("1 implementation attempt");
+  expect(f.rows[0]!.comments[0]).toContain("To unpark");
+  expect(await f.drain()).toEqual(["fixture-159", "fixture-160"]);
+  expect(
+    f.calls.filter((call) => call.startsWith("launch:") && call.endsWith("/110")),
+  ).toHaveLength(1);
+  expect(f.calls).not.toContain("delivery:fixture-110:1");
+  expect(f.cycle.initialHistory).toMatchObject([{ role: "author", outcome: "failed" }]);
+});
+
+it.each(["park", "note", "completion"])(
+  "replayed failed source stop preserves history and spent allowances: %s",
+  async (interruption) => {
+    const f = await sourceFailureFixture(5);
+    roots.push(f.root);
+    await f.fail();
+    const directory = f.current.config.stateDirectory;
+    const attemptPath = resolve(directory, "attempt.json");
+    const attempt = JSON.parse(await readFile(attemptPath, "utf8"));
+    expect(attempt).toMatchObject({
+      phase: "source",
+      candidateAttempt: 1,
+      head: f.base,
+      reviewId: null,
+      acceptedStage: null,
+    });
+    await writeFile(attemptPath, JSON.stringify({ ...attempt, retries: 1 }));
+    const source = f.current.config.items[0]!.source.stateDirectory;
+    const authorPath = resolve(source, "author-attempt.json");
+    const author = JSON.parse(await readFile(authorPath, "utf8"));
+    await writeFile(authorPath, JSON.stringify({ ...author, retries: 1 }));
+    for (const [name, value] of Object.entries({
+      "gate-correction": { failedHead: f.base },
+      "native-refresh": { resolutionUsed: true, flowRetried: true, retries: 2 },
+    }))
+      await writeFile(
+        resolve(f.current.config.items[0]!.source.stateDirectory, `${name}.json`),
+        JSON.stringify(value),
+      );
+    await historicalStops(f, "pilot-complete");
+    const prior = await snapshot(f.runState);
+    const priorTrees = await snapshot(f.loop.worktreeRoot);
+    const expectedHistory = structuredClone(f.cycle.initialHistory);
+    expect(expectedHistory).toHaveLength(6);
+    expect(attempt.authorFailures).toEqual({ count: 1, ids: [expectedHistory[5]!.id] });
+    const park = f.policy.park;
+    const comment = f.host.comment;
+    if (interruption === "park")
+      f.policy.park = async (input) => {
+        await park(input);
+        throw new Error("synthetic park interruption");
+      };
+    if (interruption === "note") {
+      // A historical note may be absent even though the old completion exists.
+      f.rows[0]!.comments = [];
+      f.host.comment = async (...args) => {
+        await comment(...args);
+        throw new Error("synthetic note interruption");
+      };
+    }
+    if (interruption === "completion") {
+      // Exclusive cycle completion write fails after parking/notes have reconciled.
+      f.policy.park = async (input) => {
+        const result = await park(input);
+        await mkdir(resolve(f.runState, `cycle-${f.cycle.selection.cycle}-complete.json`));
+        return result;
+      };
+    }
+    await expect(f.advance()).rejects.toThrow();
+    f.policy.park = park;
+    f.host.comment = comment;
+    if (interruption === "completion")
+      await rm(resolve(f.runState, `cycle-${f.cycle.selection.cycle}-complete.json`), {
+        recursive: true,
+      });
+    expect(await f.advance()).toMatchObject({
+      selection: { key: "fixture-159" },
+      initialHistory: expectedHistory,
+    });
+    const parks = f.calls.filter((call) => call.startsWith("park:")).length;
+    expect(await f.advance()).toMatchObject({
+      selection: { key: "fixture-159" },
+      initialHistory: expectedHistory,
+    });
+    expect(f.calls.filter((call) => call.startsWith("park:"))).toHaveLength(parks);
+    for (const [path, bytes] of prior) expect(await readFile(path, "utf8"), path).toBe(bytes);
+    for (const [path, bytes] of priorTrees) expect(await readFile(path, "utf8"), path).toBe(bytes);
+    expect(
+      f.rows[0]!.comments.filter((body) => body.includes(`:${f.cycle.selection.cycle}:1 -->`)),
+    ).toHaveLength(1);
+    f.loop.nativeLaunchCeiling = 8;
+    const next = (await f.advance())!;
+    await persistCycle(f.loop, next);
+    const q = await f.compose(next);
+    await startCycle(f.loop, next, f.host);
+    const { queueStep } = await import("../../scripts/dogfood/queue.js");
+    await queueStep(q.config, q.adapter);
+    await completeCycle(f.loop, next, await q.adapter.history(), f.host);
+    const clock = vi.spyOn(Date, "now").mockReturnValue(Date.now() + 24 * 60 * 60 * 1000);
+    let later: SupervisedCycle;
+    try {
+      later = (await f.advance())!;
+    } finally {
+      clock.mockRestore();
+    }
+    expect(later.initialHistory.slice(0, 6)).toEqual(expectedHistory);
+    expect(later.initialHistory).toHaveLength(8);
+    await persistCycle(f.loop, later);
+    const exhausted = await f.compose(later);
+    await expect(queueStep(exhausted.config, exhausted.adapter)).rejects.toMatchObject({
+      reason: "native-launch-ceiling-exhausted",
+    });
+    expect((await f.advance())!.initialHistory).toEqual(later.initialHistory);
+    expect(
+      f.calls.filter((call) => call.startsWith("launch:") && call.endsWith("/110")),
+    ).toHaveLength(1);
+    expect(await readFile(attemptPath, "utf8")).toBe(prior.get(attemptPath));
+    for (const name of [
+      "candidate",
+      "reviewer-attempt",
+      "reviewer-terminal",
+      "publication",
+      "ready",
+    ])
+      await expect(readFile(resolve(source, `${name}.json`))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+  },
+);
 const execute = (file: string, args: string[], options: ExecFileOptions) =>
   new Promise<void>((resolvePromise, reject) => {
     execFile(file, args, { ...options, encoding: "utf8" }, (error, _stdout, stderr) => {
@@ -176,7 +842,12 @@ function fakeAdapter(observation: IssueObservation): SupervisionAdapter {
 }
 
 afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+  vi.restoreAllMocks();
+  await Promise.all(
+    roots
+      .splice(0)
+      .map((root) => rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 })),
+  );
 });
 
 describe("ready issue selection", () => {
@@ -294,7 +965,7 @@ it("selects candidates and main from the configured repository root", async () =
   });
 });
 
-it("posts one current-main learning note before selection persistence and keeps ready", async () => {
+it("refuses unavailable self main before selection persistence without an issue note", async () => {
   const root = await mkdtemp(resolve(tmpdir(), "supervision-main-stop-"));
   roots.push(root);
   const repository = resolve(import.meta.dirname, "../..");
@@ -317,13 +988,338 @@ it("posts one current-main learning note before selection persistence and keeps 
   await expect(nextCycle(config, repository, adapter, repositoryPolicy)).rejects.toThrow(
     "current-main-unavailable",
   );
-  expect(observation.comments).toHaveLength(1);
-  expect(observation.comments[0]).toContain(
-    "check the stableExecutorRoot and gitExecutable fields in the loop config",
-  );
-  expect(observation.comments[0]).toContain("after 0 implementation attempts");
+  expect(observation.comments).toEqual([]);
   expect(observation.labels).toContain("ready");
 });
+
+it("fresh self selection sees later registration", async () => {
+  const f = await planningSelectionFixture();
+  roots.push(f.root);
+  const before = await f.installed();
+  const board = await f.board();
+  const census = vi.spyOn(boardLoader, "loadBoardSnapshot").mockResolvedValue(board);
+  const fetch = vi.spyOn(f.host, "currentMain");
+  // The old checkout cannot reconcile the new board registration.
+  await expect(
+    f.policy.selectCandidates({ repository: f.loop.repository, executorRoot: f.executor }),
+  ).rejects.toThrow("unregistered planning key ISS-002");
+  const cycle = (await nativeNextCycle(f.loop, f.executor, f.host, f.policy))!;
+  expect(cycle.selection).toEqual({
+    cycle: 1,
+    key: "ISS-002",
+    number: 2,
+    base: f.current,
+    planningRevision: f.current,
+  });
+  expect(fetch).toHaveBeenCalledTimes(1);
+  expect(census).toHaveBeenCalledTimes(2);
+  // Before persistence a new call reobserves; same-main ordering remains stable.
+  expect(await nativeNextCycle(f.loop, f.executor, f.host, f.policy)).toEqual(cycle);
+  await persistCycle(f.loop, cycle);
+  const selectedBytes = await retainedFiles(resolve(f.loop.stateRoot, f.loop.run));
+  f.host.issue = async () => ({ key: "ISS-002", state: "OPEN", labels: [], comments: [] });
+  expect(await nativeNextCycle(f.loop, f.executor, f.host, f.policy)).toEqual(cycle);
+  expect(fetch).toHaveBeenCalledTimes(2);
+  expect(await retainedFiles(resolve(f.loop.stateRoot, f.loop.run))).toEqual(selectedBytes);
+  // External closure advances once, then respects the same-main dependency and milestone.
+  board.issues[1]!.state = "CLOSED";
+  f.host.issue = async () => ({ key: "ISS-002", state: "CLOSED", labels: [], comments: [] });
+  const successor = (await nativeNextCycle(f.loop, f.executor, f.host, f.policy))!;
+  expect(successor.selection).toMatchObject({
+    cycle: 2,
+    key: "ISS-003",
+    base: f.current,
+    planningRevision: f.current,
+  });
+  await persistCycle(f.loop, successor);
+  f.host.issue = async () => ({ key: "ISS-003", state: "OPEN", labels: [], comments: [] });
+  expect(await nativeNextCycle(f.loop, f.executor, f.host, f.policy)).toEqual(successor);
+  board.issues[2]!.labels = [];
+  const stopComments: string[] = [];
+  await stopCycle(
+    f.loop,
+    successor,
+    "gate-correction-failed",
+    1,
+    {
+      ...f.host,
+      issue: async () => ({ key: "ISS-003", state: "OPEN", labels: [], comments: stopComments }),
+      comment: async (_config, _number, body) => {
+        stopComments.push(body);
+      },
+    },
+    { ...f.policy, park: () => "synthetic unpark" },
+  );
+  // An open, unready earliest milestone must not select M2.
+  expect(await nativeNextCycle(f.loop, f.executor, f.host, f.policy)).toBeUndefined();
+  expect(await nativeNextCycle(f.loop, f.executor, f.host, f.policy)).toBeUndefined();
+  await f.add("ISS-005");
+  const newer = await f.commit("Synthetic successor registration");
+  const laterBoard = await f.board();
+  laterBoard.issues[1]!.state = "CLOSED";
+  laterBoard.issues[2]!.labels = [];
+  census.mockResolvedValue(laterBoard);
+  expect(await nativeNextCycle(f.loop, f.executor, f.host, f.policy)).toMatchObject({
+    selection: { cycle: 3, key: "ISS-005", base: newer, planningRevision: newer },
+  });
+  expect(await f.installed()).toEqual(before);
+});
+
+it.each([
+  "fetch",
+  "git read",
+  "partial Git read",
+  "incomplete census",
+  "failed fetch command",
+  "orphan draft",
+  "unknown key",
+  "malformed key",
+  "wrong body",
+  "wrong milestone",
+  "duplicate key",
+  "registration ahead",
+])("selection authority failure refuses: %s", async (failure) => {
+  const f = await planningSelectionFixture();
+  roots.push(f.root);
+  const before = await f.installed();
+  const board = await f.board();
+  const loader = vi.spyOn(boardLoader, "loadBoardSnapshot").mockResolvedValue(board);
+  let reason = "queue-internal-error";
+  let diagnostics: string;
+  const acquiredPaths: string[] = [];
+  if (failure === "fetch") {
+    reason = "current-main-unavailable";
+    // A BOARD-shaped message at the fetch site is still an acquisition failure.
+    diagnostics = "Error: BOARD_CONTRACT_MISMATCH: synthetic fetch denied\nfull original detail";
+    f.host.currentMain = async () => {
+      throw new Error(diagnostics.slice(7));
+    };
+  } else if (failure === "failed fetch command") {
+    reason = "current-main-unavailable";
+    await f.git(f.executor, ["remote", "set-url", "origin", resolve(f.root, "missing-origin")]);
+    let original: unknown;
+    try {
+      await f.git(f.executor, [
+        "fetch",
+        "--no-tags",
+        "origin",
+        "refs/heads/main:refs/remotes/origin/main",
+      ]);
+    } catch (error) {
+      original = error;
+    }
+    expect(original).toBeInstanceOf(Error);
+    diagnostics = String(original);
+  } else if (failure === "partial Git read") {
+    reason = "current-main-unavailable";
+    await f.host.currentMain(f.loop, f.executor);
+    const missing = `${f.current}:planning/drafts/missing.md`;
+    let original: unknown;
+    try {
+      await f.git(f.executor, ["show", missing]);
+    } catch (error) {
+      original = error;
+    }
+    expect(original).toBeInstanceOf(Error);
+    diagnostics = String(original);
+    const load = planningLoader.loadPlanningSnapshot;
+    vi.spyOn(planningLoader, "loadPlanningSnapshot").mockImplementation((root, pinned) =>
+      load(
+        root,
+        pinned && {
+          ...pinned,
+          git: async (args) => {
+            acquiredPaths.push(args[1]!);
+            return pinned.git(
+              args[1] === `${f.current}:planning/drafts/ISS-003.md` ? ["show", missing] : args,
+            );
+          },
+        },
+      ),
+    );
+  } else if (failure === "git read") {
+    reason = "current-main-unavailable";
+    f.loop.gitExecutable = resolve(f.root, "missing-git");
+    f.host.currentMain = async () => f.current;
+    diagnostics = ""; // Assert the full native child error below, not only its reason.
+  } else if (failure === "incomplete census") {
+    reason = "issue-observation-unavailable";
+    let original: unknown;
+    try {
+      boardLoader.boardSnapshotFromGraphqlPages(f.loop.repository, [
+        {
+          data: {
+            repository: {
+              issues: {
+                totalCount: 179,
+                nodes: [],
+                pageInfo: { hasNextPage: true, endCursor: "synthetic-first-page" },
+              },
+            },
+          },
+        },
+      ]);
+    } catch (error) {
+      original = error;
+    }
+    expect(original).toBeInstanceOf(Error);
+    loader.mockRejectedValue(original);
+    diagnostics = String(original);
+  } else {
+    if (failure === "orphan draft") {
+      await writeFile(resolve(f.remote, "planning/drafts/ISS-099.md"), "orphan\n");
+      await f.commit("Synthetic orphan");
+    }
+    if (failure === "unknown key")
+      board.issues[1]!.body = board.issues[1]!.body.replaceAll("ISS-002", "ISS-999");
+    if (failure === "malformed key")
+      board.issues[1]!.body = board.issues[1]!.body.replaceAll("ISS-002", "ISS-malformed");
+    if (failure === "wrong body") board.issues[1]!.body += "\nwrong body";
+    if (failure === "wrong milestone") board.issues[1]!.milestone = "Wrong";
+    if (failure === "duplicate key") board.issues[2]!.body = board.issues[1]!.body;
+    if (failure === "registration ahead") {
+      board.issues.splice(1, 1);
+      board.totalCount--;
+    }
+    // Independently obtain the validator's full message, outside acquisition.
+    const planning = await loadPlanningSnapshot(f.remote);
+    let original: unknown;
+    try {
+      const { validatePlanningSnapshot } = await import("../../scripts/planning/check.mjs");
+      validatePlanningSnapshot(planning);
+      boardLoader.validateBoardSnapshot(planning, board);
+    } catch (error) {
+      original = error;
+    }
+    expect(original).toBeInstanceOf(Error);
+    diagnostics = (original as Error).message;
+  }
+  for (let retry = 0; retry < 2; retry++) {
+    let caught: unknown;
+    try {
+      await nativeNextCycle(f.loop, f.executor, f.host, f.policy);
+    } catch (error) {
+      caught = error;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    const actual =
+      caught instanceof QueueBlocked
+        ? { reason: caught.reason, diagnostics: caught.diagnostics }
+        : { reason: "queue-internal-error", diagnostics: (caught as Error).message };
+    expect(actual.reason).toBe(reason);
+    if (failure === "git read") {
+      expect(actual.diagnostics).toContain(f.loop.gitExecutable);
+      expect(actual.diagnostics).toContain("ENOENT");
+    } else expect(actual.diagnostics).toBe(diagnostics);
+  }
+  expect(await f.installed()).toEqual(before);
+  if (failure === "partial Git read") {
+    expect(acquiredPaths).toContain(`${f.current}:planning/roadmap.json`);
+    expect(acquiredPaths).toContain(`${f.current}:planning/drafts/ISS-002.md`);
+    expect(acquiredPaths).toContain(`${f.current}:planning/drafts/ISS-003.md`);
+  }
+  await expect(
+    readFile(resolve(f.loop.stateRoot, f.loop.run, "cycle-1-selected.json")),
+  ).rejects.toMatchObject({ code: "ENOENT" });
+  await expect(retainedFiles(f.loop.stateRoot)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+it.each(["open", "closed", "completed", "item-stopped"])(
+  "selection refresh preserves legacy resume and M2: %s",
+  async (state) => {
+    const f = await planningSelectionFixture();
+    roots.push(f.root);
+    const cycle = {
+      selection: { cycle: 1, key: "ISS-001", number: 1, base: f.old },
+      initialHistory: [],
+    };
+    await persistCycle(f.loop, cycle);
+    const run = resolve(f.loop.stateRoot, f.loop.run);
+    // Byte-sensitive retained evidence includes a spent allowance and participant records.
+    const history = [
+      {
+        ordinal: 1,
+        id: "prior-author",
+        item: "ISS-001:1",
+        stage: "source" as const,
+        role: "author" as const,
+        outcome: "failed" as const,
+        usage: {
+          inputTokens: { status: "unavailable" as const },
+          outputTokens: { status: "unavailable" as const },
+          costUsd: { status: "unavailable" as const },
+        },
+      },
+    ];
+    const attempt = resolve(run, "iss-001-attempt-1");
+    await mkdir(attempt);
+    await writeFile(
+      resolve(attempt, "participant-1-terminal.json"),
+      JSON.stringify(history[0], null, 3),
+    );
+    await writeFile(
+      resolve(attempt, "attempt.json"),
+      JSON.stringify({ candidateAttempt: 1, retries: 1, history }, null, 3),
+    );
+    const sentinel = resolve(f.root, "synthetic-m2");
+    await mkdir(sentinel);
+    await writeFile(resolve(sentinel, "runtime.json"), '{ "spent": 4, "running": true }\n');
+    f.host.issue = async () => ({
+      key: "ISS-001",
+      state: state === "closed" ? "CLOSED" : "OPEN",
+      labels: [],
+      comments: [],
+    });
+    if (state === "completed")
+      await writeFile(
+        resolve(run, "cycle-1-complete.json"),
+        JSON.stringify({ selection: cycle.selection, history }, null, 3),
+      );
+    if (state === "item-stopped") {
+      const comments: string[] = [];
+      await stopCycle(
+        f.loop,
+        { ...cycle, initialHistory: history },
+        "gate-correction-failed",
+        1,
+        {
+          ...f.host,
+          issue: async () => ({ key: "ISS-001", state: "OPEN", labels: [], comments }),
+          comment: async (_config, _number, body) => {
+            comments.push(body);
+          },
+        },
+        { ...f.policy, park: () => "synthetic unpark" },
+      );
+    }
+    const retained = await retainedFiles(run);
+    const m2 = await retainedFiles(sentinel);
+    const installed = await f.installed();
+    vi.spyOn(boardLoader, "loadBoardSnapshot").mockResolvedValue(await f.board());
+    const fetch = vi.spyOn(f.host, "currentMain");
+    const select = vi.spyOn(f.policy, "selectCandidates");
+    for (let repeat = 0; repeat < 2; repeat++) {
+      const resumed = (await nativeNextCycle(f.loop, f.executor, f.host, f.policy))!;
+      if (state === "open") expect(resumed).toEqual(cycle);
+      else {
+        expect(resumed.selection).toMatchObject({
+          cycle: 2,
+          key: "ISS-002",
+          planningRevision: f.current,
+        });
+        expect(resumed.initialHistory).toEqual(history);
+        await persistCycle(f.loop, resumed);
+        f.host.issue = async () => ({ key: "ISS-002", state: "OPEN", labels: [], comments: [] });
+      }
+      const now = await retainedFiles(run);
+      for (const [path, evidence] of retained) expect(now.get(path), path).toEqual(evidence);
+    }
+    expect(fetch).toHaveBeenCalledTimes(state === "open" ? 0 : 1);
+    expect(select).toHaveBeenCalledTimes(state === "open" ? 0 : 1);
+    expect(await retainedFiles(sentinel)).toEqual(m2);
+    expect(await f.installed()).toEqual(installed);
+  },
+);
 
 it.each(["current-main-unavailable", "routing-row-unconfigured"])(
   "retains the selected routing row in a %s note without an attempt record",
@@ -438,6 +1434,7 @@ it("retains actual routing and refused primary/fallback launches in a learning n
       outcome: "failed",
       routing: { row: "self" },
       placement: { model: "gpt-5.6-sol", effort: "high" },
+      rung: 1,
       usage,
     },
   ];
@@ -460,6 +1457,7 @@ it("retains actual routing and refused primary/fallback launches in a learning n
   for (const model of ["gpt-6-astra", "claude-opus-5", "gpt-5.6-sol"])
     expect(observation.comments[0]).toContain(`"model":"${model}"`);
   expect(observation.comments[0]).toContain('"row":"self"');
+  expect(observation.comments[0]).toContain('"rung":1');
   expect(observation.comments[0]).toContain('"outcome":"dead"');
 });
 
@@ -537,6 +1535,76 @@ it.each(["operator-evidence-required", "operator-evidence-authority", "operator-
     if (reason !== "operator-evidence-failed")
       expect(observation.comments[0]).toContain("resume this same run");
     await expect(reconcilePendingStop(config, cycle, adapter, repository)).resolves.toBeUndefined();
+  },
+);
+
+it.each(["pending", "complete", "absent", "wrong-directory", "work"])(
+  "replays the saved selection and %s learning note before native gate-stop admission",
+  async (mode) => {
+    const root = await mkdtemp(resolve(tmpdir(), "supervision-gate-recovery-"));
+    roots.push(root);
+    const config = loop(root);
+    const cycle = selected();
+    const directory = resolve(config.stateRoot, config.run, "iss-105-attempt-2");
+    const source = resolve(directory, "repair");
+    await mkdir(source, { recursive: true });
+    const reason = mode === "work" ? "gate-base-failed:test" : "gate-attribution-unknown:test";
+    await writeFile(
+      resolve(directory, "attempt.json"),
+      JSON.stringify({
+        run: config.run,
+        phase: "delivery",
+        stateDirectory: source,
+        issue: `https://github.com/${config.repository}/issues/362`,
+      }),
+    );
+    await writeFile(resolve(source, "gate-stop.json"), JSON.stringify({ reason }));
+    config.gateStopAuthorization = {
+      stateDirectory: source,
+      candidateHead: "b".repeat(40),
+      repairSha: "c".repeat(40),
+      authorityUrl: "https://github.com/fixture/repository/issues/494#issuecomment-5687186310",
+    };
+    const observation: IssueObservation = {
+      state: "OPEN",
+      key: "ISS-105",
+      labels: [],
+      comments: [],
+    };
+    const adapter = fakeAdapter(observation);
+    const comment = adapter.comment;
+    await persistCycle(config, cycle);
+    if (mode !== "complete")
+      adapter.comment = async (...args) => {
+        await comment(...args);
+        throw new Error("lost receipt");
+      };
+    const stopping = stopCycle(config, cycle, reason, 2, adapter, repositoryPolicy);
+    if (mode !== "complete") await expect(stopping).rejects.toThrow("lost receipt");
+    else await expect(stopping).resolves.toBe("run");
+    adapter.comment = comment;
+    const originalNote = await readFile(
+      resolve(config.stateRoot, config.run, "cycle-1-stop-1.json"),
+    );
+    if (mode === "absent") delete config.gateStopAuthorization;
+    if (mode === "wrong-directory")
+      config.gateStopAuthorization!.stateDirectory = resolve(directory, "source");
+    const resumed = await nextCycle(config, root, adapter, repositoryPolicy);
+    expect(resumed).toEqual(cycle);
+    const result = await reconcilePendingStop(config, resumed!, adapter, repositoryPolicy);
+    if (mode === "absent" || mode === "wrong-directory" || mode === "work")
+      expect(result).toEqual({ scope: "run", reason });
+    else expect(result).toBeUndefined();
+    expect(observation.comments).toHaveLength(1);
+    expect(await readFile(resolve(config.stateRoot, config.run, "cycle-1-stop-1.json"))).toEqual(
+      originalNote,
+    );
+    expect(JSON.parse(await readFile(resolve(source, "gate-stop.json"), "utf8"))).toEqual({
+      reason,
+    });
+    await expect(
+      reconcilePendingStop(config, resumed!, adapter, repositoryPolicy),
+    ).resolves.toBeUndefined();
   },
 );
 
@@ -656,6 +1724,7 @@ it("parks only the explicit item stop reasons", async () => {
       "implementation-attempt-ceiling-exhausted",
       "gate-retry-exhausted:typecheck",
       "reviewer-malformed",
+      "author-malformed",
       "exit-receipt-timeout",
       "launcher-failed",
       "rebase-conflict",
@@ -676,6 +1745,8 @@ it("parks only the explicit item stop reasons", async () => {
 });
 
 it.each([
+  ["author-malformed", true],
+  ["worker-verdict-identity-mismatch:malformed-worker-verdict-compatibility", false],
   ["gate-base-failed:test", false],
   ["gate-host-failed:test", false],
   ["gate-attribution-unknown:test", false],
@@ -716,9 +1787,16 @@ it.each([
   expect(observation.comments[0]).toContain("1 implementation attempt");
 });
 
-it.each(["controller-executor-mismatch", "provider-unavailable"])(
-  "exits on %s without parking or selecting again",
-  async (reason) => {
+it.each(
+  ["controller-executor-mismatch", "unstable-executor", "provider-unavailable"].flatMap((reason) =>
+    ["fresh", "saved", "pending-item-stop", "completed-item-stop"].map((shape) => ({
+      reason,
+      shape,
+    })),
+  ),
+)(
+  "exits on $reason from $shape with a host note without parking or selecting again",
+  async ({ reason, shape }) => {
     const root = await mkdtemp(resolve(tmpdir(), "supervision-command-run-stop-"));
     roots.push(root);
     const config = loop(root);
@@ -727,7 +1805,29 @@ it.each(["controller-executor-mismatch", "provider-unavailable"])(
     const request = resolve(root, "loop.json");
     const controlsPath = resolve(fixtureState, "command-controls.json");
     const issuePath = resolve(fixtureState, "command-issue.json");
+    const observation: IssueObservation = {
+      state: "OPEN",
+      key: "ISS-105",
+      labels: ["ready"],
+      comments: [],
+    };
     await mkdir(fixtureState, { recursive: true });
+    if (shape !== "fresh") await persistCycle(config, selected());
+    if (shape.endsWith("item-stop"))
+      await stopCycle(
+        config,
+        selected(),
+        "gate-correction-failed",
+        1,
+        fakeAdapter(observation),
+        repositoryPolicy,
+      );
+    if (shape === "pending-item-stop") {
+      await rm(resolve(runState, "cycle-1-stop-1-complete.json"));
+      observation.comments = [];
+    }
+    const prior = shape === "fresh" ? new Map<string, string>() : await snapshot(runState);
+    const priorNotes = [...observation.comments];
     await Promise.all([
       writeFile(request, `${JSON.stringify(config)}\n`),
       writeFile(
@@ -738,10 +1838,7 @@ it.each(["controller-executor-mismatch", "provider-unavailable"])(
           parkCalls: 0,
         })}\n`,
       ),
-      writeFile(
-        issuePath,
-        `${JSON.stringify({ state: "OPEN", key: "ISS-105", labels: ["ready"], comments: [] })}\n`,
-      ),
+      writeFile(issuePath, `${JSON.stringify(observation)}\n`),
     ]);
 
     let failure: { code?: number | string; stderr?: string } | undefined;
@@ -760,17 +1857,28 @@ it.each(["controller-executor-mismatch", "provider-unavailable"])(
     }
 
     expect(failure).toMatchObject({ code: 1 });
-    expect(JSON.parse(await readFile(controlsPath, "utf8"))).toMatchObject({
-      parkCalls: 0,
-      selectCalls: 1,
-    });
+    const controls = JSON.parse(await readFile(controlsPath, "utf8"));
+    expect(controls.parkCalls).toBe(0);
+    expect(controls.selectCalls ?? 0).toBe(shape === "fresh" ? 1 : 0);
     const issue = JSON.parse(await readFile(issuePath, "utf8"));
-    expect(issue.comments).toHaveLength(1);
-    expect(issue.comments[0]).toContain(reason);
-    expect(issue.comments[0]).not.toContain("To unpark");
+    expect(issue.state).toBe("OPEN");
+    expect(issue.labels).toEqual(observation.labels);
+    expect(issue.comments.slice(0, priorNotes.length)).toEqual(priorNotes);
+    expect(issue.comments).toHaveLength(priorNotes.length + 1);
+    expect(issue.comments.at(-1)).toContain(reason);
+    expect(issue.comments.at(-1)).not.toContain("To unpark");
     expect(failure?.stderr).toContain(`"reason":"${reason}"`);
+    for (const [path, bytes] of prior) expect(await readFile(path, "utf8"), path).toBe(bytes);
+    expect(await readFile(resolve(fixtureState, "command-calls.log"), "utf8")).not.toContain(
+      "workspace:",
+    );
+    if (shape === "pending-item-stop")
+      await expect(
+        readFile(resolve(runState, "cycle-1-stop-1-complete.json")),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+    const ordinal = shape.endsWith("item-stop") ? 2 : 1;
     await expect(
-      readFile(resolve(runState, "cycle-1-stop-1-complete.json"), "utf8"),
+      readFile(resolve(runState, `cycle-1-stop-${ordinal}-complete.json`), "utf8"),
     ).resolves.toEqual(expect.any(String));
   },
 );
@@ -798,7 +1906,7 @@ it("exits an accepted corrective run on an item stop and asks Todd before furthe
   await writeFile(
     resolve(runState, "command-controls.json"),
     JSON.stringify({
-      validationStopReason: "implementation-attempt-ceiling-exhausted",
+      workspaceStops: { "cs-7766": "implementation-attempt-ceiling-exhausted" },
       parkCalls: 0,
     }),
   );
@@ -873,44 +1981,97 @@ it("exits after one selection when a stop happens before a cycle is active", asy
   expect(JSON.parse(await readFile(issuePath, "utf8")).comments).toEqual([]);
 });
 
-it("prints a plain pre-cycle error message as queue-internal-error diagnostics", async () => {
-  const root = await mkdtemp(resolve(tmpdir(), "supervision-command-pre-cycle-error-"));
-  roots.push(root);
-  const config = loop(root);
-  const runState = resolve(config.stateRoot, config.run);
-  const request = resolve(root, "loop.json");
-  await mkdir(runState, { recursive: true });
-  await Promise.all([
-    writeFile(request, `${JSON.stringify(config)}\n`),
-    writeFile(
-      resolve(runState, "command-controls.json"),
-      `${JSON.stringify({ selectionMessage: "adapter module was not found" })}\n`,
-    ),
-    writeFile(
-      resolve(runState, "command-issue.json"),
-      `${JSON.stringify({ state: "OPEN", key: "ISS-105", labels: ["ready"], comments: [] })}\n`,
-    ),
-  ]);
+it.each([
+  {
+    reason: "queue-internal-error",
+    diagnostics: "PLANNING_CONTRACT_MISMATCH: orphan draft\n  full validation detail",
+  },
+  {
+    reason: "queue-internal-error",
+    diagnostics: "BOARD_CONTRACT_MISMATCH: unregistered key\n  full board detail",
+  },
+  {
+    reason: "current-main-unavailable",
+    diagnostics: "Error: BOARD_CONTRACT_MISMATCH: fetch failed\n  full acquisition detail",
+  },
+  {
+    reason: "issue-observation-unavailable",
+    diagnostics: "Error: BOARD_CONTRACT_MISMATCH: incomplete census\n  full pagination detail",
+  },
+])(
+  "prints full pre-cycle $reason diagnostics without an issue note",
+  async ({ reason, diagnostics }) => {
+    const root = await mkdtemp(resolve(tmpdir(), "supervision-command-pre-cycle-error-"));
+    roots.push(root);
+    const config = loop(root);
+    const runState = resolve(config.stateRoot, config.run);
+    const request = resolve(root, "loop.json");
+    await mkdir(runState, { recursive: true });
+    await Promise.all([
+      writeFile(request, `${JSON.stringify(config)}\n`),
+      writeFile(
+        resolve(runState, "command-controls.json"),
+        `${JSON.stringify(
+          reason === "queue-internal-error"
+            ? { selectionMessage: diagnostics }
+            : { selectionReason: reason, selectionDiagnostics: diagnostics },
+        )}\n`,
+      ),
+      writeFile(
+        resolve(runState, "command-issue.json"),
+        `${JSON.stringify({ state: "OPEN", key: "ISS-105", labels: ["ready"], comments: [] })}\n`,
+      ),
+    ]);
 
-  let failure: { code?: number | string; stderr?: string } | undefined;
-  try {
-    await execute(
-      process.execPath,
-      ["--import", pathToFileURL(supervisorHook).href, supervisorCommand, request],
-      {
-        env: { ...process.env, SUPERVISE_FIXTURE_STATE: runState },
-        timeout: 10_000,
-        windowsHide: true,
-      },
+    let failure: { code?: number | string; stderr?: string } | undefined;
+    try {
+      await execute(
+        process.execPath,
+        ["--import", pathToFileURL(supervisorHook).href, supervisorCommand, request],
+        {
+          env: { ...process.env, SUPERVISE_FIXTURE_STATE: runState },
+          timeout: 10_000,
+          windowsHide: true,
+        },
+      );
+    } catch (error) {
+      failure = error as { code?: number | string; stderr?: string };
+    }
+
+    expect(failure).toMatchObject({ code: 1 });
+    expect(failure?.stderr).toContain(`"reason":${JSON.stringify(reason)}`);
+    expect(failure?.stderr).toContain(`"diagnostics":${JSON.stringify(diagnostics)}`);
+    expect(
+      JSON.parse(await readFile(resolve(runState, "command-issue.json"), "utf8")).comments,
+    ).toEqual([]);
+    await expect(readFile(resolve(runState, "cycle-1-selected.json"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  },
+);
+
+it.each(["main", "b".repeat(40), "", null])(
+  "rejects malformed or unequal saved planningRevision: %s",
+  async (planningRevision) => {
+    const root = await mkdtemp(resolve(tmpdir(), "invalid-planning-revision-"));
+    roots.push(root);
+    const config = loop(root);
+    const directory = resolve(config.stateRoot, config.run);
+    await mkdir(directory, { recursive: true });
+    await writeFile(
+      resolve(directory, "cycle-1-selected.json"),
+      JSON.stringify({ ...selected().selection, planningRevision }),
     );
-  } catch (error) {
-    failure = error as { code?: number | string; stderr?: string };
-  }
-
-  expect(failure).toMatchObject({ code: 1 });
-  expect(failure?.stderr).toContain('"reason":"queue-internal-error"');
-  expect(failure?.stderr).toContain('"diagnostics":"adapter module was not found"');
-});
+    const retained = await retainedFiles(directory);
+    const host = fakeAdapter({ key: "ISS-105", state: "OPEN", labels: [], comments: [] });
+    const issue = vi.spyOn(host, "issue");
+    await expect(nextCycle(config, root, host, repositoryPolicy)).rejects.toMatchObject({
+      reason: "malformed-supervision-record:cycle-1-selected",
+    });
+    expect(issue).not.toHaveBeenCalled();
+    expect(await retainedFiles(directory)).toEqual(retained);
+  },
+);
 
 it("preserves adapter reasons in stop notes", async () => {
   const root = await mkdtemp(resolve(tmpdir(), "supervision-adapter-reason-"));
@@ -1023,6 +2184,71 @@ it("gives the three prescribed stops exact actions without forbidden advice", as
   expect(selectedBase).toContain("fetch origin or otherwise restore its pinned base commit");
   expect(selectedBase).not.toMatch(/change (?:the )?selection/i);
 });
+
+it.each(["selected-ops-not-admitted", "selected-ops-not-runnable"])(
+  "%s retains a pending native stop and never parks or consumes another attempt",
+  async (reason) => {
+    const root = await mkdtemp(resolve(tmpdir(), "supervision-ops-stop-"));
+    roots.push(root);
+    const config = {
+      ...loop(root),
+      adapter: "chase-sets",
+      repository: "chase-sets/chase-sets",
+      targetMilestone: 155,
+    };
+    const cycle = selected();
+    const observation: IssueObservation = {
+      state: "OPEN",
+      key: cycle.selection.key,
+      labels: ["kind:ops"],
+      comments: [],
+    };
+    const host = fakeAdapter(observation);
+    const park = vi.fn(() => {
+      throw new Error("ops refusal must not park");
+    });
+    const policy = { ...repositoryPolicy, park };
+    await persistCycle(config, cycle);
+    const runState = resolve(config.stateRoot, config.run);
+    const selectedBytes = await readFile(resolve(runState, "cycle-1-selected.json"));
+    expect(isItemStopReason(reason)).toBe(false);
+    const interrupted = {
+      ...host,
+      comment: async (...args: Parameters<SupervisionAdapter["comment"]>) => {
+        await host.comment(...args);
+        throw new Error("lost receipt");
+      },
+    };
+    await expect(
+      stopCycle(
+        config,
+        cycle,
+        reason,
+        3,
+        interrupted,
+        policy,
+        "Issue #9001; target 155; admission-required.",
+      ),
+    ).rejects.toThrow("lost receipt");
+    const stopBytes = await readFile(resolve(runState, "cycle-1-stop-1.json"));
+    await expect(reconcilePendingStop(config, cycle, host, policy)).resolves.toEqual({
+      scope: "run",
+      reason,
+    });
+    await expect(reconcilePendingStop(config, cycle, host, policy)).resolves.toBeUndefined();
+    expect(park).not.toHaveBeenCalled();
+    expect(observation.labels).toEqual(["kind:ops"]);
+    expect(observation.state).toBe("OPEN");
+    expect(observation.comments).toHaveLength(1);
+    expect(observation.comments[0]).toContain("after 3 implementation attempts");
+    expect(observation.comments[0]).not.toContain("To unpark");
+    expect(await readFile(resolve(runState, "cycle-1-selected.json"))).toEqual(selectedBytes);
+    expect(await readFile(resolve(runState, "cycle-1-stop-1.json"))).toEqual(stopBytes);
+    await expect(readFile(resolve(runState, "cycle-1-complete.json"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  },
+);
 
 it("closes a completed issue without restoring ready", async () => {
   const root = await mkdtemp(resolve(tmpdir(), "supervision-complete-"));

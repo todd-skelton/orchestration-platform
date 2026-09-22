@@ -1,5 +1,7 @@
 import { execFile, spawn } from "node:child_process";
-import { lstat, realpath } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { lstat, open, realpath, writeFile, type FileHandle } from "node:fs/promises";
+import type { Readable } from "node:stream";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { resolvePnpmLauncher, type PnpmLauncher } from "../pnpm-launcher.mjs";
@@ -9,12 +11,15 @@ import {
   type SetupConfig,
   type SetupRole,
   type WorktreeObservation,
+  type InstallResult,
 } from "./setup.mjs";
 
 const exec = promisify(execFile);
 
 export interface SetupAdapterOptions {
   gitExecutable?: string;
+  resolveLauncher?: () => Promise<PnpmLauncher>;
+  writeInstallOutput?: (file: FileHandle, bytes: Buffer) => Promise<void>;
   install?: (
     launcher: PnpmLauncher,
     args: string[],
@@ -154,35 +159,264 @@ async function assertClean(executable: string, config: SetupConfig, cwd: string)
     throw new SetupBlocked("dirty-setup-repository");
 }
 
-async function defaultInstall(launcher: PnpmLauncher, args: string[], cwd: string) {
-  return new Promise<"succeeded" | "failed" | "unknown">((done) => {
-    let settled = false;
-    const child = spawn(launcher.executable, [...launcher.prefixArgs, ...args], {
-      cwd,
-      windowsHide: true,
-      stdio: "ignore",
-    });
-    child.once("error", () => {
-      if (!settled) {
-        settled = true;
-        done("unknown");
+async function joinGitReads<T extends readonly unknown[] | []>(reads: T) {
+  try {
+    return await Promise.all(reads);
+  } catch (error) {
+    // ISS-190: retain the first rejection, but finish owned reads before refusal.
+    await Promise.allSettled(reads);
+    throw error;
+  }
+}
+
+// Setup alone owns this byte filter. Pending lookahead is at most 19 bytes;
+// suppression holds no line, URL or secret, regardless of its length.
+export class SetupOutputSanitizer {
+  private pending: { byte: number; field: number }[] = [];
+  private suppression: "line" | "url" | undefined;
+  private readonly markers = [
+    "authorization",
+    "proxy-authorization",
+    "cookie",
+    "set-cookie",
+    "_authtoken",
+    "_auth",
+    "_password",
+    "//",
+    "file:",
+  ];
+
+  private readonly emit: (byte: number, field: number) => void;
+
+  constructor(emit: (byte: number, field: number) => void) {
+    this.emit = emit;
+  }
+
+  write(bytes: Uint8Array, field = 0) {
+    for (const byte of bytes) {
+      if (this.suppression) {
+        const delimiter =
+          this.suppression === "line"
+            ? byte === 10 || byte === 13
+            : byte === 32 || (byte >= 9 && byte <= 13);
+        if (delimiter) {
+          this.suppression = undefined;
+          this.emit(byte, field);
+        }
+        continue;
       }
-    });
-    child.once("close", (code) => {
-      if (!settled) {
-        settled = true;
-        done(code === 0 ? "succeeded" : "failed");
+      this.pending.push({ byte, field });
+      while (this.pending.length) {
+        const prefix = String.fromCharCode(...this.pending.map(({ byte }) => byte)).toLowerCase();
+        const match = this.markers.find((marker) => marker === prefix);
+        if (match) {
+          for (const byte of Buffer.from("[REDACTED]")) this.emit(byte, this.pending[0]!.field);
+          this.pending = [];
+          this.suppression = match === "//" || match === "file:" ? "url" : "line";
+          break;
+        }
+        if (this.markers.some((marker) => marker.startsWith(prefix))) break;
+        const safe = this.pending.shift()!;
+        this.emit(safe.byte, safe.field);
       }
-    });
+    }
+  }
+
+  end() {
+    for (const { byte, field } of this.pending) this.emit(byte, field);
+    this.pending = [];
+  }
+}
+
+function sanitizeFields(fields: string[]) {
+  const output = fields.map(() => [] as number[]);
+  const sanitizer = new SetupOutputSanitizer((byte, field) => output[field]!.push(byte));
+  fields.forEach((field, index) => sanitizer.write(Buffer.from(field), index));
+  sanitizer.end();
+  return output.map((bytes) => Buffer.from(bytes).toString("utf8"));
+}
+
+function safeError(error: unknown) {
+  const value = error as NodeJS.ErrnoException | undefined;
+  return Object.fromEntries(
+    ["code", "syscall", "path"].flatMap((key) => {
+      const field = value?.[key as keyof NodeJS.ErrnoException];
+      return typeof field === "string" ? [[key, sanitizeFields([field])[0]]] : [];
+    }),
+  );
+}
+
+async function readable(stream: Readable) {
+  if (stream.readableEnded) return;
+  await new Promise<void>((done, fail) => {
+    const cleanup = () => {
+      stream.off("readable", ready);
+      stream.off("end", ready);
+      stream.off("close", ready);
+      stream.off("error", failed);
+    };
+    const ready = () => {
+      cleanup();
+      done();
+    };
+    const failed = (error: Error) => {
+      cleanup();
+      fail(error);
+    };
+    stream.once("readable", ready);
+    stream.once("end", ready);
+    stream.once("close", ready);
+    stream.once("error", failed);
   });
 }
 
+async function defaultInstall(
+  config: SetupConfig,
+  role: SetupRole,
+  options: SetupAdapterOptions,
+): Promise<InstallResult> {
+  const prefix = resolve(
+    config.stateDirectory,
+    `dependency-${role}-install-${Date.now()}-${randomUUID()}`,
+  );
+  const diagnostics = `${prefix}.json`;
+  const stdout = `${prefix}.stdout.log`;
+  const stderr = `${prefix}.stderr.log`;
+  const terminal = `${prefix}.terminal.json`;
+  const cwd = rolePath(config, role);
+  const args = ["install", "--offline", "--frozen-lockfile", "--ignore-scripts"];
+  const files: FileHandle[] = [];
+  let launcher: PnpmLauncher | undefined;
+  let failure: { stage: string; error: ReturnType<typeof safeError> } | undefined;
+  let exitCode: number | null = null;
+  let signal: NodeJS.Signals | null = null;
+  let stage = "launcher";
+  let metadataWritten = false;
+  try {
+    launcher = await (options.resolveLauncher ?? resolvePnpmLauncher)();
+  } catch (error) {
+    failure = { stage, error: safeError(error) };
+  }
+  const metadata = {
+    role,
+    head: roleHead(config, role),
+    cwd: sanitizeFields([cwd])[0],
+    executable: launcher ? sanitizeFields([launcher.executable])[0] : null,
+    argv: sanitizeFields([...(launcher?.prefixArgs ?? []), ...args]),
+    stdout: sanitizeFields([stdout])[0],
+    stderr: sanitizeFields([stderr])[0],
+    terminal: sanitizeFields([terminal])[0],
+  };
+  try {
+    stage = "capture";
+    await writeFile(diagnostics, JSON.stringify(metadata, null, 2) + "\n", {
+      flag: "wx",
+      flush: true,
+    });
+    metadataWritten = true;
+    for (const path of [stdout, stderr]) files.push(await open(path, "wx"));
+    if (launcher && !failure) {
+      stage = "spawn";
+      const child = spawn(launcher.executable, [...launcher.prefixArgs, ...args], {
+        cwd,
+        windowsHide: true,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      const closed = new Promise<void>((done) => {
+        child.once("error", (error) => {
+          failure ??= { stage: "spawn", error: safeError(error) };
+        });
+        child.once("close", (code, childSignal) => {
+          exitCode = code;
+          signal = childSignal;
+          done();
+        });
+      });
+      const pump = async (stream: Readable, file: FileHandle) => {
+        // Keep a readable listener even while awaiting disk backpressure. Node's
+        // child-exit flush otherwise resumes the pipe and discards unread bytes.
+        const keepPaused = () => {};
+        const captureError = (error: Error) => {
+          failure ??= { stage: "capture", error: safeError(error) };
+          child.kill("SIGKILL");
+        };
+        stream.on("readable", keepPaused);
+        stream.on("error", captureError);
+        let output: number[] = [];
+        const sanitizer = new SetupOutputSanitizer((byte) => output.push(byte));
+        const flush = async () => {
+          if (!output.length) return;
+          const bytes = Buffer.from(output);
+          output = [];
+          await (options.writeInstallOutput ?? ((file, bytes) => file.writeFile(bytes)))(
+            file,
+            bytes,
+          );
+        };
+        try {
+          while (!stream.readableEnded && !stream.destroyed) {
+            const bytes = stream.read(
+              Math.min(16 * 1024, stream.readableLength || 16 * 1024),
+            ) as Buffer | null;
+            if (bytes === null) {
+              await readable(stream);
+              continue;
+            }
+            sanitizer.write(bytes);
+            await flush();
+          }
+          sanitizer.end();
+          await flush();
+        } catch (error) {
+          failure ??= { stage: "capture", error: safeError(error) };
+          // Reap the owned process and drain both pipes before closing files.
+          child.kill("SIGKILL");
+          stream.off("readable", keepPaused);
+          stream.resume();
+        } finally {
+          stream.off("readable", keepPaused);
+        }
+      };
+      await Promise.all([pump(child.stdout, files[0]!), pump(child.stderr, files[1]!), closed]);
+    }
+  } catch (error) {
+    failure ??= { stage, error: safeError(error) };
+  } finally {
+    for (const file of files) {
+      try {
+        await file.sync();
+      } catch (error) {
+        failure ??= { stage: "flush", error: safeError(error) };
+      }
+      try {
+        await file.close();
+      } catch (error) {
+        failure ??= { stage: "close", error: safeError(error) };
+      }
+    }
+  }
+  const status = failure ? "unknown" : exitCode === 0 ? "succeeded" : "failed";
+  try {
+    await writeFile(
+      terminal,
+      JSON.stringify(
+        { ...metadata, status, exitCode, signal, ...(failure ? { failure } : {}) },
+        null,
+        2,
+      ) + "\n",
+      { flag: "wx", flush: true },
+    );
+  } catch {
+    throw new SetupBlocked("dependency-install-unknown", diagnostics);
+  }
+  return { status, diagnostics: metadataWritten ? diagnostics : terminal };
+}
+
 export function gitSetupAdapter(options: SetupAdapterOptions = {}): SetupAdapter {
-  const install = options.install ?? defaultInstall;
   const gitExecutable = options.gitExecutable ?? "git";
 
   return {
-    async assertExecutor(config, executingRoot) {
+    async assertExecutor(config, executingRoot, matchedReplay = false) {
       try {
         const [actualExecuting, controller, repository, state] = await Promise.all([
           realpath(executingRoot),
@@ -226,7 +460,7 @@ export function gitSetupAdapter(options: SetupAdapterOptions = {}): SetupAdapter
           repositoryBranch,
           pilotObject,
           baseObject,
-        ] = await Promise.all([
+        ] = await joinGitReads([
           git(gitExecutable, config, ["rev-parse", "--show-toplevel"], controller),
           git(gitExecutable, config, ["rev-parse", "HEAD"], controller),
           git(gitExecutable, config, ["rev-parse", "--show-toplevel"], repository),
@@ -240,12 +474,15 @@ export function gitSetupAdapter(options: SetupAdapterOptions = {}): SetupAdapter
           controllerHead !== config.controllerRevision ||
           comparable(await realpath(repositoryTop)) !== comparable(repository) ||
           pilotObject !== config.pilotRevision ||
-          repositoryHead !== config.pilotRevision ||
+          repositoryHead !==
+            (matchedReplay && comparable(repository) === comparable(controller)
+              ? config.controllerRevision
+              : config.pilotRevision) ||
           baseObject !== config.base ||
           repositoryBranch !== config.baseBranch
         )
           throw new SetupBlocked("setup-head-drift");
-        await Promise.all([
+        await joinGitReads([
           git(gitExecutable, config, ["check-ref-format", "--branch", config.baseBranch]),
           git(gitExecutable, config, ["check-ref-format", "--branch", config.sourceBranch]),
           assertClean(gitExecutable, config, controller),
@@ -279,7 +516,7 @@ export function gitSetupAdapter(options: SetupAdapterOptions = {}): SetupAdapter
             config.repositoryRoot,
           );
           if (comparable(common) !== comparable(repositoryCommon)) return { state: "collision" };
-          const [head, branch, dirty] = await Promise.all([
+          const [head, branch, dirty] = await joinGitReads([
             git(gitExecutable, config, ["rev-parse", "HEAD"], actual),
             git(gitExecutable, config, ["branch", "--show-current"], actual),
             git(gitExecutable, config, ["status", "--porcelain", "--untracked-files=all"], actual),
@@ -360,9 +597,10 @@ export function gitSetupAdapter(options: SetupAdapterOptions = {}): SetupAdapter
     },
 
     async installDependencies(config, role) {
+      if (!options.install) return defaultInstall(config, role, options);
       try {
-        const launcher = await resolvePnpmLauncher();
-        return await install(
+        const launcher = await (options.resolveLauncher ?? resolvePnpmLauncher)();
+        return await options.install(
           launcher,
           ["install", "--offline", "--frozen-lockfile", "--ignore-scripts"],
           rolePath(config, role),

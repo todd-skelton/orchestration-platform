@@ -1,14 +1,299 @@
 import { execFile } from "node:child_process";
-import { access, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import {
+  access,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
-import { afterEach, expect, it } from "vitest";
-import { gitSetupAdapter } from "../../scripts/dogfood/setup-adapter.mjs";
-import { setupStep, type SetupConfig } from "../../scripts/dogfood/setup.mjs";
+import { afterEach, expect, it, vi } from "vitest";
+import {
+  gitSetupAdapter,
+  SetupOutputSanitizer,
+  type SetupAdapterOptions,
+} from "../../scripts/dogfood/setup-adapter.mjs";
+import {
+  setupStep,
+  SetupBlocked,
+  type SetupConfig,
+  type InstallResult,
+} from "../../scripts/dogfood/setup.mjs";
+import { retainedFiles } from "./fixtures/planning-selection.js";
 
 const run = promisify(execFile);
 const roots: string[] = [];
+
+const controlledGit = vi.hoisted(() => ({
+  execute: undefined as
+    ((args: string[], cwd: string) => Promise<{ stdout: string; stderr: string }>) | undefined,
+}));
+vi.mock("node:child_process", async (original) => {
+  const actual = await original<typeof import("node:child_process")>();
+  const { promisify } = await import("node:util");
+  const execute = promisify(actual.execFile);
+  const injected = actual.execFile.bind(null);
+  Object.defineProperty(injected, promisify.custom, {
+    value: (
+      executable: string,
+      args: string[],
+      options: import("node:child_process").ExecFileOptions,
+    ) =>
+      executable === "deferred-setup-git"
+        ? controlledGit.execute!(args, String(options.cwd))
+        : execute(executable, args, options),
+  });
+  return { ...actual, execFile: injected };
+});
+
+async function deferredReads(batch: "identity" | "validation" | "worktree", aliasRoot = false) {
+  let root = await mkdtemp(resolve(tmpdir(), "setup-deferred-"));
+  roots.push(root);
+  if (aliasRoot) {
+    const target = resolve(root, "actual");
+    await mkdir(target);
+    const alias = resolve(root, "alias");
+    await symlink(target, alias, "junction");
+    root = alias;
+  }
+  const config: SetupConfig = {
+    controller: "synthetic-controller",
+    run: "deferred-setup",
+    issue: "fixture-190",
+    repository: "fixture/repository",
+    controllerRoot: resolve(root, "controller"),
+    repositoryRoot: resolve(root, "repository"),
+    stateDirectory: resolve(root, "state"),
+    pilotWorktree: resolve(root, "pilot"),
+    sourceWorktree: resolve(root, "source"),
+    reviewWorktree: resolve(root, "review"),
+    controllerRevision: "a".repeat(40),
+    pilotRevision: "b".repeat(40),
+    base: "c".repeat(40),
+    baseBranch: "main",
+    sourceBranch: "fixture/source",
+  };
+  await Promise.all(
+    [config.controllerRoot, config.repositoryRoot, config.stateDirectory, config.pilotWorktree].map(
+      (path) => mkdir(path),
+    ),
+  );
+  const controllerRoot = await realpath(config.controllerRoot);
+  const calls: string[][] = [];
+  const children: {
+    args: string[];
+    finish(stdout?: string): void;
+    fail(error: Error): void;
+  }[] = [];
+  const started = Promise.withResolvers<void>();
+  let pending = 0;
+  controlledGit.execute = async (args, cwd) => {
+    calls.push(args);
+    let stdout = "";
+    if (args.includes("--git-common-dir"))
+      return { stdout: resolve(config.repositoryRoot, ".git"), stderr: "" };
+    if (args[0] === "worktree")
+      return {
+        stdout:
+          batch === "worktree"
+            ? `worktree ${config.pilotWorktree}\0HEAD ${config.pilotRevision}\0\0`
+            : "",
+        stderr: "",
+      };
+    if (args.includes("--show-toplevel")) stdout = cwd;
+    else if (args.includes("HEAD"))
+      stdout = cwd === controllerRoot ? config.controllerRevision : config.pilotRevision;
+    else if (args.includes("--verify")) stdout = args[2]!.split("^")[0]!;
+    else if (args[0] === "branch") stdout = batch === "worktree" ? "" : config.baseBranch;
+    else if (args[0] !== "status" && args[0] !== "check-ref-format")
+      throw new Error(`unexpected Git read: ${args.join(" ")}`);
+    const validation = args[0] === "status" || args[0] === "check-ref-format";
+    if (batch === "worktree" || validation === (batch === "validation")) {
+      const child = Promise.withResolvers<{ stdout: string; stderr: string }>();
+      pending += 1;
+      children.push({
+        args,
+        finish: (value = stdout) => child.resolve({ stdout: value, stderr: "" }),
+        fail: child.reject,
+      });
+      if (children.length === (batch === "identity" ? 7 : batch === "validation" ? 4 : 3))
+        started.resolve();
+      try {
+        return await child.promise;
+      } finally {
+        pending -= 1;
+      }
+    }
+    return { stdout, stderr: "" };
+  };
+  await mkdir(resolve(config.repositoryRoot, ".git"));
+  const adapter = gitSetupAdapter({ gitExecutable: "deferred-setup-git" });
+  let settled = false;
+  const operation =
+    batch === "worktree"
+      ? adapter.observeWorktree(config, "pilot", true)
+      : adapter.assertExecutor(config, config.controllerRoot);
+  const outcome = operation.then(
+    (value) => {
+      settled = true;
+      return value;
+    },
+    (error: unknown) => {
+      settled = true;
+      return error;
+    },
+  );
+  return {
+    config,
+    calls,
+    children,
+    async waitForReads() {
+      await Promise.race([started.promise, outcome]);
+      expect(settled).toBe(false);
+    },
+    outcome,
+    settled: () => settled,
+    pending: () => pending,
+    async finish() {
+      for (const child of children) child.finish();
+      await outcome;
+    },
+  };
+}
+
+// All controlled completions and their promise reactions precede this event-loop turn.
+const drainedReactions = () => new Promise<void>((done) => setImmediate(done));
+
+it.each(["pilotRevision", "base", "sourceBranch"] as const)(
+  "joins deferred siblings before refusing invalid %s",
+  async (field) => {
+    const f = await deferredReads(field === "sourceBranch" ? "validation" : "identity");
+    try {
+      await f.waitForReads();
+      const invalid = f.children.find((child) =>
+        child.args.includes(
+          field === "sourceBranch" ? f.config[field] : `${f.config[field]}^{commit}`,
+        ),
+      )!;
+      invalid.fail(new Error("invalid reference"));
+      await drainedReactions();
+      expect(f.settled()).toBe(false);
+      expect(f.pending()).toBe(f.children.length - 1);
+      expect(f.calls).toHaveLength(field === "sourceBranch" ? 13 : 9);
+      const late = f.children.find((child) => child !== invalid)!;
+      late.fail(new Error("late sibling failure"));
+      await drainedReactions();
+      expect(f.settled()).toBe(false);
+      await f.finish();
+      expect(await f.outcome).toBeInstanceOf(SetupBlocked);
+      expect(await f.outcome).toMatchObject({ reason: "setup-state-unverified" });
+      expect(f.pending()).toBe(0);
+      expect(f.calls).toHaveLength(field === "sourceBranch" ? 13 : 9);
+    } finally {
+      await f.finish();
+    }
+  },
+);
+
+it.each(["dirty", "invalid"] as const)(
+  "keeps the first observed %s refusal while draining differently failing siblings",
+  async (first) => {
+    const f = await deferredReads("validation");
+    try {
+      await f.waitForReads();
+      const dirty = f.children.find((child) => child.args[0] === "status")!;
+      const invalid = f.children.find((child) => child.args.includes(f.config.sourceBranch))!;
+      if (first === "dirty") dirty.finish("?? dirty.txt");
+      else invalid.fail(new Error("invalid branch"));
+      await drainedReactions();
+      expect(f.settled()).toBe(false);
+      if (first === "dirty") invalid.fail(new Error("late invalid branch"));
+      else dirty.finish("?? dirty.txt");
+      await drainedReactions();
+      expect(f.settled()).toBe(false);
+      await f.finish();
+      expect(await f.outcome).toBeInstanceOf(SetupBlocked);
+      expect(await f.outcome).toMatchObject({
+        reason: first === "dirty" ? "dirty-setup-repository" : "setup-state-unverified",
+      });
+      expect(f.pending()).toBe(0);
+      expect(f.calls).toHaveLength(13);
+    } finally {
+      await f.finish();
+    }
+  },
+);
+
+it.each(["identity", "validation", "worktree"] as const)(
+  "keeps every successful %s read concurrent without extra Git calls",
+  async (batch) => {
+    const f = await deferredReads(batch);
+    try {
+      await f.waitForReads();
+      expect(f.pending()).toBe(batch === "identity" ? 7 : batch === "validation" ? 4 : 3);
+      expect(f.settled()).toBe(false);
+      await f.finish();
+      expect(await f.outcome).toEqual(
+        batch === "worktree"
+          ? { state: "confirmed", head: f.config.pilotRevision, branch: null }
+          : undefined,
+      );
+      expect(f.pending()).toBe(0);
+      expect(f.calls).toHaveLength(batch === "worktree" ? 6 : 13);
+    } finally {
+      await f.finish();
+    }
+  },
+);
+
+it.each(["identity", "validation"] as const)(
+  "keeps successful %s reads concurrent through a symlinked fixture root",
+  async (batch) => {
+    const f = await deferredReads(batch, true);
+    try {
+      await f.waitForReads();
+      expect(f.config.controllerRoot).not.toBe(await realpath(f.config.controllerRoot));
+      expect(f.pending()).toBe(batch === "identity" ? 7 : 4);
+      expect(f.settled()).toBe(false);
+      await f.finish();
+      expect(await f.outcome).toBeUndefined();
+      expect(f.pending()).toBe(0);
+      expect(f.calls).toHaveLength(13);
+    } finally {
+      await f.finish();
+    }
+  },
+);
+
+it.each(["HEAD", "--show-current", "--porcelain"])(
+  "joins worktree siblings before returning unknown for %s failure",
+  async (argument) => {
+    const f = await deferredReads("worktree");
+    try {
+      await f.waitForReads();
+      const failed = f.children.find((child) => child.args.includes(argument))!;
+      failed.fail(new Error("worktree read failed"));
+      await drainedReactions();
+      expect(f.settled()).toBe(false);
+      expect(f.pending()).toBe(2);
+      f.children.find((child) => child !== failed)!.fail(new Error("late sibling failure"));
+      await drainedReactions();
+      expect(f.settled()).toBe(false);
+      await f.finish();
+      expect(await f.outcome).toEqual({ state: "unknown" });
+      expect(f.pending()).toBe(0);
+      expect(f.calls).toHaveLength(6);
+    } finally {
+      await f.finish();
+    }
+  },
+);
 
 async function git(cwd: string, args: string[]) {
   return (
@@ -101,7 +386,12 @@ async function fixture() {
 }
 
 afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+  controlledGit.execute = undefined;
+  await Promise.all(
+    roots
+      .splice(0)
+      .map((root) => rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 })),
+  );
 });
 
 it("prepares three real portable Git worktrees and resumes without duplicate setup", async () => {
@@ -143,6 +433,205 @@ it("prepares three real portable Git worktrees and resumes without duplicate set
   ).rejects.toMatchObject({ reason: "dependency-state-drift:pilot" });
   expect(current.installs()).toBe(3);
 }, 30_000);
+
+async function upgradeRepository(current: Awaited<ReturnType<typeof fixture>>) {
+  await git(current.repository, [
+    "-c",
+    "user.name=Synthetic Fixture",
+    "-c",
+    "user.email=fixture@example.test",
+    "commit",
+    "--quiet",
+    "--allow-empty",
+    "-m",
+    "executor B",
+  ]);
+  return git(current.repository, ["rev-parse", "HEAD"]);
+}
+
+it.each([false, true])(
+  "keeps fresh pilot A versus checkout B refused (same checkout: %s)",
+  async (sameCheckout) => {
+    const f = await fixture();
+    const upgraded = await upgradeRepository(f);
+    if (sameCheckout) {
+      f.config.controllerRoot = f.repository;
+      f.config.controllerRevision = upgraded;
+    }
+    const before = await retainedFiles(f.root, true);
+    await expect(setupStep(f.config, f.adapter, f.config.controllerRoot)).rejects.toMatchObject({
+      reason: "setup-head-drift",
+    });
+    expect(await retainedFiles(f.root, true)).toEqual(before);
+    expect(f.installs()).toBe(0);
+    expect(await readdir(f.config.stateDirectory)).toEqual([]);
+  },
+);
+
+it("admits matched distinct-repository replay only while the product checkout stays at pilot A", async () => {
+  const f = await fixture();
+  await setupStep(f.config, f.adapter, f.controller);
+  const retained = await retainedFiles(f.config.stateDirectory);
+  // A controller upgrade alone does not change the separate product HEAD.
+  await git(f.controller, ["checkout", "--detach", f.config.pilotRevision]);
+  f.config.controllerRevision = f.config.pilotRevision;
+  await expect(setupStep(f.config, f.adapter, f.controller)).resolves.toMatchObject({
+    status: "ready",
+  });
+  const upgraded = await upgradeRepository(f);
+  await git(f.controller, ["checkout", "--detach", upgraded]);
+  f.config.controllerRevision = upgraded;
+  // Same Git common directory is insufficient: these are distinct checkouts.
+  await expect(setupStep(f.config, f.adapter, f.controller)).rejects.toMatchObject({
+    reason: "setup-head-drift",
+  });
+  expect(await retainedFiles(f.config.stateDirectory)).toEqual(retained);
+  expect(await git(f.config.pilotWorktree, ["rev-parse", "HEAD"])).toBe(f.config.pilotRevision);
+  expect(f.installs()).toBe(3);
+});
+
+it("uses canonical checkout identity for matched replay through a directory alias", async () => {
+  const f = await fixture();
+  const alias = resolve(f.root, "controller alias");
+  await symlink(f.repository, alias, "junction");
+  f.config.controllerRoot = alias;
+  f.config.controllerRevision = f.config.pilotRevision;
+  await setupStep(f.config, f.adapter, f.repository);
+  const before = await retainedFiles(f.config.stateDirectory);
+  f.config.controllerRevision = await upgradeRepository(f);
+  await expect(setupStep(f.config, f.adapter, f.repository)).resolves.toMatchObject({
+    status: "ready",
+  });
+  expect(await retainedFiles(f.config.stateDirectory)).toEqual(before);
+  expect(await git(f.config.pilotWorktree, ["rev-parse", "HEAD"])).toBe(f.config.pilotRevision);
+  expect(f.installs()).toBe(3);
+});
+
+it.each(["controller", "repository", "branch"] as const)(
+  "retains the %s boundary in fresh and matched replay",
+  async (boundary) => {
+    for (const replay of [false, true]) {
+      const f = await fixture();
+      if (replay) {
+        await setupStep(f.config, f.adapter, f.controller);
+        await git(f.controller, ["checkout", "--detach", f.config.pilotRevision]);
+        f.config.controllerRevision = f.config.pilotRevision;
+      }
+      if (boundary === "branch") await git(f.repository, ["checkout", "-b", "other"]);
+      else await writeFile(resolve(f[boundary], "dirty.txt"), "synthetic drift\n");
+      const before = await retainedFiles(f.root, true);
+      await expect(setupStep(f.config, f.adapter, f.controller)).rejects.toMatchObject({
+        reason: boundary === "branch" ? "setup-head-drift" : "dirty-setup-repository",
+      });
+      expect(await retainedFiles(f.root, true)).toEqual(before);
+      expect(f.installs()).toBe(replay ? 3 : 0);
+    }
+  },
+);
+
+it.each(["pilotRevision", "base", "sourceBranch"] as const)(
+  "keeps fresh %s resolution ahead of plan persistence",
+  async (field) => {
+    const f = await fixture();
+    f.config[field] = field === "sourceBranch" ? "invalid..ref" : "f".repeat(40);
+    const before = await retainedFiles(f.root, true);
+    await expect(setupStep(f.config, f.adapter, f.controller)).rejects.toMatchObject({
+      reason: "setup-state-unverified",
+    });
+    expect(await retainedFiles(f.root, true)).toEqual(before);
+    expect(await readdir(f.config.stateDirectory)).toEqual([]);
+    expect(f.installs()).toBe(0);
+  },
+);
+
+it("compares the whole saved plan before executor validation and keeps the comparison read-only", async () => {
+  const f = await fixture();
+  f.config.controllerRoot = f.repository;
+  f.config.controllerRevision = f.config.pilotRevision;
+  await setupStep(f.config, f.adapter, f.repository);
+  const planPath = resolve(f.config.stateDirectory, "setup-plan.json");
+  const bytes = await readFile(planPath, "utf8");
+  const plan = JSON.parse(bytes);
+  const upgraded = await upgradeRepository(f);
+  // The stale controller revision would fail the adapter. Mismatched plans must
+  // instead fail the earlier exact comparison, even though pilot A agrees.
+  const mutations = [
+    ...[
+      "schemaVersion",
+      "run",
+      "issue",
+      "repository",
+      "repositoryRoot",
+      "controllerRoot",
+      "stateDirectory",
+      "controller",
+      "base",
+      "baseBranch",
+      "sourceBranch",
+    ].map((key) => (saved: typeof plan) => {
+      saved[key] += "-changed";
+    }),
+    ...[0, 1, 2].flatMap((index) =>
+      ["run", "role", "path", "head", "branch"].map((key) => (saved: typeof plan) => {
+        saved.worktrees[index][key] = "changed";
+      }),
+    ),
+    ...["launcher", "offline", "frozenLockfile", "ignoreScripts"].map(
+      (key) => (saved: typeof plan) => {
+        saved.dependencies[key] = "changed";
+      },
+    ),
+  ];
+  for (const mutate of mutations) {
+    const saved = JSON.parse(bytes);
+    mutate(saved);
+    await writeFile(planPath, JSON.stringify(saved));
+    const before = await retainedFiles(f.root, true);
+    await expect(setupStep(f.config, f.adapter, f.repository)).rejects.toMatchObject({
+      reason: "conflicting-record:setup-plan",
+    });
+    expect(await retainedFiles(f.root, true)).toEqual(before);
+  }
+  await writeFile(planPath, bytes);
+  await expect(setupStep(f.config, f.adapter, f.repository)).rejects.toMatchObject({
+    reason: "setup-head-drift",
+  });
+  f.config.controllerRevision = upgraded;
+  await expect(setupStep(f.config, f.adapter, f.repository)).resolves.toMatchObject({
+    status: "ready",
+  });
+  expect(await readFile(planPath, "utf8")).toBe(bytes);
+  expect(f.installs()).toBe(3);
+});
+
+it.each(["missing", "malformed", "pilot-only"])(
+  "a %s plan cannot authorize same-checkout replay",
+  async (kind) => {
+    const f = await fixture();
+    f.config.controllerRoot = f.repository;
+    f.config.controllerRevision = f.config.pilotRevision;
+    await setupStep(f.config, f.adapter, f.repository);
+    f.config.controllerRevision = await upgradeRepository(f);
+    const path = resolve(f.config.stateDirectory, "setup-plan.json");
+    if (kind === "missing") await rm(path);
+    else
+      await writeFile(
+        path,
+        kind === "malformed" ? "{" : JSON.stringify({ pilotRevision: f.config.pilotRevision }),
+      );
+    const before = await retainedFiles(f.root, true);
+    await expect(setupStep(f.config, f.adapter, f.repository)).rejects.toMatchObject({
+      reason:
+        kind === "missing"
+          ? "setup-head-drift"
+          : kind === "malformed"
+            ? "malformed-record:setup-plan"
+            : "conflicting-record:setup-plan",
+    });
+    expect(await retainedFiles(f.root, true)).toEqual(before);
+    expect(f.installs()).toBe(3);
+  },
+);
 
 it("keeps a marker-then-unknown install uncertain without repeating it on resume", async () => {
   const current = await fixture();
@@ -269,4 +758,355 @@ it("rejects checkout-contained state before Git or installer mutation", async ()
   ).rejects.toMatchObject({ reason: "setup-path-inside-existing-checkout" });
   expect(current.installs()).toBe(0);
   await expect(access(current.config.pilotWorktree)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+async function installer(
+  current: Awaited<ReturnType<typeof fixture>>,
+  source: string,
+  options: SetupAdapterOptions = {},
+  extraArgs: string[] = [],
+) {
+  const script = resolve(current.root, "synthetic-installer.cjs");
+  // Write bytes to the child's pipe endpoints. Never give the child a log file fd.
+  // Node's asynchronous stdio writes are silently lost in the worker sandbox.
+  await writeFile(
+    script,
+    `const output = (fd, bytes) => require('node:fs').writeSync(fd, bytes);\n${source}`,
+  );
+  return gitSetupAdapter({
+    resolveLauncher: async () => ({
+      executable: process.execPath,
+      prefixArgs: [script, ...extraArgs],
+    }),
+    ...options,
+  });
+}
+
+async function evidence(result: InstallResult) {
+  const metadata = JSON.parse(await readFile(result.diagnostics, "utf8"));
+  return {
+    metadata,
+    terminal: JSON.parse(await readFile(metadata.terminal, "utf8")),
+    stdout: await readFile(metadata.stdout, "utf8"),
+    stderr: await readFile(metadata.stderr, "utf8"),
+  };
+}
+
+it.each([0, 7])(
+  "captures real exit %s, both complete streams, full command and trailing bytes",
+  async (code) => {
+    const current = await fixture();
+    await mkdir(current.config.sourceWorktree);
+    const adapter = await installer(
+      current,
+      `
+    output(1, 'leading stdout\\n' + 'x'.repeat(200000) + '\\ntrailing stdout');
+    output(2, 'leading stderr\\n' + 'y'.repeat(200000) + '\\ntrailing stderr');
+    process.exitCode = ${code};
+  `,
+    );
+    const result = (await adapter.installDependencies(current.config, "source")) as InstallResult;
+    expect(result.status).toBe(code === 0 ? "succeeded" : "failed");
+    const saved = await evidence(result);
+    expect(saved.stdout.length).toBe(200031);
+    expect(saved.stdout).toBe("leading stdout\n" + "x".repeat(200000) + "\ntrailing stdout");
+    expect(saved.stderr).toBe("leading stderr\n" + "y".repeat(200000) + "\ntrailing stderr");
+    expect(saved.terminal).toMatchObject({
+      role: "source",
+      head: current.config.base,
+      cwd: current.config.sourceWorktree,
+      executable: process.execPath,
+      argv: [
+        resolve(current.root, "synthetic-installer.cjs"),
+        "install",
+        "--offline",
+        "--frozen-lockfile",
+        "--ignore-scripts",
+      ],
+      exitCode: code,
+      signal: null,
+      status: result.status,
+    });
+    expect(saved.terminal.failure).toBeUndefined();
+  },
+);
+
+it("retains safe spawn and launcher failures without error messages or stacks", async () => {
+  const current = await fixture();
+  await mkdir(current.config.sourceWorktree);
+  const missing = resolve(current.root, "missing-executable");
+  const adapter = gitSetupAdapter({
+    resolveLauncher: async () => ({ executable: missing, prefixArgs: [] }),
+  });
+  const result = (await adapter.installDependencies(current.config, "source")) as InstallResult;
+  expect(result.status).toBe("unknown");
+  expect((await evidence(result)).terminal.failure).toMatchObject({
+    stage: "spawn",
+    error: { code: "ENOENT", path: missing },
+  });
+
+  const unavailable = gitSetupAdapter({
+    resolveLauncher: async () => {
+      throw Object.assign(new Error("authorization: FAKE_MESSAGE_SECRET"), {
+        code: "ENOENT",
+        syscall: "open",
+        path: "https://user:FAKE_PATH_SECRET@example.test/query?secret=FAKE_QUERY_SECRET",
+      });
+    },
+  });
+  const failed = (await unavailable.installDependencies(current.config, "source")) as InstallResult;
+  expect(failed.status).toBe("unknown");
+  const saved = await evidence(failed);
+  expect(saved.terminal.failure).toEqual({
+    stage: "launcher",
+    error: { code: "ENOENT", syscall: "open", path: "https:[REDACTED]" },
+  });
+  expect(JSON.stringify(saved)).not.toContain("FAKE_");
+  expect(failed.diagnostics).not.toBe(result.diagnostics);
+  expect((await evidence(result)).terminal.failure.stage).toBe("spawn");
+});
+
+const credentialCases = [
+  ...[
+    "AuThOrIzAtIoN",
+    "PrOxY-AuThOrIzAtIoN",
+    "CoOkIe",
+    "SeT-CoOkIe",
+    "_AuThToKeN",
+    "_AuTh",
+    "_PaSsWoRd",
+  ].map((marker) => ({
+    input: `before "${marker}" = 'FAKE_LINE_${"s".repeat(80)}'\r\nafter`,
+    expected: 'before "[REDACTED]\r\nafter',
+  })),
+  {
+    input: `before https://user:FAKE_URL_${"s".repeat(80)}@host/path?q=FAKE_QUERY end`,
+    expected: "before https:[REDACTED] end",
+  },
+  { input: "before //user:FAKE_NETWORK@host/path\tend", expected: "before [REDACTED]\tend" },
+  { input: "before http://public.example.test/path\nend", expected: "before http:[REDACTED]\nend" },
+  {
+    input: "    at run (file:///FAKE_FRAME/path.js:1:2)\nend",
+    expected: "    at run ([REDACTED]\nend",
+  },
+  { input: "before _auth=FAKE_EOF", expected: "before [REDACTED]" },
+  { input: "before https://user:FAKE_EOF@host", expected: "before https:[REDACTED]" },
+  { input: "safe utf8 ü :/ _aut", expected: "safe utf8 ü :/ _aut" },
+];
+
+it("sanitizes every byte split independently of child-write coalescing, including EOF and CRLF", () => {
+  for (const { input, expected } of credentialCases) {
+    const bytes = Buffer.from(input);
+    for (let split = 0; split <= bytes.length; split++) {
+      const output: number[] = [];
+      const sanitizer = new SetupOutputSanitizer((byte) => output.push(byte));
+      sanitizer.write(bytes.subarray(0, split));
+      sanitizer.write(bytes.subarray(split));
+      sanitizer.end();
+      expect(Buffer.from(output).toString()).toBe(expected);
+    }
+  }
+  const bytes = Buffer.from([0xff, 0x00, 0xfe, 0x0a]);
+  const output: number[] = [];
+  const sanitizer = new SetupOutputSanitizer((byte) => output.push(byte));
+  for (const byte of bytes) sanitizer.write(Buffer.from([byte]));
+  sanitizer.end();
+  expect(Buffer.from(output)).toEqual(bytes);
+});
+
+it("filters actual child pipes and parent argv across elements before retention", async () => {
+  const current = await fixture();
+  await mkdir(current.config.sourceWorktree);
+  const input = credentialCases.map(({ input }) => input + "\n").join("");
+  const expected = credentialCases.map(({ expected }) => expected + "\n").join("");
+  const adapter = await installer(
+    current,
+    `
+    const bytes = Buffer.from(${JSON.stringify(input)});
+    (async () => {
+      for (const byte of bytes) for (const fd of [1, 2])
+        output(fd, Buffer.from([byte]));
+      process.exitCode = 7;
+    })();
+  `,
+    {},
+    ["--safe-argument", "auth", "orization", "FAKE_ARG_SECRET", "\ntrailing-argument"],
+  );
+  const saved = await evidence(
+    (await adapter.installDependencies(current.config, "source")) as InstallResult,
+  );
+  expect(saved.stdout).toBe(expected);
+  expect(saved.stderr).toBe(expected);
+  expect(saved.metadata.argv).toEqual([
+    resolve(current.root, "synthetic-installer.cjs"),
+    "--safe-argument",
+    "[REDACTED]",
+    "",
+    "",
+    "\ntrailing-argument",
+    "install",
+    "--offline",
+    "--frozen-lockfile",
+    "--ignore-scripts",
+  ]);
+  expect(JSON.stringify(saved)).not.toContain("FAKE_");
+  expect(saved.metadata.cwd).toBe(current.config.sourceWorktree);
+});
+
+it("bounds both pumps with slow sinks and unbounded-length suppressed regions", async () => {
+  const current = await fixture();
+  await mkdir(current.config.sourceWorktree);
+  const pending = new Set<number>();
+  let writes = 0;
+  const adapter = await installer(
+    current,
+    `
+    for (const fd of [1, 2]) {
+      output(fd, 'leading\\n' + 'x'.repeat(100000));
+      output(fd, ' authorization: FAKE_LONG_' + 's'.repeat(1024 * 1024) + '\\r\\n');
+      output(fd, 'https://FAKE_LONG_URL_' + 's'.repeat(1024 * 1024) + ' trailing');
+    }
+  `,
+    {
+      async writeInstallOutput(file, bytes) {
+        expect(pending.has(file.fd)).toBe(false);
+        expect(bytes.length).toBeLessThanOrEqual(32 * 1024);
+        pending.add(file.fd);
+        writes++;
+        await new Promise((done) => setTimeout(done, 1));
+        await file.writeFile(bytes);
+        pending.delete(file.fd);
+      },
+    },
+  );
+  const result = (await adapter.installDependencies(current.config, "source")) as InstallResult;
+  expect(result.status).toBe("succeeded");
+  const saved = await evidence(result);
+  const expected = "leading\n" + "x".repeat(100000) + " [REDACTED]\r\nhttps:[REDACTED] trailing";
+  expect(saved.stdout).toBe(expected);
+  expect(saved.stderr).toBe(expected);
+  expect(writes).toBeGreaterThan(10);
+  expect(pending.size).toBe(0);
+});
+
+it("kills and reaps the real child on capture failure, closing both files before returning", async () => {
+  const current = await fixture();
+  await mkdir(current.config.sourceWorktree);
+  let childPid = 0;
+  const handles: import("node:fs/promises").FileHandle[] = [];
+  const adapter = await installer(
+    current,
+    `
+    output(1, process.pid + '\\n' + 'x'.repeat(32768));
+    output(2, 'before failure\\n');
+    const interval = setInterval(() => output(1, 'more\\n'), 10);
+    setTimeout(() => clearInterval(interval), 5000);
+  `,
+    {
+      async writeInstallOutput(file, bytes) {
+        handles.push(file);
+        if (/^\d+\n/.test(bytes.toString())) {
+          childPid = Number(bytes.toString().split("\n")[0]);
+          throw Object.assign(new Error("cookie: FAKE_IO_SECRET"), {
+            code: "EIO",
+            syscall: "write",
+          });
+        }
+        await file.writeFile(bytes);
+      },
+    },
+  );
+  const result = (await adapter.installDependencies(current.config, "source")) as InstallResult;
+  expect(result.status).toBe("unknown");
+  expect(childPid).toBeGreaterThan(0);
+  expect(() => process.kill(childPid, 0)).toThrow();
+  expect(handles.every((file) => file.fd === -1)).toBe(true);
+  const saved = await evidence(result);
+  expect(saved.terminal.failure).toEqual({
+    stage: "capture",
+    error: { code: "EIO", syscall: "write" },
+  });
+  expect(JSON.stringify(saved)).not.toContain("FAKE_IO_SECRET");
+});
+
+it("replays absent installs after a same-root executor upgrade while retaining failed invocations", async () => {
+  const current = await fixture();
+  const adapter = await installer(
+    current,
+    `
+    const fs = require('node:fs');
+    const path = require('node:path');
+    if (process.cwd().endsWith('source space') && !fs.existsSync(${JSON.stringify(resolve(current.root, "allow-source"))})) {
+      output(1, 'source start\\n'); output(2, 'source synthetic failure\\n'); process.exitCode = 7;
+    } else {
+      fs.mkdirSync('node_modules', { recursive: true });
+      fs.writeFileSync(path.join('node_modules', '.modules.yaml'), 'fixture: true\\n');
+    }
+  `,
+  );
+  const failed = await setupStep(current.config, adapter, current.controller);
+  expect(failed).toMatchObject({ status: "incomplete", reason: "dependency-install-failed" });
+  const oldPlan = await readFile(resolve(current.config.stateDirectory, "setup-plan.json"), "utf8");
+  const firstEvidence = await evidence({ status: "failed", diagnostics: failed.diagnostics! });
+  expect(firstEvidence.terminal.role).toBe("source");
+  await git(current.controller, ["checkout", "--detach", current.config.base]);
+  current.config.controllerRevision = current.config.base;
+  const failedAgain = await setupStep(current.config, adapter, current.controller);
+  expect(failedAgain.reason).toBe("dependency-install-failed");
+  expect(failedAgain.diagnostics).not.toBe(failed.diagnostics);
+  const names = await readdir(current.config.stateDirectory);
+  expect(
+    names.filter((name) => /^dependency-pilot-install-.*\.terminal\.json$/.test(name)),
+  ).toHaveLength(1);
+  expect(
+    names.filter((name) => /^dependency-source-install-.*\.terminal\.json$/.test(name)),
+  ).toHaveLength(2);
+  expect(names.some((name) => name.startsWith("dependency-review"))).toBe(false);
+  await writeFile(resolve(current.root, "allow-source"), "explicit resume\n");
+  expect(await setupStep(current.config, adapter, current.controller)).toMatchObject({
+    status: "ready",
+  });
+  const completedNames = await readdir(current.config.stateDirectory);
+  expect(await setupStep(current.config, adapter, current.controller)).toMatchObject({
+    status: "ready",
+  });
+  expect(await readdir(current.config.stateDirectory)).toEqual(completedNames);
+  expect(await readFile(resolve(current.config.stateDirectory, "setup-plan.json"), "utf8")).toBe(
+    oldPlan,
+  );
+  expect(await evidence({ status: "failed", diagnostics: failed.diagnostics! })).toEqual(
+    firstEvidence,
+  );
+  await git(current.controller, ["checkout", "--detach", JSON.parse(oldPlan).controllerRevision]);
+  await expect(setupStep(current.config, adapter, current.controller)).rejects.toMatchObject({
+    reason: "setup-head-drift",
+  });
+}, 30_000);
+
+it("retains a real failed install with a marker as unknown on replay without repeating it", async () => {
+  const current = await fixture();
+  const adapter = await installer(
+    current,
+    `
+    const fs = require('node:fs');
+    fs.mkdirSync('node_modules', { recursive: true });
+    fs.writeFileSync('node_modules/.modules.yaml', 'fixture: incomplete\\n');
+    output(2, 'failed after partial effect\\n');
+    process.exitCode = 7;
+  `,
+  );
+  expect(await setupStep(current.config, adapter, current.controller)).toMatchObject({
+    reason: "dependency-install-failed",
+  });
+  const names = await readdir(current.config.stateDirectory);
+  const resumed = await setupStep(current.config, adapter, current.controller);
+  expect(resumed).toMatchObject({ status: "incomplete", reason: "dependency-install-unknown" });
+  expect(JSON.parse(await readFile(resumed.diagnostics!, "utf8"))).toMatchObject({
+    role: "pilot",
+    status: "failed",
+    exitCode: 7,
+  });
+  expect(await readdir(current.config.stateDirectory)).toEqual(names);
+  expect(names).not.toContain("dependency-pilot.json");
+  expect(names.some((name) => name.startsWith("dependency-source"))).toBe(false);
 });

@@ -8,21 +8,22 @@ export interface ModelPlacement {
 export interface RoutingRow {
   row: number | "self";
   review?: 11 | 12;
-  author: ModelPlacement;
-  reviewer: ModelPlacement & { fallback: ModelPlacement };
-  repair: ModelPlacement;
+  author: ModelPlacement[];
+  reviewer: ModelPlacement[];
 }
 export type RoutingSelection = Pick<RoutingRow, "row" | "review">;
 
 export const SELF_ROUTING: RoutingRow = {
   row: "self",
-  author: { model: "gpt-6-astra", effort: "high" },
-  reviewer: {
-    model: "claude-opus-5",
-    effort: "high",
-    fallback: { model: "gpt-5.6-sol", effort: "high" },
-  },
-  repair: { model: "gpt-6-astra", effort: "high" },
+  author: [
+    { model: "gpt-6-astra", effort: "high" },
+    { model: "gpt-6-astra", effort: "xhigh" },
+    { model: "claude-fable-5-1", effort: "high" },
+  ],
+  reviewer: [
+    { model: "claude-opus-5", effort: "high" },
+    { model: "gpt-5.6-sol", effort: "high" },
+  ],
 };
 
 export function parseRoutingMarker(body: string): RoutingSelection {
@@ -49,11 +50,21 @@ export function parseRoutingMarker(body: string): RoutingSelection {
 }
 
 export function validateRoutingRow(row: RoutingRow) {
-  const placements = [row?.author, row?.reviewer, row?.reviewer?.fallback, row?.repair];
+  if (
+    !row ||
+    Object.keys(row).some((key) => !["row", "review", "author", "reviewer"].includes(key)) ||
+    !Array.isArray(row.author) ||
+    !row.author.length ||
+    !Array.isArray(row.reviewer) ||
+    !row.reviewer.length
+  )
+    throw new QueueBlocked("invalid-routing-row");
+  const placements = [...row.author, ...row.reviewer];
   if (
     placements.some(
       (p) =>
         !p ||
+        Object.keys(p).some((key) => !["model", "effort"].includes(key)) ||
         typeof p.model !== "string" ||
         !p.model.trim() ||
         typeof p.effort !== "string" ||
@@ -61,14 +72,15 @@ export function validateRoutingRow(row: RoutingRow) {
     )
   )
     throw new QueueBlocked("invalid-routing-row");
-  for (const reviewer of [row.reviewer, row.reviewer.fallback]) {
-    if (
-      /fable|terra/i.test(reviewer.model) ||
-      [row.author.model, row.repair.model].includes(reviewer.model)
-    )
+  for (const reviewer of row.reviewer) {
+    if (row.author.some((author) => author.model === reviewer.model))
       throw new QueueBlocked("routing-reviewer-not-independent");
   }
-  if (row.reviewer.model === row.reviewer.fallback.model)
+  if (
+    new Set(row.author.map((p) => JSON.stringify([p.model, p.effort]))).size !== row.author.length
+  )
+    throw new QueueBlocked("invalid-routing-row");
+  if (new Set(row.reviewer.map((p) => p.model)).size !== row.reviewer.length)
     throw new QueueBlocked("invalid-routing-fallback");
 }
 

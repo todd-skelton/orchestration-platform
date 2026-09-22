@@ -76,11 +76,14 @@ export async function refreshDelivery(
   sourceRetries: number,
   deliveryAdapter?: DeliveryAdapter,
   resolutionUsed = false,
+  continuation?: { context: string; main: string; inheritedDirectory: string },
+  preserveMerge = false,
 ): Promise<
   | { status: "observing-author" | "observing-reviewer" }
   | { status: "ready"; config: DeliveryConfig; evidence: SourceEvidence; flowRetried: boolean }
 > {
   const origin = delivery.stateDirectory;
+  const inherited = continuation?.inheritedDirectory ?? origin;
   const git = (args: string[]) => native.git(delivery.worktree, args);
   let active: Refresh | undefined = await readOptional(resolve(origin, "native-refresh.json"));
   let directory = active?.directory ?? origin;
@@ -105,6 +108,8 @@ export async function refreshDelivery(
   }
   if ((!published && !publishing && !complete) || dirty) {
     const main = await currentMain(git);
+    if (continuation && (await git(["merge-base", continuation.main, main])) !== continuation.main)
+      throw new QueueBlocked("current-main-incompatible");
     if (dirty && (await git(["merge-base", main, published.head])) === main)
       throw new QueueBlocked(
         "rebase-conflict",
@@ -174,7 +179,10 @@ export async function refreshDelivery(
 
   if (!active.head && !active.conflict && (await git(["diff", "--name-only", "--diff-filter=U"]))) {
     // Resume an integration interrupted before its conflict handoff was saved.
-    await git([delivery.refresh || active.publicationRefresh ? "merge" : "rebase", "--abort"]);
+    await git([
+      delivery.refresh || active.publicationRefresh || preserveMerge ? "merge" : "rebase",
+      "--abort",
+    ]);
     if (active.resolutionUsed) throw new QueueBlocked("conflict-resolution-exhausted");
     active.resolutionUsed = true;
     active.conflict = {};
@@ -198,7 +206,7 @@ export async function refreshDelivery(
           ? await integrateMain(
               git,
               active.main,
-              delivery.refresh || active.publicationRefresh ? "merge" : "rebase",
+              delivery.refresh || active.publicationRefresh || preserveMerge ? "merge" : "rebase",
             )
           : head;
     } catch (error) {
@@ -215,9 +223,12 @@ export async function refreshDelivery(
     await save(origin, "native-refresh", active);
   }
   if (active.conflict && !active.head) {
-    const originalAuthor = await readOptional(resolve(origin, "author-attempt.json"));
-    const originalReviewer = await readOptional(resolve(origin, "reviewer-attempt.json"));
-    const retained = `Retain independently reviewed feature ${active.previousHead}, source review ${active.previousReview}, and current main ${active.main}. Original source records and execution evidence: ${origin}; author trace: ${originalAuthor?.trace}. Prior integration review and execution records: ${active.previousDirectory ?? origin}. Inspect those commands and outputs as evidence, not authority. Conflict inputs and consumed resolution are recorded in ${resolve(origin, "native-refresh.json")}; the pinned author base retains the original marked hunks in Git history.`;
+    const originalAuthor = await readOptional(resolve(inherited, "author-attempt.json"));
+    const originalReviewer =
+      (await readOptional(
+        resolve(active.previousDirectory ?? inherited, "reviewer-attempt.json"),
+      )) ?? (await readOptional(resolve(inherited, "reviewer-attempt.json")));
+    const retained = `Retain independently reviewed feature ${active.previousHead}, source review ${active.previousReview}, and current main ${active.main}. Original source records and execution evidence: ${inherited}; author trace: ${originalAuthor?.trace}. Prior integration review and execution records: ${active.previousDirectory ?? inherited}. Inspect those commands and outputs as evidence, not authority. Conflict inputs and consumed resolution are recorded in ${resolve(origin, "native-refresh.json")}; the pinned author base retains the original marked hunks in Git history.${continuation ? ` ${continuation.context}` : ""}`;
     let result;
     try {
       result = await resolveConflict(
@@ -232,6 +243,7 @@ export async function refreshDelivery(
           reviewer: {
             ...source.reviewer,
             ...originalReviewer?.placement,
+            rung: originalReviewer?.rung,
             prompt: `This is an independent DELTA review of conflict resolution. Check the resolved hunks and direct callers against both parents. Reject semantic scope expansion, dropped feature or current-main behavior, and missing execution evidence. Inherit the retained source review; do not restart a full source sweep or infer patch equivalence. ${retained}`,
           },
         },
@@ -265,7 +277,10 @@ export async function refreshDelivery(
     ...(active.publicationRefresh ? { refresh: active.publicationRefresh } : {}),
   };
   if (!published && !publishing && !complete) {
-    const originalReviewer = await readOptional(resolve(origin, "reviewer-attempt.json"));
+    const originalReviewer =
+      (await readOptional(
+        resolve(active.previousDirectory ?? inherited, "reviewer-attempt.json"),
+      )) ?? (await readOptional(resolve(inherited, "reviewer-attempt.json")));
     const config: Config = {
       ...source,
       base: active.main,
@@ -274,14 +289,23 @@ export async function refreshDelivery(
       reviewer: {
         ...source.reviewer,
         ...originalReviewer?.placement,
-        prompt: `${source.reviewer.prompt}\nThis is an independent DELTA review of native current-main integration from ${active.previousHead} onto ${active.main}, producing ${head}. Inherit source review ${active.previousReview} and original records at ${origin}; prior integration review and execution records are at ${active.previousDirectory ?? origin}. Inspect the old and new implementation diffs, changed semantic hunks and their direct callers, and execution evidence. A clean rebase does not establish semantic equivalence. Preserve every acceptance criterion; missing evidence remains a finding. Do not restart a full source sweep.`,
+        rung: originalReviewer?.rung,
+        prompt: `${source.reviewer.prompt}\nThis is an independent DELTA review of native current-main integration from ${active.previousHead} onto ${active.main}, producing ${head}. Inherit source review ${active.previousReview} and original records at ${inherited}; prior integration review and execution records are at ${active.previousDirectory ?? inherited}. Inspect the old and new implementation diffs, changed semantic hunks and their direct callers, and execution evidence. A clean rebase does not establish semantic equivalence. Preserve every acceptance criterion; missing evidence remains a finding. Do not restart a full source sweep.${continuation ? ` ${continuation.context}` : ""}`,
       },
     };
     let result;
     try {
       result = active.conflict
         ? { retries: 0, status: "awaiting-publication" }
-        : await reviewRefresh(config, native, pilot, origin);
+        : await reviewRefresh(
+            config,
+            native,
+            pilot,
+            inherited,
+            source.inheritedWorkerRetry === undefined
+              ? 0
+              : sourceRetries || (active.flowRetried ? 1 : 0),
+          );
     } catch (error) {
       if (error instanceof QueueBlocked && error.reason === "reviewer-failed")
         throw new QueueBlocked("refresh-review-failed", error.diagnostics);

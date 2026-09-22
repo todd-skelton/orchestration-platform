@@ -144,14 +144,32 @@ export function validatePlanningSnapshot(snapshot) {
   validateAcyclic(roadmap.issues);
 }
 
-export async function loadPlanningSnapshot(root = defaultRoot) {
-  const roadmap = JSON.parse(await readFile(resolve(root, "planning/roadmap.json"), "utf8"));
+export async function loadPlanningSnapshot(root = defaultRoot, pinned) {
+  const read = (path) =>
+    pinned
+      ? pinned.git(["show", `${pinned.revision}:${path}`])
+      : readFile(resolve(root, path), "utf8");
+  const roadmap = JSON.parse(await read("planning/roadmap.json"));
   const issueDrafts = {};
-  for (const name of (await readdir(resolve(root, "planning/drafts"))).sort()) {
+  // Enumerate the tree, not the registry: orphan drafts must still fail validation.
+  const names = pinned
+    ? (
+        await pinned.git([
+          "ls-tree",
+          "-r",
+          "--name-only",
+          "-z",
+          `${pinned.revision}:planning/drafts`,
+        ])
+      )
+        .split("\0")
+        .filter(Boolean)
+    : await readdir(resolve(root, "planning/drafts"));
+  for (const name of names.sort()) {
     if (!name.endsWith(".md")) continue;
     const key = name.slice(0, -3);
     if (!ISSUE_KEY.test(key)) fail(`unexpected file planning/drafts/${name}`);
-    issueDrafts[key] = await readFile(resolve(root, "planning/drafts", name), "utf8");
+    issueDrafts[key] = await read(`planning/drafts/${name}`);
   }
   return { roadmap, issueDrafts };
 }

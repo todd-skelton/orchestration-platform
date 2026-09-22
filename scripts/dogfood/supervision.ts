@@ -1,10 +1,21 @@
 import { execFile } from "node:child_process";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { mkdir, readFile, readdir, readlink, writeFile } from "node:fs/promises";
+import { basename, resolve } from "node:path";
 import { promisify } from "node:util";
 // @ts-expect-error Node 24 executes this private TypeScript composition directly.
-import { continuationSlug, QueueBlocked, readQueueHistory, validateHistory } from "./queue.ts";
+import * as queue from "./queue.ts";
 import type { RepositoryAdapter } from "./repository-adapter.js";
+import { resolveRouting } from "./routing.mjs";
+
+const {
+  continuationSlug,
+  QueueBlocked,
+  readQueueHistory,
+  retainedSourceFailure,
+  prerequisiteSourceFailure,
+  validateHistory,
+  validateLoopExecutor,
+} = queue;
 
 type ActionableStopReason = import("./queue.js").ActionableStopReason;
 type LoopConfig = import("./queue.js").LoopConfig;
@@ -19,12 +30,18 @@ export interface SelectedIssue {
   key: string;
   number: number;
   base: string;
+  planningRevision?: string;
   routing?: import("./routing.mjs").RoutingSelection;
 }
 
 export interface SupervisedCycle {
   selection: SelectedIssue;
   initialHistory: QueueParticipant[];
+  prerequisite?: {
+    declaration: import("./queue.js").Prerequisite;
+    blocked: SelectedIssue;
+    executor: string;
+  };
 }
 
 export interface IssueObservation {
@@ -35,6 +52,10 @@ export interface IssueObservation {
 }
 
 export interface SupervisionAdapter {
+  prerequisiteOwners?(
+    config: LoopConfig,
+    blocked: SelectedIssue,
+  ): Promise<"absent" | "live" | "unknown">;
   currentMain(config: LoopConfig, executingRoot: string): Promise<string>;
   issue(config: LoopConfig, number: number): Promise<IssueObservation>;
   removeReady(config: LoopConfig, number: number): Promise<void>;
@@ -45,6 +66,8 @@ export interface SupervisionAdapter {
 export function isItemStopReason(reason: string) {
   return (
     [
+      "author-failed",
+      "author-malformed",
       "operator-evidence-failed",
       "continuation-failed",
       "continuation-repair-not-authorized",
@@ -88,13 +111,17 @@ function validSelection(value: unknown, cycle: number): value is SelectedIssue {
       "key",
       "number",
       "base",
+      ...(value && typeof value === "object" && Object.hasOwn(value, "planningRevision")
+        ? ["planningRevision"]
+        : []),
       ...(value && typeof value === "object" && Object.hasOwn(value, "routing") ? ["routing"] : []),
     ]) &&
     value.cycle === cycle &&
     /^[A-Za-z0-9][A-Za-z0-9-]*$/.test(value.key) &&
     Number.isSafeInteger(value.number) &&
     value.number > 0 &&
-    SHA.test(value.base)
+    SHA.test(value.base) &&
+    (!Object.hasOwn(value, "planningRevision") || value.planningRevision === value.base)
   );
 }
 
@@ -132,7 +159,9 @@ async function completedItemStop(directory: string, cycle: number, selection: Se
       !Array.isArray(completed.history)
     )
       throw new QueueBlocked(`malformed-supervision-record:cycle-${cycle}-stop-${stop}-complete`);
-    if (isItemStopReason(intent.reason)) return completed.history as QueueParticipant[];
+    // Old author-failed completions were run notes, not parking receipts.
+    if (intent.reason !== "author-failed" && isItemStopReason(intent.reason))
+      return completed.history as QueueParticipant[];
   }
 }
 
@@ -140,14 +169,277 @@ function stateDirectory(config: LoopConfig) {
   return resolve(config.stateRoot, config.run);
 }
 
+function supervisionDirectory(config: LoopConfig, cycle: SupervisedCycle) {
+  return cycle.prerequisite
+    ? resolve(stateDirectory(config), "prerequisite")
+    : stateDirectory(config);
+}
+
+// ISS-187: observation only. The executor is Linux; an unavailable census or
+// a still-existing worker with uncertain identity defers admission, never reclaims it.
+export async function prerequisiteOwners(
+  config: LoopConfig,
+  blocked: SelectedIssue,
+): Promise<"absent" | "live" | "unknown"> {
+  try {
+    if (process.platform !== "linux") return "unknown";
+    for (const pid of await readdir("/proc")) {
+      if (!/^\d+$/.test(pid) || Number(pid) === process.pid) continue;
+      let argv: string[];
+      try {
+        argv = (await readFile(`/proc/${pid}/cmdline`, "utf8")).split("\0").filter(Boolean);
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+        return "unknown";
+      }
+      const entry = argv.findIndex((arg) => /(?:^|\/)supervise\.mjs$/.test(arg));
+      if (entry < 0) continue;
+      try {
+        if ((await readlink(`/proc/${pid}/exe`)) !== process.execPath) continue;
+        const cwd = await readlink(`/proc/${pid}/cwd`);
+        const other = JSON.parse(await readFile(resolve(cwd, argv[entry + 1]!), "utf8"));
+        if (other.run === config.run && resolve(other.stateRoot) === resolve(config.stateRoot))
+          return "live";
+      } catch {
+        return "unknown";
+      }
+    }
+    const observeWorkers = async (directory: string): Promise<"absent" | "live" | "unknown"> => {
+      let rows;
+      try {
+        rows = await readdir(directory, { withFileTypes: true });
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === "ENOENT") return "absent";
+        return "unknown";
+      }
+      for (const row of rows) {
+        if (row.isDirectory()) {
+          const state = await observeWorkers(resolve(directory, row.name));
+          if (state !== "absent") return state;
+        } else if (
+          /^(author|reviewer)-intent\.json$/.test(row.name) &&
+          (await optionalRecord(directory, row.name.replace("-intent.json", "-attempt"))) === ABSENT
+        ) {
+          return "unknown";
+        } else if (
+          /^(author|reviewer)-attempt\.json$/.test(row.name) ||
+          /-process\.json$/.test(row.name)
+        ) {
+          const worker = JSON.parse(await readFile(resolve(directory, row.name), "utf8"));
+          if (!Number.isSafeInteger(worker.pid) || worker.pid <= 0) return "unknown";
+          try {
+            const argv = (await readFile(`/proc/${worker.pid}/cmdline`, "utf8")).split("\0");
+            const cwd = await readlink(`/proc/${worker.pid}/cwd`);
+            const pinned = await optionalRecord(directory, "config");
+            if (
+              pinned !== ABSENT &&
+              [pinned.config?.worktree, pinned.config?.reviewWorktree].includes(cwd) &&
+              argv.some((arg) => arg === config.codexExecutable)
+            )
+              return "live";
+            return "unknown";
+          } catch (error) {
+            if ((error as NodeJS.ErrnoException).code !== "ENOENT") return "unknown";
+          }
+        }
+      }
+      return "absent";
+    };
+    for (let number = 1; number <= config.attemptCeiling; number++) {
+      const state = await observeWorkers(
+        resolve(stateDirectory(config), `${blocked.key.toLowerCase()}-attempt-${number}`),
+      );
+      if (state !== "absent") return state;
+    }
+    return "absent";
+  } catch {
+    return "unknown";
+  }
+}
+
+async function admitPrerequisite(
+  config: LoopConfig,
+  selected: SelectedIssue,
+  initialHistory: QueueParticipant[],
+  adapter: SupervisionAdapter,
+  repository: RepositoryAdapter,
+  validateExecutor: () => Promise<unknown>,
+): Promise<SupervisedCycle> {
+  const declaration = config.prerequisite!;
+  const refuse = () => {
+    throw new QueueBlocked("prerequisite-not-admitted");
+  };
+  if (
+    declaration.blockedCycle !== selected.cycle ||
+    declaration.blockedKey !== selected.key ||
+    declaration.blockedNumber !== selected.number
+  )
+    refuse();
+  const directory = stateDirectory(config);
+  const intent = await optionalRecord(
+    directory,
+    `cycle-${selected.cycle}-stop-${declaration.stop}`,
+  );
+  const completed = await optionalRecord(
+    directory,
+    `cycle-${selected.cycle}-stop-${declaration.stop}-complete`,
+  );
+  if (
+    intent === ABSENT ||
+    completed === ABSENT ||
+    isItemStopReason(intent.reason) ||
+    JSON.stringify(intent.selection) !== JSON.stringify(selected) ||
+    JSON.stringify(completed.selection) !== JSON.stringify(selected) ||
+    completed.stop !== declaration.stop ||
+    (await optionalRecord(directory, `cycle-${selected.cycle}-stop-${declaration.stop + 1}`)) !==
+      ABSENT
+  )
+    refuse();
+  const observed = await adapter.issue(config, selected.number);
+  assertIssue(selected, observed);
+  if (observed.state !== "OPEN" || observed.key !== selected.key) refuse();
+  const owners = await (adapter.prerequisiteOwners ?? prerequisiteOwners)(config, selected);
+  if (owners !== "absent") throw new QueueBlocked(`prerequisite-owner-${owners}`);
+  const prior = await prerequisiteSourceFailure(config, {
+    key: declaration.key,
+    number: declaration.number,
+    base: selected.base,
+  });
+  if (!prior) refuse();
+  await validateExecutor();
+  const base = await adapter.currentMain(config, config.stableExecutorRoot);
+  if (!SHA.test(base)) throw new QueueBlocked("current-main-unavailable");
+  const context = {
+    repository: config.repository,
+    executorRoot: config.stableExecutorRoot,
+    planningRevision: base,
+    gitExecutable: config.gitExecutable,
+  };
+  const candidates = await repository.selectCandidates(context);
+  const candidate = candidates.find(
+    (row) => row.key === declaration.key && row.number === declaration.number,
+  );
+  if (!candidate) refuse();
+  const ready = await adapter.issue(config, declaration.number);
+  assertIssue(declaration, ready);
+  if (ready.state !== "OPEN" || ready.key !== declaration.key || !ready.labels.includes("ready"))
+    refuse();
+  const brief = await repository.issueContext({
+    ...context,
+    key: declaration.key,
+    number: declaration.number,
+  });
+  const routing = resolveRouting(config.adapter, brief.routing, config.routingRows);
+  const author = routing?.author[0] ?? config.author;
+  const reviewer = routing?.reviewer[0] ?? config.reviewer;
+  if (!author || !reviewer) throw new QueueBlocked("routing-row-unconfigured");
+  if (author.model === reviewer.model) throw new QueueBlocked("routing-reviewer-not-independent");
+  const executor = (
+    await exec(config.gitExecutable, ["-C", config.stableExecutorRoot, "rev-parse", "HEAD"])
+  ).stdout.trim();
+  return {
+    selection: { cycle: selected.cycle, ...candidate!, base, planningRevision: base },
+    initialHistory,
+    prerequisite: { declaration, blocked: selected, executor },
+  };
+}
+
 export async function nextCycle(
   config: LoopConfig,
   executingRoot: string,
   adapter: SupervisionAdapter,
   repositoryAdapter: RepositoryAdapter,
+  validateExecutor: () => Promise<unknown> = () => validateLoopExecutor(config, executingRoot),
 ): Promise<SupervisedCycle | undefined> {
   const directory = stateDirectory(config);
+  const detourDirectory = resolve(directory, "prerequisite");
+  const detour = (await optionalRecord(detourDirectory, "admission")) as
+    SupervisedCycle | typeof ABSENT;
+  let releasedHistory: QueueParticipant[] | undefined;
+  if (detour !== ABSENT) {
+    const completed = await optionalRecord(
+      detourDirectory,
+      `cycle-${detour.selection.cycle}-complete`,
+    );
+    if (completed === ABSENT) {
+      if (JSON.stringify(config.prerequisite) !== JSON.stringify(detour.prerequisite!.declaration))
+        throw new QueueBlocked("prerequisite-held");
+      await validateExecutor();
+      const head = (
+        await exec(config.gitExecutable, ["-C", config.stableExecutorRoot, "rev-parse", "HEAD"])
+      ).stdout.trim();
+      if (head !== detour.prerequisite!.executor)
+        throw new QueueBlocked("prerequisite-executor-moved");
+      const failed = await retainedSourceFailure(config, detour.selection);
+      if (failed && failed.attempts > 1) {
+        // Observe terminal author FAIL before composition can project it into
+        // another source attempt. Reuse its existing stop ordinal on restart.
+        await reconcilePendingStop(config, detour, adapter, repositoryAdapter);
+        let retainedStop: number | undefined;
+        for (let stop = 1; ; stop++) {
+          const intent = await optionalRecord(
+            detourDirectory,
+            `cycle-${detour.selection.cycle}-stop-${stop}`,
+          );
+          if (intent === ABSENT) break;
+          if (intent.reason === "author-failed") {
+            retainedStop = stop;
+            break;
+          }
+        }
+        await stopCycle(
+          config,
+          { ...detour, initialHistory: failed.history },
+          "author-failed",
+          failed.attempts,
+          adapter,
+          repositoryAdapter,
+          failed.diagnostics,
+          retainedStop,
+        );
+        throw new QueueBlocked("prerequisite-held");
+      }
+      const stoppedHistory = await completedItemStop(
+        detourDirectory,
+        detour.selection.cycle,
+        detour.selection,
+      );
+      const observed = await adapter.issue(config, detour.selection.number);
+      assertIssue(detour.selection, observed);
+      if (stoppedHistory || observed.state === "CLOSED") {
+        let history = stoppedHistory ?? detour.initialHistory;
+        if (!stoppedHistory)
+          for (let attempt = 2; attempt <= config.attemptCeiling; attempt++) {
+            const current = await readQueueHistory({
+              stateDirectory: resolve(
+                directory,
+                `${detour.selection.key.toLowerCase()}-attempt-${attempt}`,
+              ),
+              nativeLaunchCeiling: config.nativeLaunchCeiling,
+              initialHistory: [],
+            });
+            if (current.length > history.length) history = current;
+          }
+        await record(detourDirectory, `cycle-${detour.selection.cycle}-complete`, {
+          selection: detour.selection,
+          history,
+        });
+        throw new QueueBlocked("prerequisite-held");
+      }
+      if (observed.state !== "OPEN") throw new QueueBlocked("issue-observation-unavailable");
+      return detour;
+    }
+    const grant = config.blockedCycleResume;
+    if (
+      !grant ||
+      grant.cycle !== detour.prerequisite!.blocked.cycle ||
+      grant.authorityUrl === detour.prerequisite!.declaration.authorityUrl
+    )
+      throw new QueueBlocked("prerequisite-held");
+    releasedHistory = completed.history;
+  } else if (config.blockedCycleResume) throw new QueueBlocked("prerequisite-not-admitted");
   let cycle = 1;
+  let declaration = config.prerequisite;
   let initialHistory: QueueParticipant[] = [];
   for (;;) {
     const selected = await optionalRecord(directory, `cycle-${cycle}-selected`);
@@ -162,6 +454,12 @@ export async function nextCycle(
       )
         throw new QueueBlocked(`malformed-supervision-record:cycle-${cycle}-complete`);
       validateHistory(completed.history, config.nativeLaunchCeiling);
+      if (
+        declaration?.blockedCycle === cycle &&
+        ((await completedItemStop(directory, cycle, selected)) ||
+          (await retainedSourceFailure(config, selected)))
+      )
+        declaration = undefined;
       initialHistory = completed.history;
       cycle += 1;
       continue;
@@ -169,8 +467,42 @@ export async function nextCycle(
     if (selected !== ABSENT) {
       if (!validSelection(selected, cycle))
         throw new QueueBlocked(`malformed-supervision-record:cycle-${cycle}-selected`);
+      if (releasedHistory && cycle === detourPrerequisiteCycle(detour))
+        initialHistory = releasedHistory;
+      const ordinaryFailure = declaration && (await retainedSourceFailure(config, selected));
+      if (ordinaryFailure) declaration = undefined;
+      if (declaration && !(await completedItemStop(directory, cycle, selected)))
+        return admitPrerequisite(
+          config,
+          selected,
+          initialHistory,
+          adapter,
+          repositoryAdapter,
+          validateExecutor,
+        );
+      try {
+        await validateExecutor();
+      } catch (error) {
+        // ISS-161: the caller has no active cycle until nextCycle returns. Report
+        // executor rejection here, without reconciling any pending work stop.
+        let stop = 1;
+        while ((await optionalRecord(directory, `cycle-${cycle}-stop-${stop}`)) !== ABSENT)
+          stop += 1;
+        await stopCycle(
+          config,
+          { selection: selected, initialHistory },
+          error instanceof QueueBlocked ? error.reason : "queue-internal-error",
+          0,
+          adapter,
+          repositoryAdapter,
+          error instanceof QueueBlocked ? error.diagnostics : undefined,
+          stop,
+        );
+        throw error;
+      }
       const stoppedHistory = await completedItemStop(directory, cycle, selected);
       if (stoppedHistory) {
+        declaration = undefined;
         validateHistory(stoppedHistory, config.nativeLaunchCeiling);
         initialHistory = stoppedHistory;
         cycle += 1;
@@ -195,6 +527,9 @@ export async function nextCycle(
           }
           slugs.push(continuationSlug(config.acceptedReplan));
         }
+        // ISS-167: the integration's launches live beneath its retained attempt.
+        if (config.integrationContinuation?.issueKey === selected.key)
+          slugs.push(`${basename(config.integrationContinuation.attemptDirectory)}/integration`);
         for (const slug of slugs) {
           const history = await readQueueHistory({
             stateDirectory: resolve(directory, slug),
@@ -211,13 +546,70 @@ export async function nextCycle(
         continue;
       }
       if (observed.state !== "OPEN") throw new QueueBlocked("issue-observation-unavailable");
+      const failed = await retainedSourceFailure(config, selected);
+      if (failed) {
+        const current = { selection: selected, initialHistory: failed.history };
+        let authorStop: number | undefined;
+        // Finish pending notes, including an upgrade's later pilot stop. Replay the
+        // original author marker even if its old run-scoped completion exists.
+        for (let stop = 1; ; stop++) {
+          const intent = await optionalRecord(directory, `cycle-${cycle}-stop-${stop}`);
+          if (intent === ABSENT) break;
+          if (intent.reason === "author-failed") {
+            authorStop ??= stop;
+            continue;
+          }
+          if ((await optionalRecord(directory, `cycle-${cycle}-stop-${stop}-complete`)) === ABSENT)
+            await stopCycle(
+              config,
+              current,
+              intent.reason,
+              intent.attempts,
+              adapter,
+              repositoryAdapter,
+              undefined,
+              stop,
+            );
+        }
+        await stopCycle(
+          config,
+          current,
+          "author-failed",
+          failed.attempts,
+          adapter,
+          repositoryAdapter,
+          failed.diagnostics,
+          authorStop,
+        );
+        initialHistory = failed.history;
+        cycle += 1;
+        continue;
+      }
       return { selection: selected, initialHistory };
     }
 
+    if (declaration) throw new QueueBlocked("prerequisite-not-admitted");
+    const readMain = async () => {
+      try {
+        const main = await adapter.currentMain(config, config.stableExecutorRoot);
+        if (!SHA.test(main)) throw new Error(`Invalid current main revision: ${String(main)}`);
+        return main;
+      } catch (error) {
+        throw new QueueBlocked(
+          "current-main-unavailable",
+          error instanceof QueueBlocked ? (error.diagnostics ?? error.message) : String(error),
+        );
+      }
+    };
+    const planningRevision = config.adapter === "self" ? await readMain() : undefined;
     const candidates = await repositoryAdapter.selectCandidates({
       repository: config.repository,
       executorRoot: config.stableExecutorRoot,
+      ...(planningRevision === undefined
+        ? {}
+        : { planningRevision, gitExecutable: config.gitExecutable }),
       ...(config.targetMilestone === undefined ? {} : { targetMilestone: config.targetMilestone }),
+      ...(config.opsAdmission === undefined ? {} : { opsAdmission: config.opsAdmission }),
     });
     if (!Array.isArray(candidates)) throw new QueueBlocked("malformed-repository-candidates");
     const issue = candidates[0];
@@ -235,9 +627,8 @@ export async function nextCycle(
       throw new QueueBlocked("malformed-repository-candidates");
     let base;
     try {
-      base = await adapter.currentMain(config, config.stableExecutorRoot);
-      if (!SHA.test(base)) throw new QueueBlocked("current-main-unavailable");
-    } catch {
+      base = planningRevision ?? (await readMain());
+    } catch (error) {
       const target = { cycle, ...issue };
       await postLearningNote(
         config,
@@ -245,13 +636,22 @@ export async function nextCycle(
         stopMessage(config, target, 0, "current-main-unavailable", 0),
         adapter,
       );
-      throw new QueueBlocked("current-main-unavailable");
+      throw error;
     }
     return {
-      selection: { cycle, ...issue, base },
+      selection: {
+        cycle,
+        ...issue,
+        base,
+        ...(planningRevision === undefined ? {} : { planningRevision }),
+      },
       initialHistory,
     };
   }
+}
+
+function detourPrerequisiteCycle(detour: SupervisedCycle | typeof ABSENT) {
+  return detour === ABSENT ? undefined : detour.prerequisite!.blocked.cycle;
 }
 
 function assertIssue(selection: Pick<SelectedIssue, "key">, observed: IssueObservation) {
@@ -260,8 +660,9 @@ function assertIssue(selection: Pick<SelectedIssue, "key">, observed: IssueObser
 }
 
 export async function persistCycle(config: LoopConfig, cycle: SupervisedCycle) {
-  const directory = stateDirectory(config);
+  const directory = supervisionDirectory(config, cycle);
   await mkdir(directory, { recursive: true });
+  if (cycle.prerequisite) await record(directory, "admission", cycle);
   await record(directory, `cycle-${cycle.selection.cycle}-selected`, cycle.selection);
 }
 
@@ -298,7 +699,7 @@ export async function completeCycle(
     assertIssue(cycle.selection, observed);
   }
   if (observed.state !== "CLOSED") throw new QueueBlocked("completed-issue-state-unknown");
-  await record(stateDirectory(config), `cycle-${cycle.selection.cycle}-complete`, {
+  await record(supervisionDirectory(config, cycle), `cycle-${cycle.selection.cycle}-complete`, {
     selection: cycle.selection,
     history,
   });
@@ -314,6 +715,8 @@ type RecoveryContext = {
 type RecoveryAction = (context: RecoveryContext) => string;
 
 const stopRecoveryActions: Record<ActionableStopReason, RecoveryAction> = {
+  "author-failed": ({ evidence }) =>
+    `inspect the failed source author's terminal and trace under ${evidence}, resolve the reported blocker, and explicitly restore planning readiness before selecting this issue again`,
   "completed-issue-state-unknown": ({ issue }) =>
     `check PR delivery for issue #${issue} on GitHub; if the PR merged, close the issue by hand and restart so the cycle reconciles`,
   "issue-observation-unavailable": () =>
@@ -328,6 +731,8 @@ const stopRecoveryActions: Record<ActionableStopReason, RecoveryAction> = {
     `inspect ${evidence} for the format gate output, format the reported files, and rerun format:check`,
   "reviewer-malformed": ({ evidence }) =>
     `inspect ${evidence} for the reviewer terminal, correct the verdict/findings/G0 shape, and restart`,
+  "author-malformed": ({ evidence }) =>
+    `inspect ${evidence} for the author trace, retained partial work and parse diagnostic, correct the verdict transport, and explicitly unpark after verification`,
   "exit-receipt-timeout": ({ evidence }) =>
     `inspect ${evidence} for the worker attempt and trace, restore the missing exit receipt, and restart`,
   "provider-unavailable": () =>
@@ -376,12 +781,13 @@ function stopMessage(
         participant.item.toLowerCase().startsWith(`${selection.key.toLowerCase()}:`) ||
         participant.item.toLowerCase().startsWith(`${selection.key.toLowerCase()}-`),
     )
-    .map(({ role, routing, placement, outcome }) => ({
+    .map(({ role, routing, placement, rung, outcome }) => ({
       row: routing?.row ?? "unrecorded",
       review: routing?.review,
       role,
       model: placement?.model ?? "unrecorded",
       effort: placement?.effort,
+      rung,
       outcome,
     }));
   const routingDetail = placements.length
@@ -422,9 +828,10 @@ export async function stopCycle(
   adapter: SupervisionAdapter,
   repositoryAdapter: RepositoryAdapter,
   diagnostics?: string,
+  retainedStop?: number,
 ) {
   validateHistory(cycle.initialHistory, config.nativeLaunchCeiling);
-  const directory = stateDirectory(config);
+  const directory = supervisionDirectory(config, cycle);
   // A setup stop can have a selected row without having launched a worker yet.
   let routing = cycle.selection.routing;
   const slugs = config.acceptedReplan
@@ -434,10 +841,10 @@ export async function stopCycle(
         (_, index) => `${cycle.selection.key.toLowerCase()}-attempt-${index + 1}`,
       );
   for (const slug of slugs) {
-    const attempt = await optionalRecord(resolve(directory, slug), "attempt");
+    const attempt = await optionalRecord(resolve(stateDirectory(config), slug), "attempt");
     if (attempt !== ABSENT && attempt.routing) routing = attempt.routing;
   }
-  let stop = 1;
+  let stop = retainedStop ?? 1;
   let intent: any;
   for (;;) {
     const current = await optionalRecord(directory, `cycle-${cycle.selection.cycle}-stop-${stop}`);
@@ -467,7 +874,7 @@ export async function stopCycle(
       await record(directory, `cycle-${cycle.selection.cycle}-stop-${stop}`, intent);
       break;
     }
-    if (completed === ABSENT) {
+    if (completed === ABSENT || retainedStop !== undefined) {
       intent = current;
       break;
     }
@@ -487,7 +894,11 @@ export async function stopCycle(
       `malformed-supervision-record:cycle-${cycle.selection.cycle}-stop-${stop}`,
     );
   validateHistory(intent.history, config.nativeLaunchCeiling);
-  const scope = isItemStopReason(intent.reason) ? "item" : "run";
+  const scope =
+    isItemStopReason(intent.reason) &&
+    (intent.reason !== "author-failed" || (await retainedSourceFailure(config, cycle.selection)))
+      ? "item"
+      : "run";
 
   let unpark: string | undefined;
   if (scope === "item") {
@@ -532,6 +943,11 @@ export async function stopCycle(
     stop,
     history: intent.history,
   });
+  if (scope === "item" && (intent.reason === "author-failed" || cycle.prerequisite))
+    await record(directory, `cycle-${cycle.selection.cycle}-complete`, {
+      selection: cycle.selection,
+      history: cycle.initialHistory,
+    });
   return scope;
 }
 
@@ -541,7 +957,7 @@ export async function reconcilePendingStop(
   adapter: SupervisionAdapter,
   repositoryAdapter: RepositoryAdapter,
 ) {
-  const directory = stateDirectory(config);
+  const directory = supervisionDirectory(config, cycle);
   for (let stop = 1; ; stop += 1) {
     const intent = await optionalRecord(directory, `cycle-${cycle.selection.cycle}-stop-${stop}`);
     if (intent === ABSENT) return undefined;
@@ -558,6 +974,29 @@ export async function reconcilePendingStop(
       adapter,
       repositoryAdapter,
     );
+    // ISS-157: finish the old learning note, then let native delivery admit the grant.
+    // Completed notes already follow that path. The saved stop itself remains untouched.
+    const grant = config.gateStopAuthorization;
+    if (
+      scope === "run" &&
+      grant &&
+      !config.acceptedReplan &&
+      /^gate-(host-failed|attribution-unknown):.+$/.test(intent.reason)
+    ) {
+      const attempt = await optionalRecord(resolve(grant.stateDirectory, ".."), "attempt");
+      const stopped = await optionalRecord(grant.stateDirectory, "gate-stop");
+      if (
+        attempt !== ABSENT &&
+        stopped !== ABSENT &&
+        attempt.run === config.run &&
+        attempt.phase === "delivery" &&
+        attempt.stateDirectory === grant.stateDirectory &&
+        attempt.issue ===
+          `https://github.com/${config.repository}/issues/${cycle.selection.number}` &&
+        stopped.reason === intent.reason
+      )
+        return undefined;
+    }
     return { scope, reason: intent.reason };
   }
 }
@@ -619,8 +1058,8 @@ export function repositorySupervisionAdapter(): SupervisionAdapter {
         return (
           await run(config.gitExecutable, ["-C", repositoryRoot, "rev-parse", main], repositoryRoot)
         ).stdout.trim();
-      } catch {
-        throw new QueueBlocked("current-main-unavailable");
+      } catch (error) {
+        throw new QueueBlocked("current-main-unavailable", String(error));
       }
     },
     issue: observe,

@@ -19,8 +19,22 @@ export function withinConflictHunks(before: string, after: string): boolean {
   if (markers.test(after)) return false;
   const fixed = before.split(hunks);
   if (fixed.length < 2) return false;
-  const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  return new RegExp(`^${fixed.map(escape).join("[\\s\\S]*")}$`).exec(after)?.[0] === after;
+  const prefix = fixed[0]!;
+  const suffix = fixed.at(-1)!;
+  if (!after.startsWith(prefix) || !after.endsWith(suffix)) return false;
+  const end = after.length - suffix.length;
+  let cursor = prefix.length;
+  if (cursor > end) return false;
+  // Reserve the anchored suffix so no interior match can reuse its bytes.
+  // Earliest literal matches leave maximal room for later segments; the cursor
+  // only advances, scanning at most this window once, without placement retries.
+  const window = after.slice(0, end);
+  for (const segment of fixed.slice(1, -1)) {
+    const start = window.indexOf(segment, cursor);
+    if (start < 0) return false;
+    cursor = start + segment.length;
+  }
+  return true;
 }
 
 export async function resolveConflict(
@@ -59,6 +73,11 @@ export async function resolveConflict(
     }
     await save();
   }
+  // ISS-167: a ruled fence bounds which captured files may be resolved. Checked before
+  // any seed or launch, so an outside-path conflict stops with its evidence saved.
+  for (const file of Object.keys(conflict.files))
+    if (config.correctionPaths && !config.correctionPaths.includes(file))
+      throw new QueueBlocked("conflict-resolution-scope-escape", file);
   if (!conflict.seed) {
     let head = await git(["rev-parse", "HEAD"]);
     if (head === previousHead) {

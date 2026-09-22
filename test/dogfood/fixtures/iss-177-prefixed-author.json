@@ -1,0 +1,23 @@
+[
+  {
+    "type": "thread.started",
+    "thread_id": "01a0adcf-b2d2-7273-a8d8-3671ae765990"
+  },
+  {
+    "type": "item.completed",
+    "item": {
+      "id": "item_34",
+      "type": "agent_message",
+      "text": "Summary of the work before the final verdict.\n\n**Change** (only `test/dogfood/queue.test.ts`, HEAD unchanged at `804e935`): `loopFixture()` now appends the `[user]` stanza to the fresh private repository's `.git/config` with `appendFile` instead of running two `git config` processes, and memoizes the per-file `which`/`where.exe git` lookup instead of repeating it per fixture. `.git/config` bytes and `GIT_COMMITTER_IDENT` were verified identical between the two approaches (`cmp` on two fresh `git init` repos); no user or global config is touched.\n\n**Measurements** (same host, PATH `git` wrapper counting every process including the runtime adapters; evidence in `author-temp/measure/`): per-tuple setup Git processes 31 → 29 for all 16 modes, lifecycle counts identical mode-by-mode (e.g. `correction` 207, `spent-legacy-correction` 146). Interleaved control/candidate/control/candidate runs of the two formerly failing modes: setup ~205/197/201/210ms vs ~209/184/193/181ms; the ~10ms per-tuple saving is inside run noise locally. Full file: 6622 → 6472 Git processes, normalized op diff shows only `config user.name/email` 83 → 8 (the 8 remaining are updater clones, not fixture setup); 100/100 tests pass at 47.8s vs 48.3s base.\n\nGates: `pnpm typecheck`, `pnpm format:check`, `pnpm planning:check`, and `pnpm test` (887 passed, 3 skipped) all green.\n\n{\"run\":\"m1-iss146-147-20260914T2325\",\"role\":\"author\",\"head\":\"804e9357a88868daab31b211966f645baeca6c02\",\"verdict\":\"PASS\",\"summary\":\"One-file fixture change in test/dogfood/queue.test.ts: loopFixture appends the fixed [user] stanza to the private repo's .git/config via appendFile (byte-identical to the two git config calls; GIT_COMMITTER_IDENT verified equal) and memoizes the per-file which/where.exe git lookup. Measured with a PATH git wrapper covering runtime adapter calls: setup Git processes 31->29 per tuple across all 16 modes, lifecycle op counts identical per mode; full file 6622->6472 processes with normalized op diff showing only config user.name/email 83->8 (remaining 8 are updater clones, out of scope). Interleaved control/candidate runs of spent-legacy-correction and correction show the ~10ms/tuple saving is within local run noise; reduced process count is work reduction, not causal proof of the Windows timeout fix (AC2 caveat). Removed work does not reappear in hooks/cleanup. Gates green: typecheck, format:check, planning:check, pnpm test (887 passed, 3 skipped). Measurement artifacts retained under author-temp/measure. AC3 hosted three-OS evidence remains for delivery.\"}"
+    }
+  },
+  {
+    "type": "turn.completed",
+    "usage": {
+      "input_tokens": 1822104,
+      "cached_input_tokens": 1721221,
+      "output_tokens": 22608,
+      "reasoning_output_tokens": 12575
+    }
+  }
+]

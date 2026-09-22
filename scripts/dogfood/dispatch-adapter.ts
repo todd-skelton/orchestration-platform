@@ -24,7 +24,9 @@ async function optionalText(path: string) {
 }
 const pause = (ms: number) => new Promise((done) => setTimeout(done, ms));
 export const DEFAULT_PROVIDER_OUTAGE_CEILING_MS = 30 * 60_000;
-type ProviderProbe = (signal: AbortSignal) => Promise<void>;
+// The probe receives the one absolute wait deadline so a late observation
+// compares a known reset with the remaining budget, never a fresh duration.
+type ProviderProbe = (signal: AbortSignal, deadline: number) => Promise<void>;
 
 // ISS-129 recorded multi-minute pool outages; a launch-time probe alone was insufficient.
 export async function waitForProvider(
@@ -38,7 +40,10 @@ export async function waitForProvider(
     clock.now() + (config.providerOutageCeilingMs ?? DEFAULT_PROVIDER_OUTAGE_CEILING_MS);
   for (;;) {
     try {
-      await probe(AbortSignal.timeout(Math.max(1, Math.min(5_000, deadline - clock.now()))));
+      await probe(
+        AbortSignal.timeout(Math.max(1, Math.min(5_000, deadline - clock.now()))),
+        deadline,
+      );
       return;
     } catch (error) {
       if (error instanceof QueueBlocked && error.reason === "provider-model-refused") throw error;
@@ -57,6 +62,7 @@ export async function probeProvider(
   signal: AbortSignal,
   request = fetch,
   model?: string,
+  poolReady = false,
 ) {
   let token: string;
   try {
@@ -82,9 +88,104 @@ export async function probeProvider(
       )
     )
       throw new Error("malformed provider models response");
-    if (!models.data.some((entry) => entry.id === model))
-      throw new QueueBlocked("provider-model-refused", model);
+    if (!poolReady && !models.data.some((entry) => entry.id === model))
+      throw new QueueBlocked(
+        "provider-model-refused",
+        `models catalog omitted ${model}; catalog head: ${models.data
+          .slice(0, 10)
+          .map((entry) => entry.id)
+          .join(", ")}`.slice(0, 200),
+      );
   } else await response.body?.cancel();
+}
+
+// ISS-162: `m1-iss154-20260915T1004` attempt 1 spent five native launches on
+// `auth_unavailable` while every Codex credential was cooling down; the models
+// probe still listed the model. The pool supervisor's per-account, per-model
+// routing status is the launch admission check. A block that clears inside the
+// outage ceiling waits like an outage; a longer one (a weekly window) is a
+// refusal, so the role advances its ISS-158 ladder (other vendor last) and an
+// exhausted ladder stops the host with the reset time, not after a wasted
+// ceiling.
+export async function probePoolModel(
+  statusUrl: string,
+  model: string,
+  signal: AbortSignal,
+  deadline: number,
+  request = fetch,
+  now = Date.now,
+) {
+  const response = await request(statusUrl, { signal });
+  if (!response.ok) {
+    await response.body?.cancel();
+    throw new Error(`pool status probe returned HTTP ${response.status}`);
+  }
+  const status = (await response.json()) as { accounts?: unknown } | null;
+  const malformed = () => new Error("malformed pool status response");
+  if (!Array.isArray(status?.accounts)) throw malformed();
+  const entries: { status: "ready" | "blocked"; next_retry_after?: string }[] = [];
+  let mentioned = false;
+  for (const account of status.accounts as unknown[]) {
+    if (!isRecord(account)) throw malformed();
+    const { disabled, routingModels } = account;
+    if (disabled !== undefined && typeof disabled !== "boolean") throw malformed();
+    if (routingModels !== undefined && !isRecord(routingModels)) throw malformed();
+    if (!routingModels || !(model in routingModels)) continue;
+    const entry = routingModels[model];
+    if (
+      !isRecord(entry) ||
+      (entry.status !== "ready" && entry.status !== "blocked") ||
+      (entry.next_retry_after !== undefined && typeof entry.next_retry_after !== "string")
+    )
+      throw malformed();
+    mentioned = true;
+    if (disabled) continue;
+    entries.push(entry as { status: "ready" | "blocked"; next_retry_after?: string });
+  }
+  // The pool does not know the model, or its observations are stale: the
+  // models probe alone decides.
+  if (!mentioned) return;
+  if (entries.some((entry) => entry.status === "ready")) return true;
+  // Mentioned only by disabled accounts: no eligible account, no known end.
+  if (entries.length === 0) throw new Error(`pool has no enabled account for ${model}`);
+  // Only a block whose every end is a known future time can be measured
+  // against the deadline; an unknown or past end is uncertainty, so wait.
+  const resets = entries.map((entry) => Date.parse(entry.next_retry_after ?? ""));
+  const known = resets.every((time) => Number.isFinite(time) && time > now());
+  const until = known ? new Date(Math.min(...resets)).toISOString() : undefined;
+  const diagnostics = `pool blocks ${model} at every account${until ? ` until ${until}` : ""}`;
+  if (until && Date.parse(until) > deadline)
+    throw new QueueBlocked("provider-model-refused", diagnostics);
+  throw new Error(diagnostics);
+}
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
+
+// One wait for both admission probes: the models probe (ISS-129) and the pool
+// status probe, sharing the single outage ceiling and its reporting cadence.
+export async function admitLaunch(
+  config: Config,
+  role: Role,
+  environment: NodeJS.ProcessEnv = process.env,
+  request = fetch,
+  clock?: { now: () => number; pause: (ms: number) => Promise<void> },
+  report?: (status: object) => void,
+) {
+  const baseUrl = environment.CODEX_PROVIDER_BASE_URL;
+  const authCommand = environment.CODEX_PROVIDER_AUTH_COMMAND;
+  const statusUrl = environment.CODEX_POOL_STATUS_URL;
+  if (!(baseUrl && authCommand)) return;
+  await waitForProvider(
+    config,
+    async (signal, deadline) => {
+      const poolReady = statusUrl
+        ? await probePoolModel(statusUrl, config[role].model, signal, deadline, request, clock?.now)
+        : false;
+      await probeProvider(baseUrl, authCommand, signal, request, config[role].model, poolReady);
+    },
+    clock,
+    report,
+  );
 }
 
 export function modelRefused(message: string) {
@@ -226,7 +327,29 @@ function events(trace: string, complete: boolean): any[] {
   if (!complete && !trace.endsWith("\n")) lines.pop();
   return lines.filter((line) => line.trim()).map((line) => JSON.parse(line));
 }
-function reviewerVerdict(message: string): unknown {
+// ISS-198: reviewer 75f8e370 in m1-iss167-20260921T1457 closed its sole
+// schema-valid verdict with a Markdown fence and was discarded as malformed.
+// One well-formed fenced block is transport, not trailing prose: the opening
+// fence line immediately precedes the object and only the closing fence
+// follows it. A second block, prose after the fence or a fence without an
+// object still refuse.
+const OPENING_FENCE = /(?:^|\n)[ \t]*```[^\n`]*\n[ \t]*$/;
+const CLOSING_FENCE = /^[ \t]*\r?\n\s*```\s*$/;
+// The retry prompt and stop diagnostics quote this many characters of a
+// discarded final message (half from each end, where framing faults sit),
+// JSON-quoted so the excerpt stays one delimited line.
+export const MAX_VERDICT_EXCERPT_LENGTH = 600;
+export function verdictExcerpt(message: string) {
+  if (message.length <= MAX_VERDICT_EXCERPT_LENGTH) return JSON.stringify(message);
+  const half = MAX_VERDICT_EXCERPT_LENGTH / 2;
+  return `${JSON.stringify(message.slice(0, half))} ... ${JSON.stringify(message.slice(-half))}`;
+}
+const malformedVerdict = (role: Role, message: string, reason: string) =>
+  new QueueBlocked(
+    "malformed-worker-verdict",
+    `${reason} Discarded ${role} message excerpt (at most ${MAX_VERDICT_EXCERPT_LENGTH} characters, JSON-quoted): ${verdictExcerpt(message)}`,
+  );
+function finalVerdict(message: string): unknown {
   // ISS-150: prose braces need not begin JSON. Once a complete object parses,
   // require it to end the message, rejecting additional objects or trailing prose.
   for (let start = message.indexOf("{"); start >= 0; start = message.indexOf("{", start + 1)) {
@@ -253,7 +376,12 @@ function reviewerVerdict(message: string): unknown {
           start = end;
           break;
         }
-        check(message.slice(end + 1).trim() === "", "malformed-worker-verdict");
+        const after = message.slice(end + 1);
+        check(
+          after.trim() === "" ||
+            (OPENING_FENCE.test(message.slice(0, start)) && CLOSING_FENCE.test(after)),
+          "malformed-worker-verdict",
+        );
         return object;
       }
     }
@@ -323,26 +451,34 @@ export function parseTrace(
   const messages = rows.filter(
     (row) => row.type === "item.completed" && row.item?.type === "agent_message",
   );
+  const message = messages.at(-1)?.item.text ?? "null";
+  // Every discard carries its reason and a bounded excerpt of the discarded
+  // message, so the single retry sees what was lost (ISS-198).
+  const malformed = (reason: string) => malformedVerdict(role, message, reason);
+  const demand = (ok: unknown, reason: string) => {
+    if (!ok) throw malformed(reason);
+  };
   let verdict: any;
   try {
-    const message = messages.at(-1)?.item.text ?? "null";
-    verdict = role === "reviewer" ? reviewerVerdict(message) : JSON.parse(message);
+    verdict = finalVerdict(message);
   } catch {
-    throw new Error("malformed-worker-verdict");
+    throw malformed(
+      "The final message does not end with exactly one JSON object, optionally inside one fenced block.",
+    );
   }
-  check(
+  demand(
     verdict &&
       typeof verdict.run === "string" &&
       typeof verdict.role === "string" &&
       /^[a-f0-9]{40}$/.test(verdict.head) &&
       ["PASS", "FAIL"].includes(verdict.verdict),
-    "malformed-worker-verdict",
+    "The JSON object is not a run, role, 40-hex head and PASS/FAIL verdict.",
   );
   check(
     verdict.run === config.run && verdict.role === role,
     "worker-verdict-identity-mismatch:malformed-worker-verdict-compatibility",
   );
-  check(
+  demand(
     role === "reviewer"
       ? Object.keys(verdict).length === 6 &&
           ["run", "role", "head", "verdict", "findings", "g0"].every((key) =>
@@ -354,14 +490,18 @@ export function parseTrace(
           ["run", "role", "head", "verdict", "summary"].every((key) =>
             Object.hasOwn(verdict, key),
           ) &&
-          typeof verdict.summary === "string" &&
-          verdict.summary.length <= MAX_TERMINAL_SUMMARY_LENGTH,
-    "malformed-worker-verdict",
+          typeof verdict.summary === "string",
+    role === "reviewer"
+      ? "The reviewer object must have exactly run, role, head, verdict, findings (array) and g0 (string)."
+      : "The author object must have exactly run, role, head, verdict and summary (string).",
   );
+  if (role === "author" && verdict.summary.length > MAX_TERMINAL_SUMMARY_LENGTH)
+    throw malformed(
+      `Author summary length is ${verdict.summary.length} characters; maximum is ${MAX_TERMINAL_SUMMARY_LENGTH}. Inspect and verify the work, then return a valid verdict with a shorter summary.`,
+    );
   const summary = role === "reviewer" ? JSON.stringify(verdict) : terminalSummary(verdict.summary);
   if (role === "reviewer" && summary && summary.length > MAX_TERMINAL_SUMMARY_LENGTH)
-    throw new QueueBlocked(
-      "malformed-worker-verdict",
+    throw malformed(
       `Reviewer verdict serialized length is ${summary.length} characters; maximum is ${MAX_TERMINAL_SUMMARY_LENGTH}. Shorten findings and G0 to fit.`,
     );
   return {
@@ -446,6 +586,7 @@ export function codexAdapter(gitExecutable = "git", now = Date.now): Adapter {
         check(help.includes(flag), "incompatible-codex-cli");
     },
     async launch(role, config, prompt) {
+<<<<<<< HEAD
       // ISS-146: every launch (including correction/retry) needs the existing
       // external scratch path. Reuse its contents; never reset it on resume.
       if (role === "author") await mkdir(authorTemporaryRoot(config), { recursive: true });
@@ -455,6 +596,9 @@ export function codexAdapter(gitExecutable = "git", now = Date.now): Adapter {
         await waitForProvider(config, (signal) =>
           probeProvider(baseUrl, authCommand, signal, fetch, config[role].model),
         );
+=======
+      await admitLaunch(config, role);
+>>>>>>> 7ad17d138806810ff1a5804e099147d65d2d98ca
       const launch = randomUUID();
       await writeFile(artifact(config, role, launch, "prompt.txt"), prompt, { flag: "wx" });
       await writeFile(
@@ -521,16 +665,14 @@ export function codexAdapter(gitExecutable = "git", now = Date.now): Adapter {
       } catch (error) {
         const summary =
           error instanceof QueueBlocked ? terminalSummary(error.diagnostics) : undefined;
-        if (
-          role === "reviewer" &&
-          Boolean(exit) &&
-          error instanceof Error &&
-          error.message === "malformed-worker-verdict"
-        )
+        if (Boolean(exit) && error instanceof Error && error.message === "malformed-worker-verdict")
           return {
             id: attempt.id,
             status: "malformed",
-            head: await git(config.reviewWorktree, ["rev-parse", "HEAD"]),
+            head: await git(role === "author" ? config.worktree : config.reviewWorktree, [
+              "rev-parse",
+              "HEAD",
+            ]),
             usage: events(trace, true).find((row) => row.type === "turn.completed")?.usage,
             ...(summary ? { summary } : {}),
           };

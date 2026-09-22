@@ -1,0 +1,152 @@
+---
+key: ISS-176
+title: "Admit one expressly authorized ops issue within its target milestone"
+labels: ["type:slice"]
+milestone: "Chase Sets delivery adapter"
+blocked_by: []
+---
+
+## Why
+
+Unready intake: https://github.com/todd-skelton/orchestration-platform/issues/537. Source-proven gap, not a pilot failure: at installed executor `880465af84538bfb1498765811709092dfde3733`, `candidatesFromAuthority` drops all `kind:ops` before routing despite `targetMilestone`. ISS-122's accidental controller-ops selection justified the default; retain it except for one expressly named issue.
+
+Historical source baseline `bfb3e2a6750259eb8b526d6b5718e7fe82ecd8ca` (PR #534); gap unchanged at current main `95ccc780b932b9c0cbb8c5e736a1f59edc697dc3` (PR #536, ISS-175 draft only). Preserve its self-only `planningRevision`/`gitExecutable` forwarding and legacy resume; no Chase Sets leakage.
+
+No stopped PR, findings, terminal receipt or salvage exists. Live planning PR #535 is not salvage or this work's authority.
+
+## Decisions already made
+
+[C1-C8 ruling](https://github.com/chase-sets/chase-sets/issues/4388#issuecomment-5707757731) under Todd delegation #4388/5691367823 permits this prerequisite. Preserve kind:ops; r1/r2 are not grants. Native M1 owns implementation/review/landing; no transfer/start here.
+
+C4: `/root/orchestration-m2/repo` at `6107022715ee9460b6e1fc460d5a5704bc7fd090` classifiers admit eligible ops; no change needed. ISS-135 scope, ISS-149/158 routing and ISS-144/161 resume do not supply admission.
+
+## Don't-rebuild pointers
+
+- `adapters/chase-sets.mjs`
+- `scripts/dogfood/queue.ts`
+- `scripts/dogfood/repository-adapter.ts`
+- `scripts/dogfood/supervision.ts`
+- `scripts/dogfood/routing.ts`
+
+## Scope fence
+
+One optional admission, fresh/current-context consumers, focused tests and contract docs.
+
+Non-goals: #8041 implementation; classifier/label/outcome changes; backlog expansion/ops discovery; permissions/metadata framework; runtime migration; readiness/ownership/install/start; routing/retry/ceiling/timeout/skip/gate changes.
+
+## Concrete contract
+
+Add optional `LoopConfig.opsAdmission`, exactly `{ issueNumber, authorityUrl }`. Number: positive safe integer, not string/list/pattern. URL: canonical HTTPS issue-comment URL in `chase-sets/chase-sets`, positive issue/comment IDs, at most 500 characters, no query/credentials/whitespace. Reuse outer `repository` and `targetMilestone`; no duplicate milestone field. Only adapter `chase-sets`, repository `chase-sets/chase-sets`, and a positive target permit this field. Invalid shape/value stops as `invalid-ops-admission` before selection; existing malformed-loop/target errors may take precedence. Direct adapter calls cannot admit malformed values.
+
+Operator supplies a ruled issue/target reference; URL shape is not approval. Existing ruling/register review owns authority. Pilot: 8041; no new milestone number/config invented here.
+
+Relax only ops exclusion for the exact issue/target. Preserve refinement, executable outcome/window, blockers, all `status:needs-*`, routing and non-ops order/eligibility. Other ops stay excluded; no priority override/exclusive issue selector.
+
+Forward beside `targetMilestone` at `nextCycle` -> `selectCandidates` and `queueConfigFromLoop` -> `issueContext`. Current ops context must satisfy the same admission/eligibility before setup, including saved selections after admission removal. Reuse authority normalization/predicate; extend reads only as needed. Preserve non-ops/closed-cycle behavior. Check selected-issue membership, not today's first candidate: higher-priority siblings must not displace valid saved work.
+
+Keep `selected-milestone-mismatch`; ops refusals: non-parking `selected-ops-not-admitted` / `selected-ops-not-runnable`. Incomplete authority is not approval. Diagnostics: reason/issue/target, no raw errors/body, backlog dump or success log. Recheck config; no retained-record/fingerprint migration.
+
+## Done when
+
+1. **AC1 Config.** Prove the concrete contract's positive/invalid/omitted cases through `validateLoopConfig`, imported `RepositoryAdapter` inputs and typecheck. Preserve old self/Chase Sets configs and invalid-target errors. Evidence: config matrix in `test/dogfood/queue.test.ts`; no hiding casts.
+2. **AC2 Selection.** Real target-bound `selectCandidates` admits named synthetic ops; omission excludes it. Contrast wrong issue/milestone, no/non-executable target, needs-operator/replan/other needs, open blocker, unrefined/tracking/Epic, absent/duplicate/malformed marker. All remain ineligible/named stops. Closed blockers can unblock; other ops remain excluded; non-ops order/unscoped behavior unchanged. Evidence: extend `test/dogfood/chase-sets-adapter.test.ts` scoped fixture, retain omission assertions; not `dryRun`.
+3. **AC3 Callers/resume.** Drive real `nextCycle`/loaded adapter and `queueConfigFromLoop`/`issueContext`, fresh and saved. Withholding admission at either forwarding edge must break the positive. Saved ops removal/wrong issue, milestone drift, needs label, blocker, classification or marker change refuses before setup/worker. Valid saved selection survives higher-priority siblings. Evidence: owning adapter/queue/supervision tests preserving repeated resume, pending stops, closed/completed advance, self/non-ops, retained bytes and spent attempts/participants/ceilings.
+4. **AC4 Delivery/diagnostics.** Assert bounded non-parking refusals through adapter/native stop handling and no synthetic secret-error leakage. Require native gates, independent exact-head review, actual final-head three-OS bootstrap job/step success. Idle, fixtures, skips and old receipts are not delivery evidence.
+
+## Verification plan
+
+Future native WSL author/queue, Node 24/pnpm, existing admission. Implementation commands resolve at this head; not run by materialization:
+
+```bash
+pnpm exec vitest run test/dogfood/chase-sets-adapter.test.ts test/dogfood/queue.test.ts test/dogfood/supervision.test.ts
+pnpm typecheck
+pnpm format:check
+pnpm planning:check
+pnpm test
+```
+
+No redundant full battery. Keep file-serial/one-worker config, timeouts and OS skips. Windows proof is final-head hosted `bootstrap` (`pnpm run verify:bootstrap`), not host-local verification. Load attribution requires unchanged isolated timing collapse AND complete serial/one-worker gate; no timeout/skip/test weakening or product edits for green.
+
+## Footprint & chain
+
+Implementation: `adapters/chase-sets.mjs`, `scripts/dogfood/{queue,repository-adapter,supervision}.ts`, `test/dogfood/{chase-sets-adapter,queue,supervision}.test.ts`, short `docs/loop.md` update. Reuse `.mjs` reexports/indexed declarations; no new module. Routing/flow/supervise/self/product readers are compatibility reads.
+
+Callers: `supervise.mjs` -> `nextCycle`; saved selection bypasses selector -> queue composition calls `issueContext` -> `startCycle`/setup. Include direct calls, wrappers and `dryRun`. Preserve landed ISS-163/#515/PR #534 self-planning fields. ISS-171/PR #535 and ISS-175/#531 stay separately owned, not blockers.
+
+Blocked by: none. Blocks: #8041 native pilot only, not incumbent work. First semantic review PASS; draft/roadmap materialized locally. Host still owes landing, EXISTING #537 canonical marker/source link/verbatim draft/project membership, board checks and explicit readiness. No duplicate issue or readiness grant.
+
+## External authority probe & evidence timing
+
+Read-only GraphQL capture started `2026-09-17T03:02:02.9302070Z`: Chase Sets `issue(number:8041)` state/type/milestone/labels/blockedBy. Result: OPEN Bug, committed/open milestone 148, `priority:p1`, `area:infrastructure`, `kind:ops`, `status:needs-replan`, no blockers, both connections `hasNextPage:false`. Earlier `gh issue view` body had no routing marker. This is current pre-selection shape/exclusion evidence, NOT pilot eligibility. Preserve completeness; synthetic fixtures must not alter facts under real #8041 identity.
+
+Later host prerequisite, not implementation gate: after landing/safe install, accepted #8041 brief, legitimate readiness/marker and fresh milestone/register ruling, capture real `selectCandidates` at exact installed head/target/config before canonical start. Require #8041, no other ops/out-of-target issue. Synthetic proof may precede readiness; live positive may not. Never start/move/remove needs-replan/drop readiness just for a probe. Reobserve context at setup/resume; capture final-head job/step results after execution and before landing.
+
+## Defect-class constraints
+
+- `closed-schema-shallow-validation` / `dynamic-policy-value-shape-unvalidated`: validate nested values.
+- `allowed-values-aliased-as-defaults` / `structural-guard-weakened-by-unbounded-exemption`: omission off; no wildcard/list.
+- `decoupled-service-type-hides-runtime-throw` / `validation-misses-sibling-seed-path`: real types; exercise every caller.
+- `fixture-only-health-integration`: real selector/composition, omission controls.
+- `lifecycle-repair-misses-sibling-retained-state-entrypoint` / `state-machine-steady-state-missing`: all fresh/retained/terminal/day-after paths.
+- `retained-artifact-schema-ratchet` / `effective-configuration-fingerprint-omits-overrides`: current admission on resume; no migration/stale trust.
+- `pagination-truncates-authoritative-state` / `raw-exception-message-in-structured-log`: completeness refusals; bounded safe diagnostics.
+- `mandated-external-assertion-contradicts-authority` / `future-capability-documented-as-current`: no synthetic/source evidence as live/shipped proof.
+- `stale-review-bound-to-wrong-head` / `unrunnable-verification-command`: exact-head review/gates; native commands.
+
+## Operator actions
+
+No provider credentials; existing native GitHub reads only. Host owns registration/install/pilot. Reconfirm C5-C8 at installed head: pilot row4/review11, Sol/high author, Opus/high then Sonnet/high review, 4 attempts/64 launches, no Fable/acceptedReplan/gateStopAuthorization. No action or attempt reset granted.
+
+## Review packet seed
+
+Attack broad exemption, caller omission, stale ops, sibling displacement, incomplete authority, leaks and history migration using AC1-3. AC4 binds delivery. First COMPLETE semantic review PASS; inherited materialization DELTA owed.
+
+## Tier + routing hint
+
+full path; architectural core. Planning: requested Astra/high, row7 override-Todd, expected USD unknown. Implementation: native self-loop routing.
+
+QUALITY_PROFILE: contract
+
+## Simplest shape
+
+One optional singleton passed through two existing adapter edges, checked by the same ops eligibility rule.
+
+## Not built
+
+| Not built | Reason |
+| --- | --- |
+| Relabel or remove ops exclusion | Violates honest nature/default boundary |
+| Permissions service, duplicate milestone or receipt | Existing config/target/lifecycle suffice |
+| General allowlist or classifier change | One named issue; native classifiers already admit ops |
+
+## Intent surfaces
+
+| Acceptance criterion | Exercised surface |
+| --- | --- |
+| AC1 | validateLoopConfig/RepositoryAdapter |
+| AC2 | Real target-bound selectCandidates |
+| AC3 | nextCycle/queueConfigFromLoop/issueContext and resume |
+| AC4 | Native diagnostics/final-head bootstrap |
+
+## UI states and design-system sources
+
+none — no UI surface changes.
+
+## Data-path envelope
+
+| Data path | Bound | Index expectation | Per-item I/O |
+| --- | --- | --- | --- |
+| Selection/current ops context | Complete authority, 100/page; one admission | In-memory matching | No per-candidate fetch; reuse context reads |
+
+## Contract compatibility
+
+| Changed contract | Compatibility posture | Removed path |
+| --- | --- | --- |
+| opsAdmission/input | Optional; history readable; omission excludes ops | Blanket exclusion for admitted issue/target |
+| Current ops context | Both callers covered; self/non-ops retained | Unchecked saved-ops context |
+
+## Glossary impact
+
+| Public term | Owning glossary or contract |
+| --- | --- |
+| opsAdmission | LoopConfig/RepositoryAdapter and docs/loop.md; kind:ops unchanged |

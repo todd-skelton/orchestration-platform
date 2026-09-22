@@ -1,21 +1,32 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, expect, it } from "vitest";
 import { githubDeliveryAdapter } from "../../scripts/dogfood/delivery-adapter.mjs";
 import {
+  queueStep,
+  queueUsage,
+  type QueueConfig,
+  type QueueAdapter,
+  type QueueParticipant,
+} from "../../scripts/dogfood/queue.js";
+import { isItemStopReason } from "../../scripts/dogfood/supervision.js";
+import {
   deliveryStep,
   DeliveryBlocked,
   hostedFailurePrompt,
+  hostedFailureEvidence,
+  LocalGateFailure,
   type DeliveryAdapter,
   type DeliveryConfig,
   type DeliveryPlan,
   type PublicationObservation,
   type PublicationEvidence,
   type CheckEvidence,
+  type GateFailureEvidence,
 } from "../../scripts/dogfood/delivery.mjs";
 
 const head = "a".repeat(40);
@@ -23,7 +34,8 @@ const mergeCommit = "b".repeat(40);
 const roots: string[] = [];
 const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 
-async function fixture() {
+async function fixture(candidate = head) {
+  const head = candidate;
   const parent = await realpath(await mkdtemp(resolve(tmpdir(), "delivery-fixture-")));
   roots.push(parent);
   const paths = await Promise.all(
@@ -206,28 +218,93 @@ async function writeState(config: DeliveryConfig, name: string, value: unknown) 
   await writeFile(resolve(config.stateDirectory, `${name}.json`), `${JSON.stringify(value)}\n`);
 }
 
-async function aggregateFixture(pause: (ms: number) => Promise<void> = async () => {}) {
+// Synthetic Actions payloads for the ordinary command/consumer boundary.
+function syntheticRun(publication: PublicationEvidence, status = "in_progress") {
+  const repo = { id: 10, full_name: publication.repository };
+  return {
+    id: 123,
+    workflow_id: 7,
+    run_number: 1,
+    run_attempt: 1,
+    path: ".github/workflows/bootstrap.yml",
+    event: "pull_request",
+    head_sha: publication.head,
+    head_branch: publication.sourceBranch,
+    repository: repo,
+    head_repository: repo,
+    status,
+    pull_requests: [
+      {
+        number: publication.number,
+        url: `https://api.github.com/repos/${publication.repository}/pulls/${publication.number}`,
+        head: { ref: publication.sourceBranch, sha: publication.head, repo: { id: 10 } },
+        base: { ref: publication.baseBranch, repo: { id: 10 } },
+      },
+    ],
+  };
+}
+
+async function aggregateFixture(
+  pause: (ms: number) => Promise<void> = async () => {},
+  required = ["PR Required"],
+) {
   const f = await fixture();
-  f.config.requiredChecks = ["PR Required"];
+  f.config.requiredChecks = required;
   f.publication.url = `https://github.com/${f.config.repository}/pull/${f.publication.number}`;
   f.adapter.publicationUrl = (_config, number) =>
     `https://github.com/${f.config.repository}/pull/${number}`;
   const evidence = {
     checks: [] as CheckEvidence[],
-    runs: [
-      { head_sha: head, pull_requests: [{ number: f.publication.number }], status: "in_progress" },
-    ],
+    runs: [syntheticRun(f.publication)],
+    workflowStatuses: [] as string[],
     driftAfterWorkflow: false,
+    log: "PR Required failed",
+    logError: false,
+    afterLog: () => {},
   };
+  const requests: string[][] = [];
   let publicationHead = head;
   const provider = githubDeliveryAdapter(
     {
       async gh(_config, args) {
-        expect(args.slice(0, 3)).toEqual(["pr", "checks", String(f.publication.number)]);
-        return JSON.stringify(evidence.checks);
+        requests.push(args);
+        expect(args).toEqual([
+          "run",
+          "view",
+          "123",
+          "--attempt",
+          String(evidence.runs[0]!.run_attempt),
+          "--log-failed",
+        ]);
+        if (evidence.logError) throw new Error("log unavailable");
+        evidence.afterLog();
+        return evidence.log;
       },
       async ghJson(_config, args) {
+        requests.push(args);
         if (args[0] === "api") {
+          if (args[1]!.includes("/jobs?"))
+            return [
+              {
+                jobs: evidence.checks.map((check, index) => ({
+                  id: Number(check.link.split("/").at(-1)),
+                  run_id: 123,
+                  run_attempt: check.actions?.attempt ?? 1,
+                  head_sha: head,
+                  name: check.name,
+                  html_url: check.link,
+                  status: check.bucket === "pending" ? "in_progress" : "completed",
+                  conclusion: {
+                    pass: "success",
+                    pending: null,
+                    fail: "failure",
+                    cancel: "cancelled",
+                    skipping: "skipped",
+                  }[check.bucket],
+                })),
+              },
+            ];
+          if (args[1]!.endsWith("/123")) return evidence.runs.find((run) => run.id === 123);
           expect(args).toEqual([
             "api",
             `repos/${f.config.repository}/actions/runs?head_sha=${head}&event=pull_request&per_page=100`,
@@ -235,7 +312,10 @@ async function aggregateFixture(pause: (ms: number) => Promise<void> = async () 
             "--slurp",
           ]);
           if (evidence.driftAfterWorkflow) publicationHead = "f".repeat(40);
-          return [{ workflow_runs: evidence.runs }];
+          const runs = structuredClone(evidence.runs);
+          const status = evidence.workflowStatuses.shift();
+          if (status) for (const run of runs) run.status = status;
+          return [{ workflow_runs: runs }];
         }
         return {
           number: f.publication.number,
@@ -253,14 +333,700 @@ async function aggregateFixture(pause: (ms: number) => Promise<void> = async () 
     pause,
   );
   f.adapter.checks = provider.checks;
-  f.adapter.failedCheckLog = async () => "PR Required failed";
-  const check = (name: string, bucket: CheckEvidence["bucket"]): CheckEvidence => ({
+  f.adapter.failedCheckLog = provider.failedCheckLog!.bind(provider);
+  const check = (name: string, bucket: CheckEvidence["bucket"], job = 456): CheckEvidence => ({
     name,
     bucket,
-    link: `https://github.com/${f.config.repository}/actions/runs/123/job/456`,
+    link: `https://github.com/${f.config.repository}/actions/runs/123/job/${job}`,
   });
-  return { ...f, evidence, check };
+  return { ...f, evidence, check, requests, provider };
 }
+
+// ISS-185 captured facts: iss183-ci-attribution-2132.json (21:30:58.920Z),
+// iss183-pr566-checks-2132.json and attempt-3/source/hosted-failure.log.
+// PR/run/job/SHA/branch identities below are retained observations, not CI liveness.
+// Repo/workflow IDs, run_numbers and payload scaffolding are SYNTHETIC;
+// all green/failure transitions and rerun variants in these tests are SYNTHETIC.
+async function incidentFixture() {
+  const f = await fixture("ab2fdadac4404814ccf0090b7b144ef80000ac3b");
+  f.config.repository = "todd-skelton/orchestration-platform";
+  f.config.requiredChecks = ["ubuntu", "windows", "macos"].map((os) => `Node 24 / ${os}-latest`);
+  f.plan.publication.sourceBranch = "codex/iss-183-attempt-3";
+  f.plan.cleanup.branch = f.plan.publication.sourceBranch;
+  Object.assign(f.publication, {
+    number: 566,
+    repository: f.config.repository,
+    url: "https://github.com/todd-skelton/orchestration-platform/pull/566",
+    sourceBranch: f.plan.publication.sourceBranch,
+    planDigest: digest(f.plan),
+  });
+  f.adapter.publicationUrl = (config, number) =>
+    `https://github.com/${config.repository}/pull/${number}`;
+  const current = { ...syntheticRun(f.publication), id: 35276352971, run_number: 102 };
+  const old = {
+    ...syntheticRun(
+      {
+        ...f.publication,
+        number: 565,
+        sourceBranch: "codex/iss-183-attempt-2",
+      },
+      "completed",
+    ),
+    id: 35270001390,
+    run_number: 101,
+  };
+  const jobsFor = (run: typeof current, buckets: CheckEvidence["bucket"][], ids: number[]) =>
+    f.config.requiredChecks.map((name, index) => ({
+      id: ids[index]!,
+      run_id: run.id,
+      run_attempt: run.run_attempt,
+      head_sha: run.head_sha,
+      name,
+      html_url: `https://github.com/${f.config.repository}/actions/runs/${run.id}/job/${ids[index]}`,
+      status: buckets[index] === "pending" ? "in_progress" : "completed",
+      conclusion: {
+        pass: "success",
+        pending: null,
+        fail: "failure",
+        cancel: "cancelled",
+        skipping: "skipped",
+      }[buckets[index]!],
+    }));
+  const oldJobs = jobsFor(old, ["pass", "fail", "pass"], [9001, 105366636997, 9003]);
+  const currentJobs = jobsFor(
+    current,
+    ["pass", "pending", "pending"],
+    [105387830071, 105387830221, 105387829846],
+  );
+  const state = {
+    runs: [old, current],
+    jobs: new Map([
+      [old.id, oldJobs],
+      [current.id, currentJobs],
+    ]),
+    projection: oldJobs.map((job) => ({
+      name: job.name,
+      bucket: job.conclusion === "failure" ? "fail" : "pass",
+      link: job.html_url,
+    })),
+    waits: [] as number[],
+    requests: [] as string[][],
+    log: "complete selected Windows failure diagnostics\n",
+    onWait: () => {},
+    onLog: () => {},
+    onJobs: () => {},
+  };
+  const commands = {
+    async gh(_config: DeliveryConfig, args: string[]) {
+      state.requests.push(args);
+      if (args[0] === "pr" && args[1] === "checks") return JSON.stringify(state.projection);
+      expect(args).toEqual([
+        "run",
+        "view",
+        String(current.id),
+        "--attempt",
+        String(current.run_attempt),
+        "--log-failed",
+      ]);
+      state.onLog();
+      return state.log;
+    },
+    async ghJson(_config: DeliveryConfig, args: string[]) {
+      state.requests.push(args);
+      if (args[0] === "pr")
+        return {
+          number: 566,
+          url: f.publication.url,
+          headRefOid: f.publication.head,
+          headRefName: f.publication.sourceBranch,
+          baseRefName: "main",
+          state: "OPEN",
+          title: f.publication.title,
+          body: f.publication.body,
+        };
+      const endpoint = args[1]!;
+      if (endpoint.includes("runs?")) return structuredClone([{ workflow_runs: state.runs }]);
+      const id = Number(endpoint.split("/runs/")[1]!.split("/")[0]);
+      if (endpoint.includes("/jobs?")) {
+        expect(endpoint).toContain("filter=latest");
+        const result = structuredClone([{ jobs: state.jobs.get(id) }]);
+        state.onJobs();
+        return result;
+      }
+      return structuredClone(state.runs.find((run) => run.id === id));
+    },
+  };
+  const provider = githubDeliveryAdapter(commands, "git", async (ms) => {
+    state.waits.push(ms);
+    state.onWait();
+  });
+  f.adapter.checks = provider.checks;
+  f.adapter.failedCheckLog = provider.failedCheckLog!.bind(provider);
+  const complete = (bucket: CheckEvidence["bucket"] = "pass") => {
+    current.status = "completed";
+    state.jobs.set(
+      current.id,
+      jobsFor(current, ["pass", bucket, "pass"], [105387830071, 105387830221, 105387829846]),
+    );
+  };
+  return { ...f, hosted: state, current, old, jobsFor, complete, provider };
+}
+
+it("ISS-185 captured stale failure/current pending sequence resumes to its own green", async () => {
+  const f = await incidentFixture();
+  const legacyHistory = JSON.stringify({
+    phase: "failed",
+    candidateAttempt: 3,
+    historyCount: 6,
+    run: 35270001390,
+    publication: 566,
+  });
+  const history = resolve(f.config.stateDirectory, "historical-stop.json");
+  await writeFile(history, legacyHistory);
+  for (let restart = 0; restart < 2; restart++) {
+    await expect(deliveryStep(f.config, f.adapter, f.policy)).resolves.toMatchObject({
+      status: "observing-hosted-checks",
+      retries: 0,
+    });
+    expect(f.calls).not.toContain("merge");
+    expect(f.hosted.requests.filter((args) => args.includes("--log-failed"))).toHaveLength(0);
+  }
+  // Mixed old/new rollup rows cannot change the authoritative run selection.
+  f.hosted.projection.push(
+    ...f.hosted.jobs.get(f.current.id)!.map((job) => ({
+      name: job.name,
+      bucket: "pending",
+      link: job.html_url,
+    })),
+  );
+  f.complete();
+  await expect(deliveryStep(f.config, f.adapter, f.policy)).resolves.toMatchObject({
+    status: "complete",
+  });
+  await expect(deliveryStep(f.config, f.adapter, f.policy)).resolves.toMatchObject({
+    status: "complete",
+  });
+  expect(f.calls.filter((call) => call === "publish")).toHaveLength(1);
+  expect(f.calls.filter((call) => call === "merge")).toHaveLength(1);
+  expect(f.calls.filter((call) => call.startsWith("gate:"))).toHaveLength(4);
+  expect(await readFile(history, "utf8")).toBe(legacyHistory);
+});
+
+it.each(["absent", "pending", "failure"] as const)(
+  "ISS-185 SYNTHETIC stale green cannot authorize current %s",
+  async (mode) => {
+    const f = await incidentFixture();
+    f.hosted.projection.forEach((check) => {
+      check.bucket = "pass";
+    });
+    if (mode === "absent") f.hosted.runs = [f.old];
+    if (mode === "failure") f.complete("fail");
+    const result = deliveryStep(f.config, f.adapter, f.policy);
+    if (mode === "absent") {
+      await expect(result).rejects.toMatchObject({ reason: "hosted-observation-unavailable" });
+      expect(f.hosted.waits).toEqual(Array(12).fill(10_000));
+    } else
+      await expect(result).resolves.toMatchObject({
+        status: mode === "failure" ? "failed" : "observing-hosted-checks",
+      });
+    expect(f.calls).not.toContain("merge");
+    expect(f.calls.filter((call) => call === "publish")).toHaveLength(1);
+    expect(f.hosted.requests.filter((args) => args.includes("--log-failed"))).toHaveLength(
+      mode === "failure" ? 1 : 0,
+    );
+    if (mode === "failure") {
+      const log = await readFile(resolve(f.config.stateDirectory, "hosted-failure.log"), "utf8");
+      expect(log).toContain("35276352971");
+      expect(log).not.toContain("35270001390");
+      expect(log).toContain(f.hosted.log);
+    }
+  },
+);
+
+it("SYNTHETIC foreign-only startup waits for current run visibility, including no jobs yet", async () => {
+  const f = await incidentFixture();
+  f.hosted.runs = [f.old];
+  f.hosted.onWait = () => {
+    if (f.hosted.waits.length === 3) f.hosted.runs.push(f.current);
+  };
+  f.hosted.jobs.set(f.current.id, []);
+  await expect(deliveryStep(f.config, f.adapter, f.policy)).resolves.toMatchObject({
+    status: "observing-hosted-checks",
+    checks: [],
+  });
+  expect(f.hosted.waits).toEqual([10_000, 10_000, 10_000]);
+  expect(f.calls).not.toContain("merge");
+});
+
+it.each([
+  "repository",
+  "PR",
+  "head",
+  "source",
+  "base",
+  "unknown association",
+  "duplicate run",
+  "duplicate job",
+  "duplicate name",
+  "missing terminal job",
+  "competing run",
+  "acquisition",
+] as const)("SYNTHETIC current %s uncertainty is a non-parking observation stop", async (mode) => {
+  const f = await incidentFixture();
+  f.complete();
+  if (mode === "repository") f.current.repository.full_name = "other/repository";
+  if (mode === "PR") f.current.pull_requests[0]!.number = 999;
+  if (mode === "head") f.current.head_sha = "f".repeat(40);
+  if (mode === "source") f.current.pull_requests[0]!.head.ref = "another-source";
+  if (mode === "base") f.current.pull_requests[0]!.base.ref = "release";
+  if (mode === "unknown association") f.current.pull_requests = [];
+  if (mode === "duplicate run") f.hosted.runs.push(f.current);
+  const jobs = f.hosted.jobs.get(f.current.id)!;
+  if (mode === "duplicate job") jobs.push(jobs[0]!);
+  if (mode === "duplicate name") jobs[1]!.name = jobs[0]!.name;
+  if (mode === "missing terminal job") jobs.pop();
+  if (mode === "competing run") f.hosted.runs.push({ ...f.current, id: 999 });
+  if (mode === "acquisition")
+    f.hosted.onJobs = () => {
+      throw new Error("API unavailable");
+    };
+  await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toMatchObject({
+    reason: "hosted-observation-unavailable",
+  });
+  expect(isItemStopReason("hosted-observation-unavailable")).toBe(false);
+  expect(f.calls).not.toContain("merge");
+  expect(f.hosted.requests.filter((args) => args.includes("--log-failed"))).toHaveLength(0);
+});
+
+it.each(["pending", "fail", "pass"] as const)(
+  "SYNTHETIC later same-PR workflow run selects its own %s jobs",
+  async (bucket) => {
+    const f = await incidentFixture();
+    f.complete();
+    // Deliberately smaller ID, but next run_number of the same owning workflow.
+    const later = {
+      ...f.current,
+      id: 444,
+      run_number: 103,
+      status: bucket === "pending" ? "in_progress" : "completed",
+    };
+    f.hosted.runs.push(later);
+    f.hosted.jobs.set(later.id, f.jobsFor(later, ["pass", bucket, "pass"], [801, 802, 803]));
+    const result = await f.provider.checks(f.config, f.publication);
+    expect(result.checks.map((check) => check.bucket)).toEqual(["pass", bucket, "pass"]);
+    expect(result.checks.every((check) => check.actions?.run === 444)).toBe(true);
+  },
+);
+
+it.each(["all", "failed-only"] as const)(
+  "SYNTHETIC native rerun-%s uses the API effective job set at the current attempt",
+  async (kind) => {
+    const f = await incidentFixture();
+    f.complete("fail");
+    await expect(f.provider.checks(f.config, f.publication)).resolves.toMatchObject({
+      checks: [{ bucket: "pass" }, { bucket: "fail" }, { bucket: "pass" }],
+    });
+    f.current.run_attempt = 2;
+    f.current.status = "in_progress";
+    const jobs = f.jobsFor(f.current, ["pass", "pending", "pass"], [901, 902, 903]);
+    if (kind === "failed-only") {
+      const prior = f.hosted.jobs.get(f.current.id)!;
+      jobs[0] = prior[0]!;
+      jobs[2] = prior[2]!;
+    }
+    f.hosted.jobs.set(f.current.id, jobs);
+    await expect(deliveryStep(f.config, f.adapter, f.policy)).resolves.toMatchObject({
+      status: "observing-hosted-checks",
+    });
+    expect(f.calls).not.toContain("merge");
+    jobs[1]!.status = "completed";
+    jobs[1]!.conclusion = "success";
+    f.current.status = "completed";
+    const selected = await f.provider.checks(f.config, f.publication);
+    expect(selected.checks.every((check) => check.actions?.attempt === 2)).toBe(true);
+    await expect(deliveryStep(f.config, f.adapter, f.policy)).resolves.toMatchObject({
+      status: "complete",
+    });
+    expect(f.calls.filter((call) => call === "publish")).toHaveLength(1);
+    expect(f.calls.filter((call) => call === "merge")).toHaveLength(1);
+  },
+);
+
+it("SYNTHETIC pending rerun cannot borrow an all-green old effective set", async () => {
+  const f = await incidentFixture();
+  f.complete();
+  f.current.run_attempt = 2;
+  f.current.status = "queued";
+  await expect(deliveryStep(f.config, f.adapter, f.policy)).resolves.toMatchObject({
+    status: "observing-hosted-checks",
+  });
+  expect(f.calls).not.toContain("merge");
+});
+
+it.each(["jobs", "logs"] as const)(
+  "SYNTHETIC run attempt changes during %s acquisition refuse mixed evidence",
+  async (during) => {
+    const f = await incidentFixture();
+    f.complete("fail");
+    const change = () => {
+      f.current.run_attempt++;
+    };
+    if (during === "jobs") f.hosted.onJobs = change;
+    else f.hosted.onLog = change;
+    await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toMatchObject({
+      reason:
+        during === "jobs"
+          ? "hosted-observation-unavailable"
+          : "hosted-check-log-unavailable:Node 24 / windows-latest",
+    });
+    await expect(
+      readFile(resolve(f.config.stateDirectory, "hosted-failure.log")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    expect(f.calls).not.toContain("merge");
+  },
+);
+
+async function owningQueueFixture(f: Awaited<ReturnType<typeof fixture>>) {
+  const current = f.config;
+  current.retries = 1;
+  const stateDirectory = resolve(current.stateDirectory, "../queue");
+  await mkdir(stateDirectory);
+  const actor = { model: "fixture", effort: "high", prompt: "fixture" };
+  const history: QueueParticipant[] = Array.from({ length: 6 }, (_, index) => ({
+    ordinal: index + 1,
+    id: index === 5 ? "review-fixture" : `participant-${index}`,
+    item: index < 4 ? `prior-${Math.floor(index / 2)}` : "fixture",
+    stage: "source",
+    role: index % 2 ? "reviewer" : "author",
+    outcome: index < 4 && index % 2 ? "failed" : "passed",
+    rung: 0,
+    usage: queueUsage(undefined),
+  }));
+  const queue: QueueConfig = {
+    schemaVersion: "dogfood-bounded-queue-config/v1",
+    controller: current.controller,
+    run: current.run,
+    controllerRoot: current.controllerRoot,
+    controllerRevision: current.controllerRevision,
+    stateDirectory,
+    limit: 1,
+    nativeLaunchCeiling: 8,
+    initialHistory: history.slice(0, 4),
+    items: [
+      {
+        id: "fixture",
+        issue: current.issue,
+        base: current.candidateHead,
+        implementationAttempt: 3,
+        implementationAttemptCeiling: 4,
+        setup: {
+          controller: current.controller,
+          run: current.run,
+          issue: current.issue,
+          repository: current.repository,
+          repositoryRoot: current.repositoryRoot,
+          controllerRoot: current.controllerRoot,
+          controllerRevision: current.controllerRevision,
+          pilotRevision: current.controllerRevision,
+          base: current.candidateHead,
+          baseBranch: "main",
+          sourceBranch: f.publication.sourceBranch,
+          pilotWorktree: resolve(stateDirectory, "../pilot"),
+          sourceWorktree: current.worktree,
+          reviewWorktree: current.reviewWorktree,
+          stateDirectory: resolve(stateDirectory, "setup"),
+        },
+        source: {
+          owner: current.controller,
+          run: current.run,
+          issue: current.issue,
+          pilotRevision: current.controllerRevision,
+          base: current.candidateHead,
+          worktree: current.worktree,
+          reviewWorktree: current.reviewWorktree,
+          stateDirectory: current.stateDirectory,
+          allowedPaths: ["."],
+          repository: current.repository,
+          requiredChecks: current.requiredChecks,
+          author: actor,
+          reviewer: actor,
+          adapter: { kind: "codex-exec", executable: process.execPath },
+        },
+        repair: {
+          stateDirectory: resolve(stateDirectory, "repair"),
+          acceptanceCriteria: ["fixture"],
+          author: actor,
+          reviewer: actor,
+        },
+        delivery: { requiredChecks: current.requiredChecks, policy: current.policy },
+      },
+    ],
+  };
+  const saved = {
+    schemaVersion: "dogfood-bounded-queue-attempt/v1",
+    phase: "delivery",
+    run: queue.run,
+    index: 0,
+    item: "fixture",
+    issue: current.issue,
+    base: current.candidateHead,
+    candidateAttempt: 3,
+    head: current.candidateHead,
+    reviewId: "review-fixture",
+    findings: [],
+    history,
+    retries: 1,
+    acceptedStage: "source",
+    stateDirectory: current.stateDirectory,
+    authorFailures: { count: 2, ids: ["participant-0", "participant-2"] },
+  };
+  const path = resolve(stateDirectory, "attempt.json");
+  const bytes = `${JSON.stringify(saved, null, 2)}\n`;
+  await writeFile(path, bytes);
+  let workers = 0;
+  const adapter: QueueAdapter = {
+    async assertExecutor() {},
+    async history() {
+      return history;
+    },
+    async setup() {
+      throw new Error("unexpected setup");
+    },
+    async source() {
+      workers++;
+      throw new Error("unexpected source launch");
+    },
+    async repair() {
+      workers++;
+      throw new Error("unexpected corrective launch");
+    },
+    async delivery() {
+      return deliveryStep(current, f.adapter, f.policy);
+    },
+  };
+  return { queue, adapter, path, bytes, history, workers: () => workers };
+}
+
+it.each(["stale failure", "stale green", "current failure"] as const)(
+  "SYNTHETIC owning queue preserves charges on restart with %s",
+  async (mode) => {
+    const f = await incidentFixture();
+    const { queue, adapter, path, bytes, history, workers } = await owningQueueFixture(f);
+    if (mode !== "stale failure")
+      f.hosted.projection.forEach((row) => {
+        row.bucket = "pass";
+      });
+    if (mode === "stale green") f.hosted.runs = [f.old];
+    if (mode === "current failure") f.complete("fail");
+    if (mode === "current failure") {
+      await expect(queueStep(queue, adapter)).resolves.toMatchObject({
+        status: "advancing-attempt",
+        cursor: 3,
+      });
+      expect(JSON.parse(await readFile(path, "utf8"))).toMatchObject({
+        phase: "failed",
+        candidateAttempt: 3,
+        retries: 1,
+        history,
+      });
+    } else {
+      for (let resume = 0; resume < 2; resume++) {
+        if (mode === "stale green")
+          await expect(queueStep(queue, adapter)).rejects.toMatchObject({
+            reason: "hosted-observation-unavailable",
+          });
+        else
+          await expect(queueStep(queue, adapter)).resolves.toMatchObject({
+            status: "observing-hosted-checks",
+          });
+        expect(await readFile(path, "utf8")).toBe(bytes);
+      }
+    }
+    expect(workers()).toBe(0);
+    expect(f.calls.filter((call) => call === "publish")).toHaveLength(1);
+    expect(f.calls).not.toContain("merge");
+  },
+);
+
+it("ISS-188 SYNTHETIC same-run progress stays in ordinary queue observation until stable green", async () => {
+  const waits: number[] = [];
+  const f = await aggregateFixture(
+    async (ms) => {
+      waits.push(ms);
+    },
+    ["linux", "windows", "macos"],
+  );
+  const q = await owningQueueFixture(f);
+  const priorPath = resolve(f.config.stateDirectory, "prior-stop.json");
+  const prior = JSON.stringify({
+    status: "failed",
+    candidateAttempt: 2,
+    retries: 1,
+    history: q.history.slice(0, 4),
+  });
+  await writeFile(priorPath, prior);
+  const observe = () => queueStep(q.queue, q.adapter);
+  const pending = async (statuses: string[], bucket: CheckEvidence["bucket"] | "missing") => {
+    f.evidence.workflowStatuses = statuses;
+    f.evidence.checks =
+      bucket === "missing"
+        ? []
+        : f.config.requiredChecks.map((name, index) => f.check(name, bucket, 456 + index));
+    const requestsBefore = f.requests.length;
+    await expect(observe()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+    expect(f.requests.length - requestsBefore).toBe(5);
+    expect(f.evidence.workflowStatuses).toEqual([]);
+    expect(await readFile(q.path, "utf8")).toBe(q.bytes);
+    expect(await readFile(priorPath, "utf8")).toBe(prior);
+    expect(f.calls).not.toContain("merge");
+    await expect(
+      readFile(resolve(f.config.stateDirectory, "hosted-checks.json")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    expect(q.workers()).toBe(0);
+  };
+  await pending(["queued", "in_progress"], "missing");
+  const publicationPath = resolve(f.config.stateDirectory, "publication.json");
+  const publication = await readFile(publicationPath, "utf8");
+  await pending(["in_progress", "completed"], "pending");
+  await pending(["in_progress", "completed"], "pass");
+  // Synthetic stale-read control: sampled green cannot authorize early merge.
+  await pending(["completed", "in_progress"], "pass");
+  f.evidence.runs[0]!.status = "completed";
+  await expect(observe()).resolves.toMatchObject({ status: "complete" });
+  const complete = JSON.parse(await readFile(q.path, "utf8"));
+  expect(complete).toMatchObject({
+    phase: "complete",
+    candidateAttempt: 3,
+    retries: 1,
+    history: q.history,
+    authorFailures: { count: 2, ids: ["participant-0", "participant-2"] },
+  });
+  const requestsAfter = f.requests.length;
+  await expect(observe()).resolves.toMatchObject({ status: "complete" });
+  expect(f.requests).toHaveLength(requestsAfter);
+  expect(f.calls.filter((call) => call === "publish")).toHaveLength(1);
+  expect(f.calls.filter((call) => call === "merge")).toHaveLength(1);
+  expect(f.calls.filter((call) => call.startsWith("gate:"))).toHaveLength(4);
+  expect(f.requests.filter((args) => args.includes("--log-failed"))).toEqual([]);
+  expect(waits).toEqual([]);
+  expect(q.workers()).toBe(0);
+  expect(await readFile(publicationPath, "utf8")).toBe(publication);
+  expect(await readFile(priorPath, "utf8")).toBe(prior);
+});
+
+it.each(["fail", "cancel", "skipping"] as const)(
+  "ISS-188 SYNTHETIC status progress preserves terminal %s handling",
+  async (bucket) => {
+    const waits: number[] = [];
+    const f = await aggregateFixture(async (ms) => {
+      waits.push(ms);
+    });
+    f.evidence.runs[0]!.status = "completed";
+    f.evidence.workflowStatuses = ["in_progress", "completed"];
+    f.evidence.checks = [f.check("PR Required", bucket)];
+    const result = deliveryStep(f.config, f.adapter, f.policy);
+    if (bucket === "skipping")
+      await expect(result).rejects.toMatchObject({ reason: "hosted-check-failed:PR Required" });
+    else {
+      await expect(result).resolves.toMatchObject({
+        status: "failed",
+        head,
+        findings: [{ file: "PR Required", severity: "blocking" }],
+      });
+      const log = await readFile(resolve(f.config.stateDirectory, "hosted-failure.log"), "utf8");
+      expect(log).toContain(f.evidence.log);
+      expect(log).toContain(f.evidence.checks[0]!.link);
+    }
+    expect(f.requests.filter((args) => args.includes("--log-failed"))).toHaveLength(
+      bucket === "skipping" ? 0 : 1,
+    );
+    expect(f.calls).not.toContain("merge");
+    expect(f.calls.filter((call) => call === "publish")).toHaveLength(1);
+    expect(waits).toEqual([]);
+  },
+);
+
+it("SYNTHETIC predecessor-log acquisition cannot reuse a foreign failure", async () => {
+  const f = await incidentFixture();
+  await expect(hostedFailureEvidence(f.config, f.adapter, f.publication)).rejects.toThrow(
+    "hosted-failure-evidence-unavailable",
+  );
+  expect(f.hosted.requests.filter((args) => args.includes("--log-failed"))).toHaveLength(0);
+  f.complete("fail");
+  const path = await hostedFailureEvidence(f.config, f.adapter, f.publication);
+  expect(path).toBe(resolve(f.config.stateDirectory, "hosted-failure.log"));
+  expect(await readFile(path!, "utf8")).toContain("35276352971");
+  expect(await readFile(path!, "utf8")).not.toContain("35270001390");
+  expect(f.hosted.requests.filter((args) => args.includes("--log-failed"))).toHaveLength(1);
+  await hostedFailureEvidence(f.config, f.adapter, f.publication);
+  expect(f.hosted.requests.filter((args) => args.includes("--log-failed"))).toHaveLength(1);
+});
+
+it("SYNTHETIC unfinished legacy green receipt requires fresh attribution on resume", async () => {
+  const f = await incidentFixture();
+  await deliveryStep(f.config, f.adapter, f.policy);
+  const saved = {
+    head: f.config.candidateHead,
+    checks: f.hosted.projection.map((row) => ({ ...row, bucket: "pass" })),
+  };
+  await writeState(f.config, "hosted-checks", saved);
+  const path = resolve(f.config.stateDirectory, "hosted-checks.json");
+  const bytes = await readFile(path, "utf8");
+  await expect(deliveryStep(f.config, f.adapter, f.policy)).resolves.toMatchObject({
+    status: "observing-hosted-checks",
+  });
+  expect(await readFile(path, "utf8")).toBe(bytes);
+  expect(f.calls.filter((call) => call === "publish")).toHaveLength(1);
+  expect(f.calls).not.toContain("merge");
+});
+
+it("SYNTHETIC same-PR later run cannot fill missing terminal jobs from its predecessor", async () => {
+  const f = await incidentFixture();
+  f.complete();
+  const later = { ...f.current, id: 444, run_number: 103 };
+  f.hosted.runs.push(later);
+  f.hosted.jobs.set(
+    later.id,
+    f.jobsFor(later, ["pass", "pass", "pass"], [801, 802, 803]).slice(0, 2),
+  );
+  await expect(f.provider.checks(f.config, f.publication)).rejects.toMatchObject({
+    reason: "hosted-observation-unavailable",
+  });
+});
+
+it("SYNTHETIC later run appearing during job acquisition requires reobservation", async () => {
+  const f = await incidentFixture();
+  f.complete();
+  f.hosted.onJobs = () => {
+    f.hosted.runs.push({ ...f.current, id: 444, run_number: 103, status: "queued" });
+  };
+  await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toMatchObject({
+    reason: "hosted-observation-unavailable",
+  });
+  expect(f.calls).not.toContain("merge");
+});
+
+it("SYNTHETIC separate owning workflows retain every configured required context", async () => {
+  const f = await incidentFixture();
+  f.complete();
+  const other = {
+    ...f.current,
+    id: 444,
+    workflow_id: 8,
+    run_number: 1000,
+    path: ".github/workflows/windows.yml",
+  };
+  f.hosted.runs.push(other);
+  const jobs = f.hosted.jobs.get(f.current.id)!;
+  f.hosted.jobs.set(f.current.id, [jobs[0]!, jobs[2]!]);
+  f.hosted.jobs.set(other.id, [f.jobsFor(other, ["pass", "pending", "pass"], [801, 802, 803])[1]!]);
+  other.status = "in_progress";
+  await expect(deliveryStep(f.config, f.adapter, f.policy)).resolves.toMatchObject({
+    status: "observing-hosted-checks",
+    checks: [{ bucket: "pass" }, { bucket: "pending" }, { bucket: "pass" }],
+  });
+  expect(f.calls).not.toContain("merge");
+});
 
 function expectNoProviderAction(calls: string[]) {
   expect(calls).not.toContain("verify");
@@ -277,7 +1043,8 @@ function expectNoProviderAction(calls: string[]) {
 }
 
 afterEach(async () => {
-  for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
+  for (const root of roots.splice(0))
+    await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
 });
 
 it("completes the authorized normal path once with intent-backed mutations", async () => {
@@ -362,6 +1129,46 @@ it("rejects a self-consistent saved plan that was not authorized by policy", asy
   expect(f.calls).toEqual(["source", "policy"]);
 });
 
+it.each([false, true])(
+  "handles a pre-G0 delivery plan on resume (authorized: %s)",
+  async (authorized) => {
+    const f = await fixture();
+    const saved = { head, digest: digest(f.plan), plan: f.plan };
+    await writeState(f.config, "delivery-plan", saved);
+    if (authorized)
+      await writeState(f.config, "delivery-plan-authorization", {
+        head,
+        digest: saved.digest,
+        policyDigest: digest(f.config.policy),
+        controller: f.config.controller,
+      });
+    const nextPlan = structuredClone(f.plan);
+    nextPlan.publication.body += "\n\nReview G0: No, all stated constraints require this shape.";
+    const policy = {
+      async plan() {
+        f.calls.push("new-policy");
+        return nextPlan;
+      },
+    };
+    if (authorized) {
+      await expect(deliveryStep(f.config, f.adapter, policy)).resolves.toMatchObject({
+        status: "complete",
+      });
+      expect(f.state.publication?.body).toBe(saved.plan.publication.body);
+      expect(f.calls).not.toContain("new-policy");
+    } else {
+      await expect(deliveryStep(f.config, f.adapter, policy)).rejects.toThrow(
+        "unauthorized-delivery-plan",
+      );
+      expect(f.calls).toEqual(["source", "new-policy"]);
+      expectNoProviderAction(f.calls);
+    }
+    expect(
+      JSON.parse(await readFile(resolve(f.config.stateDirectory, "delivery-plan.json"), "utf8")),
+    ).toEqual(saved);
+  },
+);
+
 it("observes check startup and pending checks without republishing", async () => {
   const f = await fixture();
   f.state.checks = "empty";
@@ -387,7 +1194,7 @@ it("waits across intermediate jobs and job gaps for the real required aggregate 
     ["queued", []],
     ["in_progress", [f.check("Change Scope", "pending")]],
     ["in_progress", [f.check("Change Scope", "pass")]],
-    ["in_progress", [f.check("Static", "pass"), f.check("Unit", "pass")]],
+    ["in_progress", [f.check("Static", "pass", 455), f.check("Unit", "pass")]],
   ] as const) {
     f.evidence.runs[0]!.status = status;
     f.evidence.checks = [...checks];
@@ -426,14 +1233,11 @@ it.each([false, true])(
     const f = await aggregateFixture(async (ms) => {
       waits.push(ms);
       expect(f.calls).not.toContain("merge");
-      if (waits.length === 3)
-        f.evidence.runs = [
-          { head_sha: head, pull_requests: [{ number: f.publication.number }], status: "queued" },
-        ];
+      if (waits.length === 3) f.evidence.runs = [syntheticRun(f.publication, "queued")];
     });
     f.evidence.runs = [];
     if (advisory)
-      f.evidence.checks = [f.check("PR Scope", "pass"), f.check("Risk Review", "pending")];
+      f.evidence.checks = [f.check("PR Scope", "pass", 455), f.check("Risk Review", "pending")];
     await expect(deliveryStep(f.config, f.adapter, f.policy)).resolves.toMatchObject({
       status: "observing-hosted-checks",
       checks: [],
@@ -470,7 +1274,7 @@ it.each([false, true])(
     f.evidence.runs = [];
     if (advisory) f.evidence.checks = [f.check("PR Scope", "pass")];
     await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toThrow(
-      "missing-or-duplicate-check:PR Required",
+      "hosted-observation-unavailable",
     );
     expect(waits).toEqual(Array(12).fill(10_000));
     expect(f.calls).not.toContain("merge");
@@ -510,22 +1314,17 @@ it.each([
   if (["fail", "cancel", "skipping"].includes(mode))
     f.evidence.checks = [f.check("PR Required", mode as CheckEvidence["bucket"])];
   if (mode === "malformed") f.evidence.checks = [{ ...f.check("PR Required", "pass"), link: "" }];
+  if (mode === "fail" || mode === "cancel") f.evidence.runs[0]!.status = "completed";
   const result = deliveryStep(f.config, f.adapter, f.policy);
   if (mode === "fail" || mode === "cancel")
     await expect(result).resolves.toMatchObject({ status: "failed" });
   else
     await expect(result).rejects.toThrow(
-      mode === "publication drift"
-        ? "hosted-observation-unavailable"
-        : mode === "skipping"
-          ? "hosted-check-failed:PR Required"
-          : mode === "malformed"
-            ? "malformed-check:PR Required"
-            : "missing-or-duplicate-check:PR Required",
+      mode === "skipping" ? "hosted-check-failed:PR Required" : "hosted-observation-unavailable",
     );
   expect(f.calls).not.toContain("merge");
   expect(f.calls.filter((call) => call === "publish")).toHaveLength(1);
-  expect(waits).toHaveLength(mode === "no workflow" ? 12 : 0);
+  expect(waits).toHaveLength(["no workflow", "wrong PR"].includes(mode) ? 12 : 0);
 });
 
 it("revalidates publication identity during the startup retry", async () => {
@@ -555,152 +1354,108 @@ it.each([
 });
 
 it.each(["fail", "cancel"] as const)(
-  "returns a repair finding with the bounded failed run log for a %s check",
+  "captures complete attributable %s logs once, and resumes without mutation",
   async (bucket) => {
-    const f = await fixture();
-    f.state.checks = bucket;
-    const output = `Static Checks: invalid source-line references\nUnit Tests: stale lockfileSha256\nE2E: pgvector pull TCP reset\n${"PR Required aggregate shell boilerplate\n".repeat(200)}`;
-    const provider = githubDeliveryAdapter({
-      async gh(_config, args) {
-        expect(args).toEqual(["run", "view", "123", "--log-failed"]);
-        return output;
-      },
-      async ghJson(_config, args) {
-        expect(args).toEqual(["run", "view", "123", "--json", "status,headSha"]);
-        return { status: "completed", headSha: head };
-      },
-    });
-    f.adapter.failedCheckLog = (config, check) => provider.failedCheckLog!(config, check);
-
-    await expect(deliveryStep(f.config, f.adapter, f.policy)).resolves.toEqual({
+    const f = await aggregateFixture(undefined, ["linux", "windows", "macos"]);
+    f.evidence.runs[0]!.status = "completed";
+    f.evidence.checks = [
+      f.check("linux", "pass", 454),
+      f.check("windows", bucket, 455),
+      f.check("macos", bucket),
+    ];
+    f.evidence.log = `Static Checks: invalid source-line references\nUnit Tests: stale lockfileSha256\nE2E: pgvector pull TCP reset\n${"PR Required aggregate shell boilerplate\n".repeat(200)}`;
+    await expect(deliveryStep(f.config, f.adapter, f.policy)).resolves.toMatchObject({
       status: "failed",
-      head,
-      reviewId: "review-fixture",
       findings: [
         {
-          file: "macos",
-          line: 1,
-          severity: "blocking",
+          file: "windows",
           text: hostedFailurePrompt(resolve(f.config.stateDirectory, "hosted-failure.log")),
         },
       ],
     });
-    const evidence = await readFile(resolve(f.config.stateDirectory, "hosted-failure.log"), "utf8");
-    expect(evidence).toContain(output);
-    expect(evidence).toContain(head);
-    expect(evidence).toContain('"number":44');
-    expect(evidence).toContain("actions/runs/123");
-    f.adapter.failedCheckLog = async () => {
-      throw new Error("must reuse persisted full evidence");
-    };
-    await expect(deliveryStep(f.config, f.adapter, f.policy)).resolves.toMatchObject({
-      status: "failed",
-      findings: [
-        { text: hostedFailurePrompt(resolve(f.config.stateDirectory, "hosted-failure.log")) },
-      ],
-    });
-    expect(f.calls).not.toContain("merge");
-  },
-);
-
-it.each(["fail", "cancel"] as const)(
-  "waits for a %s check's run to complete before fetching its log",
-  async (bucket) => {
-    const f = await fixture();
-    f.state.checks = bucket;
-    let status = "in_progress";
-    const requests: string[][] = [];
-    const provider = githubDeliveryAdapter({
-      async ghJson(_config, args) {
-        requests.push(args);
-        expect(args).toEqual(["run", "view", "123", "--json", "status,headSha"]);
-        return { status, headSha: head };
-      },
-      async gh(_config, args) {
-        requests.push(args);
-        expect(args).toEqual(["run", "view", "123", "--log-failed"]);
-        return "macos job failed";
-      },
-    });
-    f.adapter.failedCheckLog = (config, check) => provider.failedCheckLog!(config, check);
-
-    await expect(deliveryStep(f.config, f.adapter, f.policy)).resolves.toMatchObject({
-      status: "observing-hosted-checks",
+    const path = resolve(f.config.stateDirectory, "hosted-failure.log");
+    const saved = await readFile(path, "utf8");
+    expect(saved).toContain(f.evidence.log);
+    expect(JSON.parse(saved.split("\n")[0]!)).toMatchObject({
+      head,
+      publication: { number: 44 },
       checks: [
-        { name: "linux", bucket: "pass" },
-        { name: "windows", bucket: "pass" },
-        { name: "macos", bucket },
+        { actions: { run: 123, attempt: 1, job: 455 } },
+        { actions: { run: 123, attempt: 1, job: 456 } },
       ],
     });
-    expect(requests).toEqual([["run", "view", "123", "--json", "status,headSha"]]);
-    expect(f.calls).not.toContain("merge");
-
-    status = "completed";
-    const checks = f.adapter.checks;
-    f.adapter.checks = async (config, publication) => {
-      const observed = await checks(config, publication);
-      observed.checks[0]!.bucket = "pending";
-      return observed;
-    };
-    await expect(deliveryStep(f.config, f.adapter, f.policy)).resolves.toEqual({
+    expect(f.requests.filter((args) => args.includes("--log-failed"))).toHaveLength(1);
+    await expect(deliveryStep(f.config, f.adapter, f.policy)).resolves.toMatchObject({
       status: "failed",
-      head,
-      reviewId: "review-fixture",
-      findings: [
-        {
-          file: "macos",
-          line: 1,
-          severity: "blocking",
-          text: hostedFailurePrompt(resolve(f.config.stateDirectory, "hosted-failure.log")),
-        },
-      ],
     });
-    expect(requests).toEqual([
-      ["run", "view", "123", "--json", "status,headSha"],
-      ["run", "view", "123", "--json", "status,headSha"],
-      ["run", "view", "123", "--log-failed"],
-    ]);
+    expect(await readFile(path, "utf8")).toBe(saved);
+    expect(f.requests.filter((args) => args.includes("--log-failed"))).toHaveLength(1);
     expect(f.calls.filter((call) => call === "publish")).toHaveLength(1);
     expect(f.calls).not.toContain("merge");
   },
 );
 
-it.each(["empty log", "log error", "no run id"])(
-  "blocks an unavailable failed check log: %s",
-  async (mode) => {
-    const f = await fixture();
-    f.state.checks = "fail";
-    const requests: string[][] = [];
-    const provider = githubDeliveryAdapter({
-      async ghJson(_config, args) {
-        requests.push(args);
-        expect(args).toEqual(["run", "view", "123", "--json", "status,headSha"]);
-        return { status: "completed", headSha: head };
-      },
-      async gh(_config, args) {
-        requests.push(args);
-        expect(args).toEqual(["run", "view", "123", "--log-failed"]);
-        if (mode === "log error") throw new Error("log unavailable");
-        return " \n";
-      },
+it.each(["fail", "cancel"] as const)(
+  "waits for the attributed %s run to complete before acquiring logs",
+  async (bucket) => {
+    const f = await aggregateFixture();
+    f.evidence.checks = [f.check("PR Required", bucket)];
+    await expect(deliveryStep(f.config, f.adapter, f.policy)).resolves.toMatchObject({
+      status: "observing-hosted-checks",
     });
-    f.adapter.failedCheckLog = (config, check) =>
-      provider.failedCheckLog!(config, mode === "no run id" ? { ...check, link: "" } : check);
-
-    await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toThrow(
-      "hosted-check-log-unavailable:macos",
-    );
-    expect(requests).toEqual(
-      mode === "no run id"
-        ? []
-        : [
-            ["run", "view", "123", "--json", "status,headSha"],
-            ["run", "view", "123", "--log-failed"],
-          ],
-    );
+    expect(f.requests.filter((args) => args.includes("--log-failed"))).toHaveLength(0);
+    f.evidence.runs[0]!.status = "completed";
+    await expect(deliveryStep(f.config, f.adapter, f.policy)).resolves.toMatchObject({
+      status: "failed",
+    });
+    expect(f.requests.filter((args) => args.includes("--log-failed"))).toHaveLength(1);
+    expect(f.calls.filter((call) => call === "publish")).toHaveLength(1);
     expect(f.calls).not.toContain("merge");
   },
 );
+
+it.each(["empty log", "log error", "attempt changed"])(
+  "blocks unavailable or inconsistent failure diagnostics: %s",
+  async (mode) => {
+    const f = await aggregateFixture();
+    f.evidence.runs[0]!.status = "completed";
+    f.evidence.checks = [f.check("PR Required", "fail")];
+    if (mode === "empty log") f.evidence.log = " \n";
+    if (mode === "log error") f.evidence.logError = true;
+    if (mode === "attempt changed")
+      f.evidence.afterLog = () => {
+        f.evidence.runs[0]!.run_attempt++;
+      };
+    await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toThrow(
+      "hosted-check-log-unavailable:PR Required",
+    );
+    await expect(
+      readFile(resolve(f.config.stateDirectory, "hosted-failure.log")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    expect(f.calls).not.toContain("merge");
+  },
+);
+
+it("refuses legacy failure evidence for an unfinished decision without changing its bytes", async () => {
+  const f = await aggregateFixture();
+  f.evidence.runs[0]!.status = "completed";
+  f.evidence.checks = [f.check("PR Required", "fail")];
+  const path = resolve(f.config.stateDirectory, "hosted-failure.log");
+  const old =
+    JSON.stringify({
+      repository: f.config.repository,
+      head,
+      publication: f.publication,
+      checks: [f.check("PR Required", "fail")],
+    }) + "\nold same-SHA failure\n";
+  await writeFile(path, old);
+  await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toThrow(
+    "hosted-observation-unavailable",
+  );
+  expect(await readFile(path, "utf8")).toBe(old);
+  expect(f.requests.filter((args) => args.includes("--log-failed"))).toHaveLength(0);
+  expect(f.calls).not.toContain("merge");
+});
 
 it("invalidates readiness when hosted observation moves from the reviewed head", async () => {
   const f = await fixture();
@@ -710,18 +1465,13 @@ it("invalidates readiness when hosted observation moves from the reviewed head",
 });
 
 it("does not attach logs from a workflow run on a different candidate", async () => {
-  const f = await fixture();
-  f.state.checks = "fail";
-  const provider = githubDeliveryAdapter({
-    async ghJson() {
-      return { status: "completed", headSha: "f".repeat(40) };
-    },
-    async gh() {
-      throw new Error("must not fetch another head's logs");
-    },
-  });
-  f.adapter.failedCheckLog = (config, check) => provider.failedCheckLog!(config, check);
-  await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toThrow("hosted-head-drift");
+  const f = await aggregateFixture();
+  f.evidence.runs[0]!.head_sha = "f".repeat(40);
+  f.evidence.checks = [f.check("PR Required", "fail")];
+  await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toThrow(
+    "hosted-observation-unavailable",
+  );
+  expect(f.requests.filter((args) => args.includes("--log-failed"))).toHaveLength(0);
   await expect(
     readFile(resolve(f.config.stateDirectory, "hosted-failure.log")),
   ).rejects.toMatchObject({ code: "ENOENT" });
@@ -1107,10 +1857,61 @@ it("refuses candidate workspace drift before any gate or provider mutation", asy
   expect(f.calls.some((call) => call.startsWith("gate:") || call === "publish")).toBe(false);
 });
 
-it.each(["typecheck", "format:check", "planning:board-check"])(
+// ISS-192: a recognized scoped static staleness failure leaves delivery as
+// diagnostic evidence, which is what admits the base control and single
+// gate-correction author; the retained cs-3779:1 shape stays unknown.
+it.each([
+  ["recognized", "diagnostic", ["docs/SYNTHETIC_INDEX.md is stale"]],
+  ["unrecognized", "unknown", []],
+] as const)(
+  "retains a %s verify:static:scoped failure once as %s evidence without publishing",
+  async (_shape, cause, diagnostics) => {
+    const f = await fixture();
+    let failures = 0;
+    const log = resolve(f.config.stateDirectory, "static-gate.log");
+    const evidence: GateFailureEvidence = {
+      head: f.config.candidateHead,
+      command: {
+        executable: process.execPath,
+        argv: ["fixture-pnpm", "run", "verify:static:scoped"],
+        cwd: f.config.worktree,
+      },
+      log,
+      cause,
+      diagnostics: [...diagnostics],
+    };
+    const run = f.adapter.runGate;
+    f.adapter.runGate = async (config, name, candidate) => {
+      if (name !== "verify:static:scoped") return run(config, name, candidate);
+      failures++;
+      return { status: "failed", output: "Error: docs/SYNTHETIC_INDEX.md is stale", evidence };
+    };
+    f.plan.gates = { beforeMirror: ["verify:static:scoped", "typecheck"], afterMirror: [] };
+    for (let replay = 0; replay < 2; replay++) {
+      const error = await deliveryStep(f.config, f.adapter, f.policy).catch((value) => value);
+      expect(error).toBeInstanceOf(LocalGateFailure);
+      expect(error).toMatchObject({
+        reason: "gate-attribution-unknown:verify:static:scoped",
+        gate: "verify:static:scoped",
+        evidence,
+      });
+      expect(isItemStopReason(error.reason)).toBe(false);
+    }
+    expect(failures).toBe(1);
+    expect(f.calls.filter((call) => call.startsWith("gate:"))).toEqual([]);
+    expect(
+      JSON.parse(await readFile(resolve(f.config.stateDirectory, "gate-1-failure.json"), "utf8")),
+    ).toMatchObject({ head: f.config.candidateHead, evidence });
+    expect(f.calls).not.toContain("publish");
+    expect(f.calls).not.toContain("merge");
+  },
+);
+
+it.each(["typecheck", "format:check", "planning:board-check", "verify:static:scoped"])(
   "retains an untyped %s failure without correction or replay",
   async (gate) => {
     const f = await fixture();
+    if (gate === "verify:static:scoped") f.plan.gates.beforeMirror.unshift(gate);
     let failures = 0;
     const run = f.adapter.runGate;
     f.adapter.runGate = async (config, name, head) => {

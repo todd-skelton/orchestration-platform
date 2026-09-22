@@ -25,18 +25,58 @@ export interface RepositoryIssueContext {
   rules: string;
 }
 
+export interface OpsAdmission {
+  issueNumber: number;
+  authorityUrl: string;
+}
+
+export function validateOpsAdmission(input: {
+  repository: string;
+  targetMilestone?: number;
+  opsAdmission?: unknown;
+}) {
+  const value = input.opsAdmission;
+  if (value === undefined) return;
+  if (
+    input.repository !== "chase-sets/chase-sets" ||
+    !Number.isSafeInteger(input.targetMilestone) ||
+    Number(input.targetMilestone) <= 0 ||
+    value === null ||
+    typeof value !== "object" ||
+    Array.isArray(value) ||
+    Object.keys(value).length !== 2 ||
+    !("issueNumber" in value) ||
+    !Number.isSafeInteger(value.issueNumber) ||
+    Number(value.issueNumber) <= 0 ||
+    !("authorityUrl" in value) ||
+    typeof value.authorityUrl !== "string" ||
+    value.authorityUrl.length > 500 ||
+    !/^https:\/\/github\.com\/chase-sets\/chase-sets\/issues\/[1-9]\d*#issuecomment-[1-9]\d*$/.test(
+      value.authorityUrl,
+    ) ||
+    /\s/.test(value.authorityUrl)
+  )
+    throw new QueueBlocked("invalid-ops-admission");
+}
+
 export interface RepositoryAdapter {
   selectCandidates(input: {
     repository: string;
     executorRoot: string;
+    planningRevision?: string;
+    gitExecutable?: string;
     targetMilestone?: number;
+    opsAdmission?: OpsAdmission;
   }): Promise<RepositoryCandidate[]> | RepositoryCandidate[];
   issueContext(input: {
     repository: string;
     key: string;
     number: number;
     executorRoot: string;
+    planningRevision?: string;
+    gitExecutable?: string;
     targetMilestone?: number;
+    opsAdmission?: OpsAdmission;
   }): Promise<RepositoryIssueContext> | RepositoryIssueContext;
   branchName(input: {
     key: string;
@@ -56,7 +96,7 @@ export interface RepositoryAdapter {
     config: DeliveryConfig;
     delivery: Extract<DeliveryResult, { status: "complete" }>;
   }): Promise<void> | void;
-  mirrorPlanning?(input: { config: DeliveryConfig }):
+  mirrorPlanning?(input: { config: DeliveryConfig; gitExecutable?: string }):
     | Promise<{
         gates: DeliveryPlan["gates"];
         drafts: DraftPlan[];
@@ -141,7 +181,7 @@ export function repositoryDeliveryPolicy(
         ? await adapter.localGates({ repository: config.repository })
         : [];
       const mirror = adapter.mirrorPlanning
-        ? await adapter.mirrorPlanning({ config })
+        ? await adapter.mirrorPlanning({ config, gitExecutable })
         : { gates: { beforeMirror: [], afterMirror: [] }, drafts: [] };
       return {
         gates: {
