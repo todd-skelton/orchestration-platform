@@ -3624,29 +3624,30 @@ it("runs the composed self-repository setup through the real Git adapter", async
   ).resolves.toMatchObject({ stdout: `${selected.base}\n` });
 }, 30_000);
 
-it("authors fresh runs beside preserved issue worktrees and reuses each run on resume", async () => {
-  const f = await loopFixture();
-  const git = async (args: string[], cwd = f.repository) =>
-    (await execute(f.gitExecutable, ["-C", cwd, ...args])).stdout.trim();
-  const preserved = resolve(f.repository, "..", "preserved-source");
-  await git(["worktree", "add", "-b", "codex/iss-104", preserved, f.selected.base]);
-  await writeFile(resolve(preserved, "unfinished.txt"), "preserved work\n");
-  const preservedStatus = await git(["status", "--porcelain"], preserved);
-  let installs = 0;
-  const setupAdapter = gitSetupAdapter({
-    async install(_launcher, _args, cwd) {
-      installs++;
-      await mkdir(resolve(cwd, "node_modules"), { recursive: true });
-      await writeFile(resolve(cwd, "node_modules/.modules.yaml"), "fixture: true\n");
-      return "succeeded";
-    },
-  });
-  const branches = new Set<string>();
-  for (const run of ["fresh-one", "fresh-two", "fresh..three.lock"]) {
+const freshRuns = ["fresh-one", "fresh-two", "fresh..three.lock"];
+
+it.each(freshRuns)(
+  "authors fresh run %s beside a preserved issue worktree and reuses it on resume",
+  async (run) => {
+    const f = await loopFixture();
+    const git = async (args: string[], cwd = f.repository) =>
+      (await execute(f.gitExecutable, ["-C", cwd, ...args])).stdout.trim();
+    const preserved = resolve(f.repository, "..", "preserved-source");
+    await git(["worktree", "add", "-b", "codex/iss-104", preserved, f.selected.base]);
+    await writeFile(resolve(preserved, "unfinished.txt"), "preserved work\n");
+    const preservedStatus = await git(["status", "--porcelain"], preserved);
+    let installs = 0;
+    const setupAdapter = gitSetupAdapter({
+      async install(_launcher, _args, cwd) {
+        installs++;
+        await mkdir(resolve(cwd, "node_modules"), { recursive: true });
+        await writeFile(resolve(cwd, "node_modules/.modules.yaml"), "fixture: true\n");
+        return "succeeded";
+      },
+    });
     const loop = { ...f.loop, run, worktreeRoot: resolve(f.loop.worktreeRoot, run) };
     const queue = await queueConfigFromLoop(loop, f.repository, f.selected, repositoryPolicy);
     const item = queue.items[0]!;
-    branches.add(item.setup.sourceBranch);
     expect(item.delivery.policy).toMatchObject({ sourceBranch: "codex/iss-104" });
     expect(item.delivery.localBranch).toBe(item.setup.sourceBranch);
     const adapter = repositoryQueueAdapter(queue, f.repository, { setup: setupAdapter });
@@ -3660,8 +3661,8 @@ it("authors fresh runs beside preserved issue worktrees and reuses each run on r
     };
     await expect(queueStep(queue, toAuthor)).resolves.toMatchObject({ status: "observing-author" });
     expect(authors).toBe(1);
+    expect(installs).toBe(3);
     const before = await git(["worktree", "list", "--porcelain"]);
-    const installCount = installs;
     const resumed = await queueConfigFromLoop(loop, f.repository, f.selected, repositoryPolicy);
     expect(resumed).toEqual(queue);
     await expect(
@@ -3670,20 +3671,35 @@ it("authors fresh runs beside preserved issue worktrees and reuses each run on r
     await expect(queueStep(resumed, toAuthor)).resolves.toMatchObject({
       status: "observing-author",
     });
-    expect(installs).toBe(installCount);
+    expect(authors).toBe(2);
+    expect(installs).toBe(3);
     expect(await git(["worktree", "list", "--porcelain"])).toBe(before);
     expect(await git(["branch", "--show-current"], item.setup.sourceWorktree)).toBe(
       item.setup.sourceBranch,
     );
     for (const path of [item.setup.pilotWorktree, item.setup.reviewWorktree])
       expect(await git(["branch", "--show-current"], path)).toBe("");
+    expect(await git(["branch", "--show-current"], preserved)).toBe("codex/iss-104");
+    expect(await git(["rev-parse", "HEAD"], preserved)).toBe(f.selected.base);
+    expect(await git(["status", "--porcelain"], preserved)).toBe(preservedStatus);
+    expect(await readFile(resolve(preserved, "unfinished.txt"), "utf8")).toBe("preserved work\n");
+  },
+  30_000,
+);
+
+it("composes distinct Git-safe source branches across fresh runs without setup", async () => {
+  const f = await loopFixture();
+  const branches = new Set<string>();
+  for (const run of freshRuns) {
+    const loop = { ...f.loop, run, worktreeRoot: resolve(f.loop.worktreeRoot, run) };
+    const queue = await queueConfigFromLoop(loop, f.repository, f.selected, repositoryPolicy);
+    const branch = queue.items[0]!.setup.sourceBranch;
+    branches.add(branch);
+    await expect(
+      execute(f.gitExecutable, ["-C", f.repository, "check-ref-format", "--branch", branch]),
+    ).resolves.toMatchObject({ stdout: `${branch}\n` });
   }
   expect(branches.size).toBe(3);
-  expect(installs).toBe(9);
-  expect(await git(["branch", "--show-current"], preserved)).toBe("codex/iss-104");
-  expect(await git(["rev-parse", "HEAD"], preserved)).toBe(f.selected.base);
-  expect(await git(["status", "--porcelain"], preserved)).toBe(preservedStatus);
-  expect(await readFile(resolve(preserved, "unfinished.txt"), "utf8")).toBe("preserved work\n");
 }, 30_000);
 
 it("retains a legacy attempt's published local branch from its saved setup plan", async () => {
