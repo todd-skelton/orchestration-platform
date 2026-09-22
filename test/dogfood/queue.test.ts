@@ -3726,7 +3726,7 @@ it("composes distinct Git-safe source branches across coexisting fresh runs with
       `worktree ${sourceWorktree.replaceAll("\\", "/")}\nHEAD ${f.selected.base}\nbranch refs/heads/${sourceBranch}`,
     );
   expect(registered).toContain(
-    `worktree ${preserved.replaceAll("\\", "/")}\nHEAD ${f.selected.base}\nbranch refs/heads/codex/iss-104`,
+    `worktree ${(await realpath(preserved)).replaceAll("\\", "/")}\nHEAD ${f.selected.base}\nbranch refs/heads/codex/iss-104`,
   );
   expect(await git(["branch", "--show-current"], preserved)).toBe("codex/iss-104");
   expect(await git(["rev-parse", "HEAD"], preserved)).toBe(f.selected.base);
