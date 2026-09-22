@@ -3687,19 +3687,51 @@ it.each(freshRuns)(
   30_000,
 );
 
-it("composes distinct Git-safe source branches across fresh runs without setup", async () => {
+it("composes distinct Git-safe source branches across coexisting fresh runs without installs", async () => {
   const f = await loopFixture();
+  const git = async (args: string[], cwd = f.repository) =>
+    (await execute(f.gitExecutable, ["-C", cwd, ...args])).stdout.trim();
+  const preserved = resolve(f.repository, "..", "preserved-source");
+  await git(["worktree", "add", "-b", "codex/iss-104", preserved, f.selected.base]);
+  await writeFile(resolve(preserved, "unfinished.txt"), "preserved work\n");
+  const preservedStatus = await git(["status", "--porcelain"], preserved);
+  const adapter = gitSetupAdapter({ gitExecutable: f.gitExecutable });
   const branches = new Set<string>();
+  const sources: QueueItem["setup"][] = [];
   for (const run of freshRuns) {
     const loop = { ...f.loop, run, worktreeRoot: resolve(f.loop.worktreeRoot, run) };
     const queue = await queueConfigFromLoop(loop, f.repository, f.selected, repositoryPolicy);
-    const branch = queue.items[0]!.setup.sourceBranch;
+    const item = queue.items[0]!;
+    const branch = item.setup.sourceBranch;
     branches.add(branch);
     await expect(
       execute(f.gitExecutable, ["-C", f.repository, "check-ref-format", "--branch", branch]),
     ).resolves.toMatchObject({ stdout: `${branch}\n` });
+    await adapter.assertExecutor(item.setup, f.repository);
+    await expect(adapter.observeWorktree(item.setup, "source", false)).resolves.toEqual({
+      state: "absent",
+    });
+    await adapter.createWorktree(item.setup, "source");
+    await expect(adapter.observeWorktree(item.setup, "source", true)).resolves.toEqual({
+      state: "confirmed",
+      head: f.selected.base,
+      branch,
+    });
+    sources.push(item.setup);
   }
   expect(branches.size).toBe(3);
+  const registered = (await git(["worktree", "list", "--porcelain"])).split("\n\n");
+  for (const { sourceWorktree, sourceBranch } of sources)
+    expect(registered).toContain(
+      `worktree ${sourceWorktree.replaceAll("\\", "/")}\nHEAD ${f.selected.base}\nbranch refs/heads/${sourceBranch}`,
+    );
+  expect(registered).toContain(
+    `worktree ${preserved.replaceAll("\\", "/")}\nHEAD ${f.selected.base}\nbranch refs/heads/codex/iss-104`,
+  );
+  expect(await git(["branch", "--show-current"], preserved)).toBe("codex/iss-104");
+  expect(await git(["rev-parse", "HEAD"], preserved)).toBe(f.selected.base);
+  expect(await git(["status", "--porcelain"], preserved)).toBe(preservedStatus);
+  expect(await readFile(resolve(preserved, "unfinished.txt"), "utf8")).toBe("preserved work\n");
 }, 30_000);
 
 it("retains a legacy attempt's published local branch from its saved setup plan", async () => {
