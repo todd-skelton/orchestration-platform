@@ -8,6 +8,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import {
   WORKER_ENVIRONMENT_ALLOWLIST,
   WINDOWS_WORKER_ENVIRONMENT_ALLOWLIST,
+  MAX_VERDICT_EXCERPT_LENGTH,
   authorTemporaryRoot,
   admitLaunch,
   codexAdapter,
@@ -16,18 +17,24 @@ import {
   parseTrace,
   probePoolModel,
   probeProvider,
+  verdictExcerpt,
   waitForProvider,
   DEFAULT_PROVIDER_OUTAGE_CEILING_MS,
   workerEnvironment,
 } from "../../scripts/dogfood/dispatch-adapter.js";
 import type { Adapter, Config, NativeDbIdentity } from "../../scripts/dogfood/flow.js";
+import { QueueBlocked, workerPrompt } from "../../scripts/dogfood/flow.js";
 import { queueStep } from "../../scripts/dogfood/queue.js";
 import { sourceFailureFixture } from "./fixtures/source-failure.js";
 import { parseReview } from "../../scripts/dogfood/repair-policy.mjs";
+import { sourceReviewerReportPrompt } from "../../scripts/dogfood/repair-adapter.js";
+import { MAX_TERMINAL_SUMMARY_LENGTH } from "../../scripts/dogfood/terminal-summary.mjs";
 import overlengthReview from "./fixtures/iss-150-overlength.json" with { type: "json" };
 import prefixedReview from "./fixtures/iss-150-prefixed.json" with { type: "json" };
 import prefixedAuthor from "./fixtures/iss-177-prefixed-author.json" with { type: "json" };
 import overlengthAuthor from "./fixtures/iss-183-overlength-author.json" with { type: "json" };
+import fencedReview from "./fixtures/iss-198-fenced-review.json" with { type: "json" };
+import longReview from "./fixtures/iss-198-overlength-review.json" with { type: "json" };
 import {
   NATIVE_DB_REPLY_LIMIT,
   NATIVE_DB_REQUEST_LIMIT,
@@ -418,7 +425,10 @@ it("classifies an outage before bounding the diagnostic summary", () => {
   const terminal = parseTrace(
     trace([
       rows[0],
-      { type: "error", message: `${"x".repeat(2100)} http://pool.test/v1/responses` },
+      {
+        type: "error",
+        message: `${"x".repeat(MAX_TERMINAL_SUMMARY_LENGTH + 100)} http://pool.test/v1/responses`,
+      },
     ]),
     true,
     "author",
@@ -427,7 +437,7 @@ it("classifies an outage before bounding the diagnostic summary", () => {
     true,
     "http://pool.test/v1",
   );
-  expect(terminal.summary).toHaveLength(2000);
+  expect(terminal.summary).toHaveLength(MAX_TERMINAL_SUMMARY_LENGTH);
   expect(terminal.providerFailure).toBe(true);
 });
 it("defaults provider waiting to thirty minutes", async () => {
@@ -1068,9 +1078,9 @@ it("retains exact reviewer reports and rejects oversized or obsolete output", ()
   expect(() => parseTrace(verdict(7), true, "reviewer", config, id)).toThrow(
     "malformed-worker-verdict",
   );
-  expect(() => parseTrace(verdict("x".repeat(2000)), true, "reviewer", config, id)).toThrow(
-    "malformed-worker-verdict",
-  );
+  expect(() =>
+    parseTrace(verdict("x".repeat(MAX_TERMINAL_SUMMARY_LENGTH)), true, "reviewer", config, id),
+  ).toThrow("malformed-worker-verdict");
   expect(() =>
     parseTrace(verdict("simplest", { summary: "obsolete" }), true, "reviewer", config, id),
   ).toThrow("malformed-worker-verdict");
@@ -1097,8 +1107,10 @@ it("accepts the preserved prose-prefixed final message by its sole verdict objec
     JSON.parse(message.slice(message.indexOf("{"))),
   );
 });
-it.each([2276, 2302])(
-  "rejects an otherwise valid %i-character verdict only for length and records the diagnostic",
+// ISS-198 raised the shared bound above ISS-150's 2276 and 2302, so those
+// recorded lengths now pass; refusal is exercised one character above the bound.
+it.each([2276, 2302, MAX_TERMINAL_SUMMARY_LENGTH + 1])(
+  "rejects an otherwise valid %i-character verdict only above the shared bound and records the diagnostic",
   async (length) => {
     const captured = JSON.parse(overlengthReview[1]!.item!.text);
     expect(JSON.stringify(captured)).toHaveLength(2276);
@@ -1122,32 +1134,46 @@ it.each([2276, 2302])(
       trace: resolve(root, "reviewer.jsonl"),
       launchedAt: 1,
     };
-    const diagnostic = `Reviewer verdict serialized length is ${length} characters; maximum is 2000. Shorten findings and G0 to fit.`;
+    await writeFile(attempt.trace, trace(events));
+    await writeFile(resolve(root, "reviewer.exit.json"), JSON.stringify({ code: 0 }));
+    const observed = codexAdapter().observe(
+      "reviewer",
+      { ...preservedConfig, reviewWorktree: resolve(import.meta.dirname, "../..") },
+      attempt,
+    );
+    if (length <= MAX_TERMINAL_SUMMARY_LENGTH) {
+      expect(parseTrace(trace(events), true, "reviewer", preservedConfig)).toMatchObject({
+        status: "passed",
+        head: preservedHead,
+        summary: JSON.stringify(verdict),
+      });
+      await expect(observed).resolves.toMatchObject({ status: "passed", head: preservedHead });
+      return;
+    }
+    const diagnostic = `Reviewer verdict serialized length is ${length} characters; maximum is ${MAX_TERMINAL_SUMMARY_LENGTH}. Shorten findings and G0 to fit.`;
     expect(() => parseTrace(trace(events), true, "reviewer", preservedConfig)).toThrow(
       "malformed-worker-verdict",
     );
-    await writeFile(attempt.trace, trace(events));
-    await writeFile(resolve(root, "reviewer.exit.json"), JSON.stringify({ code: 0 }));
-    await expect(
-      codexAdapter().observe(
-        "reviewer",
-        { ...preservedConfig, reviewWorktree: resolve(import.meta.dirname, "../..") },
-        attempt,
-      ),
-    ).resolves.toMatchObject({ status: "malformed", summary: diagnostic });
+    await expect(observed).resolves.toMatchObject({
+      status: "malformed",
+      summary: expect.stringContaining(diagnostic),
+    });
   },
 );
-it.each([2000, 2001])("enforces the serialized review boundary at %i characters", (length) => {
-  const verdict = JSON.parse(rows[1]!.item!.text);
-  verdict.g0 = "";
-  verdict.g0 = "x".repeat(length - JSON.stringify(verdict).length);
-  const events = structuredClone(rows);
-  // Message whitespace is excluded from the serialized-object limit.
-  events[1]!.item!.text = `Review complete.\n${JSON.stringify(verdict, null, 2)}\n`;
-  const parse = () => parseTrace(trace(events), true, "reviewer", config);
-  if (length === 2000) expect(parse().summary).toHaveLength(2000);
-  else expect(parse).toThrow("malformed-worker-verdict");
-});
+it.each([MAX_TERMINAL_SUMMARY_LENGTH, MAX_TERMINAL_SUMMARY_LENGTH + 1])(
+  "enforces the serialized review boundary at %i characters",
+  (length) => {
+    const verdict = JSON.parse(rows[1]!.item!.text);
+    verdict.g0 = "";
+    verdict.g0 = "x".repeat(length - JSON.stringify(verdict).length);
+    const events = structuredClone(rows);
+    // Message whitespace is excluded from the serialized-object limit.
+    events[1]!.item!.text = `Review complete.\n${JSON.stringify(verdict, null, 2)}\n`;
+    const parse = () => parseTrace(trace(events), true, "reviewer", config);
+    if (length === MAX_TERMINAL_SUMMARY_LENGTH) expect(parse().summary).toHaveLength(length);
+    else expect(parse).toThrow("malformed-worker-verdict");
+  },
+);
 it.each([
   "I inspected call({ option: true })",
   'I inspected call({ option: {"nested":true} })',
@@ -1252,51 +1278,56 @@ it("parses the recorded 2560-character author message through the real observer"
 const authorVerdict = { run: config.run, role: "author", head, verdict: "PASS", summary: "" };
 // Minimal verbatim events from author-dc931f49 in ISS-182, trace SHA-256
 // 54596454139b7ffe47f52d9459c9f0a6a4e3c71e0f31ef46745abe3f6c307d5e.
-it.each([2079, 2000, 2001])("observes the author summary boundary: %i", async (length) => {
-  const events = structuredClone(overlengthAuthor);
-  const verdict = JSON.parse(events[1]!.item!.text);
-  expect(events[1]!.item!.text).toHaveLength(2225);
-  expect(verdict.summary).toHaveLength(2079);
-  if (length !== 2079) {
-    events[0]!.thread_id = "00000000-0000-4000-8000-000000000183";
-    Object.assign(verdict, { run: "synthetic-author-length", head, summary: "x".repeat(length) });
-    events[1]!.item!.text = `Synthetic prefix.\n${JSON.stringify(verdict)}`;
-  }
-  const root = await realpath(await mkdtemp(resolve(tmpdir(), "dogfood-author-length-")));
-  cleanup.push(root);
-  const attempt = {
-    id: events[0]!.thread_id!,
-    pid: process.pid,
-    trace: resolve(root, "author.jsonl"),
-    launchedAt: 1,
-  };
-  const current = {
-    ...config,
-    run: verdict.run,
-    worktree: resolve(import.meta.dirname, "../.."),
-  };
-  await writeFile(attempt.trace, trace(events));
-  await writeFile(resolve(root, "author.exit.json"), JSON.stringify({ code: 0 }));
-  if (length === 2000) {
-    await expect(codexAdapter().observe("author", current, attempt)).resolves.toMatchObject({
-      status: "passed",
-      summary: verdict.summary,
-      head,
-    });
-  } else {
-    const diagnostic = `Author summary length is ${length} characters; maximum is 2000. Inspect and verify the work, then return a valid verdict with a shorter summary.`;
-    expect(() => parseTrace(trace(events), true, "author", current, attempt.id)).toThrow(
-      "malformed-worker-verdict",
-    );
-    await expect(codexAdapter().observe("author", current, attempt)).resolves.toMatchObject({
-      id: attempt.id,
-      status: "malformed",
-      summary: diagnostic,
-      usage: events[2]!.usage,
-    });
-    expect(diagnostic.length).toBeLessThan(2000);
-  }
-});
+// ISS-198 raised the shared bound, so the recorded 2079-character summary now
+// passes; refusal is exercised one character above the bound.
+it.each([2079, MAX_TERMINAL_SUMMARY_LENGTH, MAX_TERMINAL_SUMMARY_LENGTH + 1])(
+  "observes the author summary boundary: %i",
+  async (length) => {
+    const events = structuredClone(overlengthAuthor);
+    const verdict = JSON.parse(events[1]!.item!.text);
+    expect(events[1]!.item!.text).toHaveLength(2225);
+    expect(verdict.summary).toHaveLength(2079);
+    if (length !== 2079) {
+      events[0]!.thread_id = "00000000-0000-4000-8000-000000000183";
+      Object.assign(verdict, { run: "synthetic-author-length", head, summary: "x".repeat(length) });
+      events[1]!.item!.text = `Synthetic prefix.\n${JSON.stringify(verdict)}`;
+    }
+    const root = await realpath(await mkdtemp(resolve(tmpdir(), "dogfood-author-length-")));
+    cleanup.push(root);
+    const attempt = {
+      id: events[0]!.thread_id!,
+      pid: process.pid,
+      trace: resolve(root, "author.jsonl"),
+      launchedAt: 1,
+    };
+    const current = {
+      ...config,
+      run: verdict.run,
+      worktree: resolve(import.meta.dirname, "../.."),
+    };
+    await writeFile(attempt.trace, trace(events));
+    await writeFile(resolve(root, "author.exit.json"), JSON.stringify({ code: 0 }));
+    if (length <= MAX_TERMINAL_SUMMARY_LENGTH) {
+      await expect(codexAdapter().observe("author", current, attempt)).resolves.toMatchObject({
+        status: "passed",
+        summary: verdict.summary,
+        head: verdict.head,
+      });
+    } else {
+      const diagnostic = `Author summary length is ${length} characters; maximum is ${MAX_TERMINAL_SUMMARY_LENGTH}. Inspect and verify the work, then return a valid verdict with a shorter summary.`;
+      expect(() => parseTrace(trace(events), true, "author", current, attempt.id)).toThrow(
+        "malformed-worker-verdict",
+      );
+      await expect(codexAdapter().observe("author", current, attempt)).resolves.toMatchObject({
+        id: attempt.id,
+        status: "malformed",
+        summary: expect.stringContaining(diagnostic),
+        usage: events[2]!.usage,
+      });
+      expect(diagnostic.length).toBeLessThan(MAX_TERMINAL_SUMMARY_LENGTH);
+    }
+  },
+);
 it.each([
   "thread",
   "run",
@@ -1310,7 +1341,7 @@ it.each([
   const root = await realpath(await mkdtemp(resolve(tmpdir(), "dogfood-author-control-")));
   cleanup.push(root);
   const syntheticId = "00000000-0000-4000-8000-000000000183";
-  const verdict = { ...authorVerdict, summary: "x".repeat(2001) };
+  const verdict = { ...authorVerdict, summary: "x".repeat(MAX_TERMINAL_SUMMARY_LENGTH + 1) };
   if (mode === "run") verdict.run = "synthetic-wrong-run";
   if (mode === "role") verdict.role = "reviewer";
   if (mode === "FAIL" || mode === "wrong-head") {
@@ -1391,14 +1422,17 @@ it.each([
     "malformed-worker-verdict",
   );
 });
-it.each([2000, 2001])("enforces only the author summary cap at %i characters", (length) => {
-  const events = authorEvents(
-    `Work complete.\n${JSON.stringify({ ...authorVerdict, summary: "x".repeat(length) })}`,
-  );
-  const parse = () => parseTrace(trace(events), true, "author", config);
-  if (length === 2000) expect(parse().summary).toBe("x".repeat(length));
-  else expect(parse).toThrow("malformed-worker-verdict");
-});
+it.each([MAX_TERMINAL_SUMMARY_LENGTH, MAX_TERMINAL_SUMMARY_LENGTH + 1])(
+  "enforces only the author summary cap at %i characters",
+  (length) => {
+    const events = authorEvents(
+      `Work complete.\n${JSON.stringify({ ...authorVerdict, summary: "x".repeat(length) })}`,
+    );
+    const parse = () => parseTrace(trace(events), true, "author", config);
+    if (length === MAX_TERMINAL_SUMMARY_LENGTH) expect(parse().summary).toBe("x".repeat(length));
+    else expect(parse).toThrow("malformed-worker-verdict");
+  },
+);
 it("retains completion, identity, last-message and FAIL semantics for prefixed authors", () => {
   const events = authorEvents();
   expect(parseTrace(trace(events), false, "author", config, id).status).toBe("running");
@@ -2458,4 +2492,279 @@ it("refuses a pending duplicate and two closed-state replays without reaching th
     );
   await c.flush();
   expect(c.written).toHaveLength(1);
+});
+
+// ISS-198: final agent messages and terminal events copied verbatim from the
+// m1-iss167-20260921T1457 reviewer traces 75f8e370 (attempt 1, trace SHA-256
+// 9931b66657035883bdc833a8953e865fb6cb2c634f04b695ba55e09186c68770) and
+// 12ba7a5d (attempt 2, trace SHA-256
+// 2ed56fa9a05269f7218368ab13f70eb4245b015755b979987216292ef1aedb85). Both
+// exited {"code":0,"signal":null} with schema-valid PASS verdicts and were
+// discarded as malformed: the first for its closing fence, the second for
+// measuring 2036 characters against the old 2000-character bound.
+const iss167Config = { ...config, run: "m1-iss167-20260921T1457" };
+const fencedMessage = fencedReview[1]!.item!.text;
+const fencedPayload = fencedMessage.slice(
+  fencedMessage.indexOf("{"),
+  fencedMessage.lastIndexOf("}") + 1,
+);
+const longMessage = longReview[1]!.item!.text;
+const reviewerEvents = (events: typeof fencedReview, text: string) => {
+  const copy = structuredClone(events);
+  copy[1]!.item!.text = text;
+  return copy;
+};
+async function observeReviewer(
+  events: typeof fencedReview,
+  current: Config = iss167Config,
+  pid = 999_999,
+) {
+  const root = await realpath(await mkdtemp(resolve(tmpdir(), "dogfood-iss198-")));
+  cleanup.push(root);
+  const attempt = {
+    id: events[0]!.thread_id!,
+    pid,
+    trace: resolve(root, "reviewer.jsonl"),
+    launchedAt: 1,
+  };
+  await writeFile(attempt.trace, trace(events));
+  await writeFile(resolve(root, "reviewer.exit.json"), JSON.stringify({ code: 0 }));
+  return codexAdapter().observe(
+    "reviewer",
+    { ...current, reviewWorktree: resolve(import.meta.dirname, "../..") },
+    attempt,
+  );
+}
+it("accepts the verbatim fenced 75f8e370 report exactly as its unfenced payload", async () => {
+  expect(fencedMessage).toHaveLength(1376);
+  expect(fencedMessage).toContain("\n\n```json\n{");
+  expect(fencedMessage.endsWith("}\n```")).toBe(true);
+  const verdict = JSON.parse(fencedPayload);
+  const expected = {
+    id: fencedReview[0]!.thread_id,
+    status: "passed",
+    head: "fc58af568f759ca45ca184734d272177f28a6077",
+    summary: JSON.stringify(verdict),
+    usage: fencedReview[2]!.usage,
+  };
+  expect(parseTrace(trace(fencedReview), true, "reviewer", iss167Config)).toEqual(expected);
+  await expect(observeReviewer(fencedReview)).resolves.toEqual(expected);
+  expect(parseReview(expected.summary, iss167Config.run, expected.head)).toEqual(verdict);
+  // The identical payload without its fence, with its prose, and alone.
+  const unfenced = fencedMessage.replace("```json\n", "").replace(/\n```$/, "");
+  expect(unfenced).toBe(
+    `${fencedMessage.slice(0, fencedMessage.indexOf("```json"))}${fencedPayload}`,
+  );
+  for (const text of [unfenced, fencedPayload, `\`\`\`json\n${fencedPayload}\n\`\`\``])
+    expect(
+      parseTrace(trace(reviewerEvents(fencedReview, text)), true, "reviewer", iss167Config),
+    ).toEqual(expected);
+});
+it("accepts the verbatim 2036-character 12ba7a5d report and refuses one character above the bound", async () => {
+  expect(longMessage).toHaveLength(2036);
+  const verdict = JSON.parse(longMessage);
+  expect(JSON.stringify(verdict)).toBe(longMessage);
+  // The stated bound admits the recorded report with stated headroom and stays finite.
+  expect(MAX_TERMINAL_SUMMARY_LENGTH).toBe(4000);
+  expect(MAX_TERMINAL_SUMMARY_LENGTH - longMessage.length).toBe(1964);
+  const expected = {
+    id: longReview[0]!.thread_id,
+    status: "passed",
+    head: "6730bbb7346893872bc49d41ddb42d4b506f8912",
+    summary: longMessage,
+    usage: longReview[2]!.usage,
+  };
+  expect(parseTrace(trace(longReview), true, "reviewer", iss167Config)).toEqual(expected);
+  await expect(observeReviewer(longReview)).resolves.toEqual(expected);
+  expect(parseReview(longMessage, iss167Config.run, expected.head)).toEqual(verdict);
+  const padded = JSON.stringify({
+    ...verdict,
+    g0: verdict.g0 + "x".repeat(MAX_TERMINAL_SUMMARY_LENGTH + 1 - longMessage.length),
+  });
+  expect(padded).toHaveLength(MAX_TERMINAL_SUMMARY_LENGTH + 1);
+  const events = reviewerEvents(longReview, padded);
+  const diagnostic = `Reviewer verdict serialized length is ${MAX_TERMINAL_SUMMARY_LENGTH + 1} characters; maximum is ${MAX_TERMINAL_SUMMARY_LENGTH}. Shorten findings and G0 to fit.`;
+  expect(() => parseTrace(trace(events), true, "reviewer", iss167Config)).toThrow(
+    "malformed-worker-verdict",
+  );
+  await expect(observeReviewer(events)).resolves.toMatchObject({
+    status: "malformed",
+    summary: expect.stringContaining(diagnostic),
+  });
+});
+it("bounds the discarded-message excerpt to its stated length", () => {
+  expect(MAX_VERDICT_EXCERPT_LENGTH).toBe(600);
+  const short = 'short "quoted"\nmessage';
+  expect(JSON.parse(verdictExcerpt(short))).toBe(short);
+  expect(JSON.parse(verdictExcerpt("x".repeat(MAX_VERDICT_EXCERPT_LENGTH)))).toHaveLength(
+    MAX_VERDICT_EXCERPT_LENGTH,
+  );
+  const long = Array.from({ length: 10_000 }, (_, index) => String(index % 10)).join("");
+  const [headPart, tailPart, ...rest] = verdictExcerpt(long).split(" ... ");
+  expect(rest).toEqual([]);
+  expect(JSON.parse(headPart!)).toBe(long.slice(0, MAX_VERDICT_EXCERPT_LENGTH / 2));
+  expect(JSON.parse(tailPart!)).toBe(long.slice(-MAX_VERDICT_EXCERPT_LENGTH / 2));
+});
+// Red before: the preserved iss-167-attempt-1 reviewer-attempt.json retry
+// context carried only "(malformed-worker-verdict)" with no diagnostics, and the
+// iss-167-attempt-2 record carried the length diagnostic with no excerpt.
+it.each([
+  [
+    "oversized",
+    () =>
+      JSON.stringify({
+        ...JSON.parse(longMessage),
+        g0:
+          JSON.parse(longMessage).g0 +
+          "x".repeat(MAX_TERMINAL_SUMMARY_LENGTH + 1 - longMessage.length),
+      }),
+    `Reviewer verdict serialized length is ${MAX_TERMINAL_SUMMARY_LENGTH + 1} characters; maximum is ${MAX_TERMINAL_SUMMARY_LENGTH}. Shorten findings and G0 to fit.`,
+  ],
+  [
+    "unparseable",
+    () => `${fencedMessage}\nDone.`,
+    "The final message does not end with exactly one JSON object, optionally inside one fenced block.",
+  ],
+] as const)(
+  "retains the reason and a bounded excerpt of the discarded %s reviewer message",
+  async (_name, message, reason) => {
+    const text = message();
+    const events = reviewerEvents(longReview, text);
+    const terminal = await observeReviewer(events);
+    expect(terminal).toMatchObject({ id: longReview[0]!.thread_id, status: "malformed" });
+    expect(terminal.summary).toBe(
+      `${reason} Discarded reviewer message excerpt (at most ${MAX_VERDICT_EXCERPT_LENGTH} characters, JSON-quoted): ${verdictExcerpt(text)}`,
+    );
+    expect(terminal.summary!.length).toBeLessThanOrEqual(MAX_TERMINAL_SUMMARY_LENGTH);
+    expect(terminal.summary).toContain(JSON.stringify(text.slice(0, 40)).slice(0, -1));
+    expect(terminal.summary).toContain(JSON.stringify(text.slice(-40)).slice(1));
+    expect(terminal.summary).not.toContain(text.slice(200, 1800));
+  },
+);
+const fencedBlock = fencedMessage.slice(fencedMessage.indexOf("```json"));
+const reviewerWith = (patch: object) => JSON.stringify({ ...JSON.parse(longMessage), ...patch });
+it.each([
+  ["non-JSON prose", "Review complete. PASS.", "malformed-worker-verdict"],
+  ["a truncated JSON object", longMessage.slice(0, -1), "malformed-worker-verdict"],
+  ["an unknown extra key", reviewerWith({ extra: true }), "malformed-worker-verdict"],
+  ["a bad head", reviewerWith({ head: "invalid" }), "malformed-worker-verdict"],
+  ["a verdict outside the enum", reviewerWith({ verdict: "MAYBE" }), "malformed-worker-verdict"],
+  [
+    "a finding with line 0",
+    reviewerWith({
+      findings: [{ file: "scripts/dogfood/conflict.ts", line: 0, severity: "note", text: "x" }],
+    }),
+    "malformed-source-finding",
+  ],
+  ["two fenced blocks", `${fencedMessage}\n${fencedBlock}`, "malformed-worker-verdict"],
+  ["a fenced block then trailing text", `${fencedMessage}\nDone.`, "malformed-worker-verdict"],
+  ["a nested closing fence", `${fencedMessage}\n\`\`\``, "malformed-worker-verdict"],
+  [
+    "a closing fence without an opening fence",
+    `${fencedPayload}\n\`\`\``,
+    "malformed-worker-verdict",
+  ],
+  [
+    "an opening fence beside the object",
+    `\`\`\`json ${fencedPayload}\n\`\`\``,
+    "malformed-worker-verdict",
+  ],
+])("still refuses a reviewer message with %s", async (_name, text, reason) => {
+  const events = reviewerEvents(longReview, text);
+  const observed = await observeReviewer(events);
+  if (reason === "malformed-worker-verdict") {
+    expect(() => parseTrace(trace(events), true, "reviewer", iss167Config)).toThrow(reason);
+    expect(observed).toMatchObject({ status: "malformed" });
+    expect(observed.summary).toContain("Discarded reviewer message excerpt");
+    return;
+  }
+  // Transport-valid but schema-invalid: the flow's parseReview refuses it.
+  expect(observed).toMatchObject({ status: "passed", head: JSON.parse(text).head });
+  expect(() => parseReview(observed.summary, iss167Config.run, observed.head!)).toThrow(reason);
+});
+it.each([
+  ["the raw payload alone", longMessage],
+  ["leading prose then raw JSON with no fence", `Review complete.\n${longMessage}`],
+  ["leading prose then one fenced block", `Review complete.\n\n\`\`\`json\n${longMessage}\n\`\`\``],
+  ["one fenced block without prose", `\`\`\`\n${longMessage}\n\`\`\`\n`],
+  ["prose, an opening fence and no closing fence", `Review complete.\n\`\`\`json\n${longMessage}`],
+])("keeps accepting a reviewer message with %s", async (_name, text) => {
+  const expected = parseTrace(trace(longReview), true, "reviewer", iss167Config);
+  const events = reviewerEvents(longReview, text);
+  expect(parseTrace(trace(events), true, "reviewer", iss167Config)).toEqual(expected);
+  await expect(observeReviewer(events)).resolves.toEqual(expected);
+});
+it("drives every length consumer and reviewer prompt from the one exported constant", () => {
+  const bound = MAX_TERMINAL_SUMMARY_LENGTH;
+  expect(Number.isSafeInteger(bound) && bound > 0).toBe(true);
+  expect(outputSchema(config, "author").properties.summary).toMatchObject({ maxLength: bound });
+  for (const role of ["author", "reviewer"] as const)
+    expect(workerPrompt(config, role, head, "brief")).toContain(`at most ${bound} characters`);
+  expect(sourceReviewerReportPrompt(["a.ts"])).toContain(
+    `Keep the complete JSON report within ${bound} characters.`,
+  );
+  // The fully assembled source-stage reviewer prompt is the flow report text
+  // plus the queue's suffix; every stated length in it is the constant.
+  const assembled = `${workerPrompt(config, "reviewer", head, "brief")}\n\n${sourceReviewerReportPrompt(["a.ts"])}\n`;
+  const stated = [...assembled.matchAll(/(\d+) characters/g)].map((match) => Number(match[1]));
+  expect(stated).toEqual([bound, bound]);
+  const review = JSON.parse(rows[1]!.item!.text);
+  const fitted = {
+    ...review,
+    g0: "x".repeat(bound - JSON.stringify({ ...review, g0: "" }).length),
+  };
+  expect(JSON.stringify(fitted)).toHaveLength(bound);
+  expect(parseReview(JSON.stringify(fitted), config.run, head)).toEqual(fitted);
+  expect(() =>
+    parseReview(JSON.stringify({ ...fitted, g0: `${fitted.g0}x` }), config.run, head),
+  ).toThrow("source-review-summary-out-of-bounds");
+  const author = parseTrace(
+    trace(
+      authorEvents(
+        `Work complete.\n${JSON.stringify({ ...authorVerdict, summary: "x".repeat(bound) })}`,
+      ),
+    ),
+    true,
+    "author",
+    config,
+  );
+  expect(author.summary).toHaveLength(bound);
+  expect(() =>
+    parseTrace(
+      trace(
+        authorEvents(
+          `Work complete.\n${JSON.stringify({ ...authorVerdict, summary: "x".repeat(bound + 1) })}`,
+        ),
+      ),
+      true,
+      "author",
+      config,
+    ),
+  ).toThrow(QueueBlocked);
+});
+it("leaves no superseded 2000-character literal under scripts/ or docs/", async () => {
+  const root = resolve(import.meta.dirname, "../..");
+  const { readdir } = await import("node:fs/promises");
+  const files = (
+    await Promise.all(
+      ["scripts", "docs"].map((directory) =>
+        readdir(resolve(root, directory), { recursive: true, withFileTypes: true }),
+      ),
+    )
+  )
+    .flat()
+    .filter((entry) => entry.isFile())
+    .map((entry) => resolve(entry.parentPath, entry.name));
+  expect(files.some((file) => file.endsWith("terminal-summary.d.mts"))).toBe(true);
+  const offenders: string[] = [];
+  for (const file of files) {
+    const text = await readFile(file, "utf8");
+    for (const [index, line] of text.split("\n").entries())
+      if (/(?<![\d_.])2_?000(?![\d_])/.test(line))
+        offenders.push(`${file.slice(root.length + 1)}:${index + 1}: ${line.trim()}`);
+  }
+  expect(offenders).toEqual([]);
+  expect(await readFile(resolve(root, "scripts/dogfood/terminal-summary.d.mts"), "utf8")).toContain(
+    "export const MAX_TERMINAL_SUMMARY_LENGTH: number;",
+  );
 });

@@ -48,6 +48,7 @@ import {
 import { pullRequest as chaseSetsPullRequest } from "../../adapters/chase-sets.mjs";
 import { repositoryDeliveryPolicy } from "../../scripts/dogfood/repository-adapter.mjs";
 import { isItemStopReason } from "../../scripts/dogfood/supervision.js";
+import { MAX_TERMINAL_SUMMARY_LENGTH } from "../../scripts/dogfood/terminal-summary.mjs";
 import {
   queueStep,
   queueUsage,
@@ -2267,7 +2268,10 @@ it.each([selfPullRequest, chaseSetsPullRequest])(
       [JSON.stringify({ ...report, head: "f".repeat(40) }), "unreviewed-delivery-source"],
       [JSON.stringify({ ...report, run: "wrong-run" }), "unreviewed-delivery-source"],
       [JSON.stringify({ ...report, g0: "" }), "unreviewed-delivery-source"],
-      [JSON.stringify({ ...report, g0: "x".repeat(2000) }), "unreviewed-delivery-source"],
+      [
+        JSON.stringify({ ...report, g0: "x".repeat(MAX_TERMINAL_SUMMARY_LENGTH) }),
+        "unreviewed-delivery-source",
+      ],
       [
         reviewerReport(current, "FAIL", [
           { file: "refresh.txt", line: 1, severity: "blocking", text: "Fix it" },

@@ -49,6 +49,7 @@ import {
 import { gitSetupAdapter } from "../../scripts/dogfood/setup-adapter.js";
 import { codexAdapter } from "../../scripts/dogfood/dispatch-adapter.js";
 import { SELF_ROUTING } from "../../scripts/dogfood/routing.mjs";
+import { MAX_TERMINAL_SUMMARY_LENGTH } from "../../scripts/dogfood/terminal-summary.mjs";
 import { sourceFailureFixture, historicalStops, snapshot } from "./fixtures/source-failure.js";
 import { prerequisiteFixture, prerequisiteProof } from "./fixtures/prerequisite.js";
 import {
@@ -1564,7 +1565,14 @@ it.each([false, true])(
           expect(prompt).toContain(
             "Is there a simpler shape that still satisfies every acceptance criterion and every stated not-built reason? Answer No with one reason, or name the shape and the constraint you checked it against.",
           );
-          if (!correction) expect(prompt).toContain(JSON.stringify(current.source.allowedPaths));
+          if (!correction) {
+            expect(prompt).toContain(JSON.stringify(current.source.allowedPaths));
+            // ISS-198: the assembled source-stage prompt (flow report text plus
+            // the queue's report suffix) states the one shared bound in both halves.
+            expect(
+              [...prompt.matchAll(/(\d+) characters/g)].map((match) => Number(match[1])),
+            ).toEqual([MAX_TERMINAL_SUMMARY_LENGTH, MAX_TERMINAL_SUMMARY_LENGTH]);
+          }
         }
         const selected = correction ? `gate-${role}` : role;
         const deadAuthor = selected === "author" && launches.length === 0;

@@ -49,18 +49,30 @@ capability is added only when a real cycle records a blocker.
 
 Reviewer prompts require the JSON object alone, with
 `JSON.stringify(verdict).length` at most
-`MAX_TERMINAL_SUMMARY_LENGTH` (2000) characters, including findings and G0.
+`MAX_TERMINAL_SUMMARY_LENGTH` (4000) characters, including findings and G0.
+That one constant, exported by `scripts/dogfood/terminal-summary.mjs` and
+declared without restating its value, drives the adapter bounds, `parseReview`,
+the flow length branch and every reviewer prompt. ISS-198 raised it to 4000
+after `m1-iss167-20260921T1457` discarded a schema-valid 2036-character PASS
+verdict; the bound stays finite and is not removed.
 Extraction accepts the last complete top-level JSON object in the final agent
 message when prose precedes it, provided it is the only object and only
-whitespace follows. Balanced non-JSON prefix fragments are ignored as a whole,
-including any nested JSON objects. Trailing prose, multiple objects, missing objects and
-invalid verdicts remain malformed; key, identity, head, enum and findings
-checks remain unchanged. An otherwise valid over-length verdict remains
+whitespace follows, or the object sits alone inside one well-formed Markdown
+fenced block: the opening fence line immediately precedes it and only the
+closing fence follows (ISS-198, after the same run discarded a fenced
+schema-valid verdict). Balanced non-JSON prefix fragments are ignored as a
+whole, including any nested JSON objects. Trailing prose, a second fenced
+block, multiple objects, missing objects and invalid verdicts remain malformed;
+key, identity, head, enum and findings checks remain unchanged. An otherwise valid over-length verdict remains
 malformed with its measured length and cap in the terminal summary and the
-existing single automatic retry context (ISS-150). Authors share this extraction
-rule (ISS-177), retaining their JSON-only prompts, five-key schema and
-2000-character summary cap; the whole author message has no summary cap.
-An oversized author summary reports its measured length and the 2000 limit.
+existing single automatic retry context (ISS-150). Every discard appends to its
+reason a JSON-quoted excerpt of the discarded message, at most
+`MAX_VERDICT_EXCERPT_LENGTH` (600) characters taken half from each end, so the
+retry sees what was lost without an unbounded prompt (ISS-198). Authors share
+this extraction rule (ISS-177), retaining their JSON-only prompts, five-key
+schema and the same `MAX_TERMINAL_SUMMARY_LENGTH` summary cap; the whole
+author message has no summary cap.
+An oversized author summary reports its measured length and that limit.
 Completed malformed authors use the same single transient retry, retaining
 staged, unstaged and untracked partial work at the recorded base rather than
 the dead-author reset. The retry receives the diagnostic, prior trace and
