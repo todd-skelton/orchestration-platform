@@ -7,6 +7,7 @@ import {
   sourceReviewerReportPrompt,
 } from "../../scripts/dogfood/repair-adapter.js";
 import type { Adapter, Config } from "../../scripts/dogfood/flow.js";
+import { MAX_TERMINAL_SUMMARY_LENGTH } from "../../scripts/dogfood/terminal-summary.mjs";
 
 const roots: string[] = [];
 const g0Question =
@@ -26,6 +27,9 @@ it("keeps the source review location contract in the reviewer prompt", () => {
   expect(sourceReviewerReportPrompt(paths)).toContain(g0Question);
   expect(sourceReviewerReportPrompt(paths)).toContain(
     "Each path must exist at the reviewed Git head",
+  );
+  expect(sourceReviewerReportPrompt(paths)).toContain(
+    `Keep the complete JSON report within ${MAX_TERMINAL_SUMMARY_LENGTH} characters.`,
   );
 });
 
@@ -86,6 +90,11 @@ it("checks the repository pilot worktree instead of the controller during repair
         expect(prompt).toContain("This is a DELTA review");
         // Both workerPrompt and the launch-only corrective report suffix ask G0.
         expect(prompt.split(g0Question)).toHaveLength(3);
+        // ISS-198: both halves state the one shared bound.
+        expect([...prompt.matchAll(/(\d+) characters/g)].map((match) => Number(match[1]))).toEqual([
+          MAX_TERMINAL_SUMMARY_LENGTH,
+          MAX_TERMINAL_SUMMARY_LENGTH,
+        ]);
         return {
           id: "repair-reviewer",
           pid: 2,

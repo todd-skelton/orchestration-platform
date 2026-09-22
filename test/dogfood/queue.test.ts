@@ -43,6 +43,7 @@ import {
 import type { Adapter, Attempt } from "../../scripts/dogfood/flow.js";
 import { step as sourceStep, workerPrompt } from "../../scripts/dogfood/flow.js";
 import { codexAdapter } from "../../scripts/dogfood/dispatch-adapter.js";
+import { MAX_TERMINAL_SUMMARY_LENGTH } from "../../scripts/dogfood/terminal-summary.mjs";
 import prefixedAuthor from "./fixtures/iss-177-prefixed-author.json" with { type: "json" };
 import * as selfAdapter from "../../adapters/self.mjs";
 import type { RepositoryAdapter } from "../../scripts/dogfood/repository-adapter.js";
@@ -2081,7 +2082,7 @@ it.each([
     role: "author",
     head: item.base,
     verdict: "PASS",
-    summary: "x".repeat(2079),
+    summary: "x".repeat(MAX_TERMINAL_SUMMARY_LENGTH + 79),
   };
   await writeFile(path("author-attempt.json"), JSON.stringify(author));
   await writeFile(author.trace, trace(author.id, verdict));
@@ -2125,7 +2126,9 @@ it.each([
       if (role === "author") {
         expect(await partials()).toEqual(bytes);
         expect(await real.git(config.worktree, ["rev-parse", "HEAD"])).toBe(item.base);
-        expect(prompt).toContain("Author summary length is 2079 characters; maximum is 2000");
+        expect(prompt).toContain(
+          `Author summary length is ${MAX_TERMINAL_SUMMARY_LENGTH + 79} characters; maximum is ${MAX_TERMINAL_SUMMARY_LENGTH}`,
+        );
         expect(prompt).toContain(JSON.stringify(author.trace));
         expect(prompt).toContain("Inspect and verify");
         expect(prompt).toContain(JSON.stringify(path("author-retry-discard.json")));
@@ -2229,7 +2232,10 @@ it.each([
       trace(retry!.id, {
         ...verdict,
         head: mode === "wrong-verdict-head" ? "f".repeat(40) : item.base,
-        summary: mode === "second-malformed" ? "x".repeat(2001) : "Synthetic verified work.",
+        summary:
+          mode === "second-malformed"
+            ? "x".repeat(MAX_TERMINAL_SUMMARY_LENGTH + 1)
+            : "Synthetic verified work.",
       }),
     );
     await writeFile(retry!.trace.replace(/\.jsonl$/, ".exit.json"), JSON.stringify({ code: 0 }));
@@ -2238,7 +2244,10 @@ it.each([
         await expect(run()).rejects.toMatchObject({
           reason: mode === "second-malformed" ? "author-malformed" : "author-wrong-head",
           ...(mode === "second-malformed"
-            ? { retries: 1, diagnostics: expect.stringContaining("2001") }
+            ? {
+                retries: 1,
+                diagnostics: expect.stringContaining(`${MAX_TERMINAL_SUMMARY_LENGTH + 1}`),
+              }
             : {}),
         });
       expect(launches).toEqual(["author"]);

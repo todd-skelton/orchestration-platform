@@ -1,4 +1,4 @@
-const MAX_REVIEW_SUMMARY_LENGTH = 2_000;
+import { MAX_TERMINAL_SUMMARY_LENGTH } from "./terminal-summary.mjs";
 
 const REPORT_KEYS = ["run", "role", "head", "verdict", "findings", "g0"];
 
@@ -54,7 +54,7 @@ export function parseReview(
   expectedHead: string,
 ): ValidatedReview {
   demand(
-    typeof summary === "string" && summary.length <= MAX_REVIEW_SUMMARY_LENGTH,
+    typeof summary === "string" && summary.length <= MAX_TERMINAL_SUMMARY_LENGTH,
     "source-review-summary-out-of-bounds",
   );
   let report: unknown;
@@ -71,7 +71,7 @@ export function parseReview(
       parsed.head === expectedHead &&
       ["PASS", "FAIL"].includes(parsed.verdict) &&
       Array.isArray(parsed.findings) &&
-      bounded(parsed.g0, MAX_REVIEW_SUMMARY_LENGTH),
+      bounded(parsed.g0, MAX_TERMINAL_SUMMARY_LENGTH),
     "malformed-source-review-report",
   );
   for (const finding of parsed.findings)
@@ -81,7 +81,7 @@ export function parseReview(
         Number.isSafeInteger(finding.line) &&
         finding.line > 0 &&
         ["blocking", "note"].includes(finding.severity) &&
-        bounded(finding.text, MAX_REVIEW_SUMMARY_LENGTH),
+        bounded(finding.text, MAX_TERMINAL_SUMMARY_LENGTH),
       "malformed-source-finding",
     );
   const blocking = parsed.findings.some(
