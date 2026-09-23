@@ -9,7 +9,7 @@ import type { PreReviewEvidence } from "./continuation.js";
 
 export type Role = "author" | "reviewer";
 export interface Config {
-  authorFailures?: { count: number; ids: string[] };
+  authorFailures?: { count: number; ids: string[]; diagnostics?: Record<string, string> };
   routing?: import("./routing.mjs").RoutingSelection;
   owner: string;
   run: string;
@@ -83,9 +83,46 @@ export interface Check {
   bucket: string;
   link: string;
 }
+// ISS-164/ISS-165: the closed v1 native database profile request and reply.
+// The run-owned channel in supervise.mjs supplies schemaVersion and
+// correlation and parses every object at the stream boundary; these types
+// describe that contract for callers and never replace its validation.
+export type NativeDbProfile = "reconciliation-pg16/v1";
+export interface NativeDbRequest {
+  schemaVersion: "dogfood-native-db-request/v1";
+  correlation: number;
+  profile: NativeDbProfile;
+  run: string;
+  issue: number;
+  attempt: number;
+  executorHead: string;
+  product: { repository: string; head: string; tree: string };
+  declaration: {
+    version: 1;
+    profile: NativeDbProfile;
+    files: { file: string; cases: string[] }[];
+    mutants: { id: string; file: string; cases: string[]; assertion: string }[];
+  };
+  patchDigests: { id: string; digest: string }[];
+  stagedInputDirectory: string;
+}
+export type NativeDbIdentity = Omit<NativeDbRequest, "schemaVersion" | "correlation">;
+export interface NativeDbOwner {
+  lockId: string;
+  head: string;
+  lane: string;
+}
+// Lifecycle only: completed is never PASS. A local refusal carries no correlation.
+export interface NativeDbReply {
+  correlation: number | null;
+  status: "completed" | "refused" | "unknown";
+  owner: NativeDbOwner | null;
+  evidencePath: string | null;
+  diagnostic: string | null;
+}
 export interface Adapter {
   authorRung?(config: Config): Promise<number>;
-  authorRefused?(config: Config, identity: string): Promise<void>;
+  authorRefused?(config: Config, identity: string, diagnostics?: string): Promise<void>;
   validateAuthorChanges?(config: Config): Promise<void>;
   preflight(config: Config): Promise<void>;
   waitForProvider?(config: Config): Promise<void>;
@@ -93,6 +130,9 @@ export interface Adapter {
   launch(role: Role, config: Config, prompt: string): Promise<Attempt>;
   observe(role: Role, config: Config, attempt: Attempt): Promise<Terminal>;
   checks(config: Config, url: string): Promise<{ head: string; checks: Check[] }>;
+  // ISS-165: present only when the supervisor composed the run-owned channel;
+  // an absent method is unsupported, never success. No production caller yet.
+  nativeDbProfile?(identity: NativeDbIdentity): Promise<NativeDbReply>;
 }
 
 export class QueueBlocked extends Error {
@@ -498,7 +538,11 @@ async function runStep(
             if (!(error instanceof QueueBlocked) || error.reason !== "provider-model-refused")
               throw error;
             if (role === "author")
-              await adapter.authorRefused?.(config, `${directory}:probe:${rung}`);
+              await adapter.authorRefused?.(
+                config,
+                `${directory}:probe:${rung}`,
+                error.diagnostics,
+              );
             useFallback();
           }
         }

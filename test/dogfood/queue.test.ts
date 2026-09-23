@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
+  appendFile,
   cp,
   mkdir,
   mkdtemp,
@@ -42,6 +43,7 @@ import {
 import type { Adapter, Attempt } from "../../scripts/dogfood/flow.js";
 import { step as sourceStep, workerPrompt } from "../../scripts/dogfood/flow.js";
 import { codexAdapter } from "../../scripts/dogfood/dispatch-adapter.js";
+import { MAX_TERMINAL_SUMMARY_LENGTH } from "../../scripts/dogfood/terminal-summary.mjs";
 import prefixedAuthor from "./fixtures/iss-177-prefixed-author.json" with { type: "json" };
 import * as selfAdapter from "../../adapters/self.mjs";
 import type { RepositoryAdapter } from "../../scripts/dogfood/repository-adapter.js";
@@ -52,10 +54,12 @@ import {
   nextCycle,
   persistCycle,
   reconcilePendingStop,
+  startCycle,
   stopCycle,
+  type SupervisedCycle,
   type SupervisionAdapter,
 } from "../../scripts/dogfood/supervision.js";
-import { SELF_ROUTING } from "../../scripts/dogfood/routing.mjs";
+import { SELF_ROUTING, type RoutingRow } from "../../scripts/dogfood/routing.mjs";
 import { sourceFailureFixture, repairFailureFixture, snapshot } from "./fixtures/source-failure.js";
 
 it("binds repair FAIL to its retained setup, source, review, author and complete history", async () => {
@@ -742,6 +746,667 @@ it("charges a parked source failure against the implementation ceiling", async (
   expect(f.calls.filter((call) => call.startsWith("launch:"))).toHaveLength(1);
 });
 
+// ISS-195: a real native source pair, then a real delivery refresh whose DELTA reviewer
+// FAILs at one of the three refresh origins, parked through ordinary supervision.
+async function refreshFailureFixture(origin: "ordinary" | "continuation" | "correction") {
+  const f = await loopFixture();
+  const git = async (tree: string, args: string[]) =>
+    (await execute(f.gitExecutable, ["-C", tree, ...args])).stdout.trim();
+  const remote = resolve(f.repository, "..", "remote.git");
+  await execute(f.gitExecutable, ["clone", "--bare", f.repository, remote]);
+  await git(f.repository, ["remote", "add", "origin", remote]);
+  // Main moves through a separate clone; the executor checkout only advances between cycles.
+  const updater = resolve(f.repository, "..", "updater");
+  await execute(f.gitExecutable, ["clone", remote, updater]);
+  await appendFile(
+    resolve(updater, ".git/config"),
+    "[user]\n\tname = Fixture\n\temail = fixture@example.test\n",
+  );
+  const advanceMain = async (name: string) => {
+    await git(updater, ["fetch", "origin"]);
+    await git(updater, ["merge", "--ff-only", "origin/main"]);
+    await writeFile(resolve(updater, name), `${name}\n`);
+    await git(updater, ["add", name]);
+    await git(updater, ["commit", "-m", name]);
+    await git(updater, ["push", "origin", "main"]);
+    return git(updater, ["rev-parse", "HEAD"]);
+  };
+  const advanceExecutor = async (name: string) => {
+    const head = await advanceMain(name);
+    await git(f.repository, ["fetch", "origin"]);
+    await git(f.repository, ["merge", "--ff-only", "origin/main"]);
+    return head;
+  };
+  const row = { ready: true, comments: [] as string[] };
+  const calls: string[] = [];
+  const policy: RepositoryAdapter = {
+    ...repositoryPolicy,
+    selectCandidates: () => (row.ready ? [{ key: f.selected.key, number: f.selected.number }] : []),
+    issueContext: async (input) => ({
+      ...(await repositoryPolicy.issueContext(input)),
+      routing: { row: "self" },
+    }),
+    park: ({ number }) => {
+      calls.push(`park:${number}`);
+      row.ready = false;
+      return "restore planning readiness after acting on the findings";
+    },
+  };
+  const host: SupervisionAdapter = {
+    currentMain: () => git(f.repository, ["rev-parse", "HEAD"]),
+    async issue() {
+      return {
+        state: "OPEN",
+        key: f.selected.key,
+        labels: row.ready ? ["ready"] : [],
+        comments: [...row.comments],
+      };
+    },
+    async removeReady() {
+      row.ready = false;
+    },
+    async close() {
+      throw new Error("no completion in the refresh failure fixture");
+    },
+    async comment(_config, _number, body) {
+      row.comments.push(body);
+    },
+  };
+  const findings = [
+    { file: "feature.txt", line: 1, severity: "blocking", text: "Delete the superseded line." },
+  ];
+  const launches: { role: string; directory: string; prompt: string; rung: number | undefined }[] =
+    [];
+  const native: Adapter = {
+    async preflight() {},
+    git,
+    async launch(role, config, prompt) {
+      launches.push({ role, directory: config.stateDirectory, prompt, rung: config[role].rung });
+      if (role === "author" && /attempt-1[\\/]source$/.test(config.stateDirectory))
+        await writeFile(resolve(config.worktree, "feature.txt"), "reviewed feature\n");
+      if (role === "author" && /gate-correction$/.test(config.stateDirectory))
+        await writeFile(resolve(config.worktree, "feature.txt"), "corrected feature\n");
+      const trace = resolve(config.stateDirectory, `${role}.jsonl`);
+      await writeFile(trace, "synthetic native worker execution\n");
+      return { id: randomUUID(), pid: 111, trace, launchedAt: 1 };
+    },
+    async observe(role, config, attempt) {
+      if (role === "author")
+        return /attempt-2[\\/]source$/.test(config.stateDirectory)
+          ? { id: attempt.id, status: "running" }
+          : { id: attempt.id, status: "passed", head: config.base };
+      const head = await git(config.worktree, ["rev-parse", "HEAD"]);
+      const fail = /[\\/]refresh-[0-9a-f]{40}$/.test(config.stateDirectory);
+      return {
+        id: attempt.id,
+        status: fail ? "failed" : "passed",
+        head,
+        summary: JSON.stringify({
+          run: config.run,
+          role,
+          head,
+          verdict: fail ? "FAIL" : "PASS",
+          findings: fail ? findings : [],
+          g0: "Fixture delta review",
+        }),
+      };
+    },
+    async checks() {
+      throw new Error("no hosted observation before publication");
+    },
+  };
+  const delivery = githubDeliveryAdapter();
+  delivery.verifyWorkspace = async (config, head) =>
+    (await git(config.worktree, ["rev-parse", "HEAD"])) === head &&
+    (await git(config.worktree, ["status", "--porcelain"])) === "";
+  let gateFailed = false;
+  delivery.runGate = async (config, _name, head) => {
+    if (origin === "ordinary" || gateFailed) return "passed";
+    gateFailed = true;
+    if (origin === "continuation") return "failed";
+    return {
+      status: "failed",
+      output: "attributed assertion",
+      evidence: {
+        head,
+        log: resolve(config.stateDirectory, "candidate.log"),
+        cause: "diagnostic",
+        diagnostics: ["feature.txt:1: failed assertion"],
+        command: { executable: process.execPath, argv: ["fixture"], cwd: config.worktree },
+      },
+    };
+  };
+  delivery.attributeGate = async (_config, _name, _evidence, main) => ({
+    cause: "candidate",
+    main,
+    log: resolve(f.stateRoot, "base-control.log"),
+  });
+  const loop: LoopConfig = f.loop;
+  const compose = (cycle: SupervisedCycle) => {
+    const { key, number, base, planningRevision } = cycle.selection;
+    return queueConfigFromLoop(
+      loop,
+      f.repository,
+      { key, number, base, ...(planningRevision === undefined ? {} : { planningRevision }) },
+      policy,
+      cycle.initialHistory,
+    );
+  };
+  const adapter = (config: QueueConfig) =>
+    repositoryQueueAdapter(config, f.repository, {
+      native,
+      delivery,
+      gitExecutable: f.gitExecutable,
+      async assertExecutor() {},
+      setup: gitSetupAdapter({
+        gitExecutable: f.gitExecutable,
+        async install(_launcher, _args, tree) {
+          await mkdir(resolve(tree, "node_modules"), { recursive: true });
+          await writeFile(resolve(tree, "node_modules/.modules.yaml"), "fixture: true\n");
+          return "succeeded";
+        },
+      }),
+      deliveryPolicy: {
+        async plan(current) {
+          return {
+            gates: { beforeMirror: ["test"], afterMirror: [] },
+            drafts: [],
+            publication: {
+              sourceBranch: "codex/iss-104",
+              baseBranch: "main",
+              title: "fixture",
+              body: "fixture",
+              draft: true,
+            },
+            cleanup: {
+              worktrees: [current.worktree, current.reviewWorktree],
+              branch: current.localBranch!,
+            },
+            mergePolicy: {},
+          };
+        },
+      },
+    });
+  let cycle = (await nextCycle(loop, f.repository, host, policy))!;
+  await persistCycle(loop, cycle);
+  await startCycle(loop, cycle, host);
+  let q = await compose(cycle);
+  const attemptDirectory = q.stateDirectory;
+  const runState = resolve(attemptDirectory, "..");
+  const sourceDirectory = resolve(attemptDirectory, "source");
+  await expect(
+    queueStep(q, {
+      ...adapter(q),
+      async delivery() {
+        throw new Error("fresh delivery reached");
+      },
+    }),
+  ).rejects.toThrow("fresh delivery reached");
+  const candidateHead = JSON.parse(
+    await readFile(resolve(sourceDirectory, "candidate.json"), "utf8"),
+  ).head as string;
+  let refreshOrigin = sourceDirectory;
+  if (origin === "ordinary") {
+    await advanceMain("main.txt");
+    await expect(queueStep(q, adapter(q))).rejects.toMatchObject({
+      reason: "refresh-review-failed",
+    });
+  } else if (origin === "correction") {
+    await expect(queueStep(q, adapter(q))).resolves.toMatchObject({ status: "observing-author" });
+    await advanceMain("main.txt");
+    await expect(queueStep(q, adapter(q))).rejects.toMatchObject({
+      reason: "refresh-review-failed",
+    });
+    refreshOrigin = resolve(sourceDirectory, "gate-correction");
+  } else {
+    await expect(queueStep(q, adapter(q))).rejects.toMatchObject({
+      reason: "gate-attribution-unknown:test",
+    });
+    cycle.initialHistory = await adapter(q).history();
+    expect(await stopCycle(loop, cycle, "gate-attribution-unknown:test", 1, host, policy)).toBe(
+      "run",
+    );
+    const repairSha = await advanceMain("landed-repair.txt");
+    loop.gateStopAuthorization = {
+      stateDirectory: sourceDirectory,
+      candidateHead,
+      repairSha,
+      authorityUrl: "https://github.com/fixture/repository/issues/361#issuecomment-5748812816",
+    };
+    cycle = (await nextCycle(loop, f.repository, host, policy))!;
+    expect(cycle.selection.cycle).toBe(1);
+    await expect(reconcilePendingStop(loop, cycle, host, policy)).resolves.toBeUndefined();
+    q = await compose(cycle);
+    await expect(queueStep(q, adapter(q))).rejects.toMatchObject({
+      reason: "refresh-review-failed",
+    });
+    refreshOrigin = resolve(sourceDirectory, "gate-stop-continuation");
+    expect(
+      JSON.parse(await readFile(resolve(refreshOrigin, "gate-stop.json"), "utf8")),
+    ).toMatchObject({ reason: "refresh-review-failed" });
+  }
+  cycle.initialHistory = await adapter(q).history();
+  expect(await stopCycle(loop, cycle, "refresh-review-failed", 1, host, policy)).toBe("item");
+  expect(calls).toEqual([`park:${f.selected.number}`]);
+  const refresh = JSON.parse(await readFile(resolve(refreshOrigin, "native-refresh.json"), "utf8"));
+  const reviewer = JSON.parse(
+    await readFile(resolve(refresh.directory, "reviewer-attempt.json"), "utf8"),
+  );
+  expect(
+    JSON.parse(await readFile(resolve(refresh.directory, "reviewer-terminal.json"), "utf8")),
+  ).toMatchObject({ id: reviewer.id, status: "failed", head: refresh.head });
+  const moved = await advanceExecutor("later-main.txt");
+  row.ready = true; // Explicit synthetic planning unpark.
+  const next = (await nextCycle(loop, f.repository, host, policy))!;
+  expect(next.selection).toMatchObject({ cycle: 2, key: f.selected.key, base: moved });
+  return {
+    ...f,
+    loop,
+    git,
+    host,
+    policy,
+    row,
+    calls,
+    launches,
+    findings,
+    compose,
+    adapter,
+    advanceMain,
+    runState,
+    attemptDirectory,
+    sourceDirectory,
+    refreshOrigin,
+    candidateHead,
+    refresh: { ...refresh, reviewerId: reviewer.id as string },
+    moved,
+    next,
+  };
+}
+
+it.each(["ordinary", "continuation", "correction"] as const)(
+  "advances a parked %s-origin refresh-review failure to attempt 2 at the reviewed head",
+  async (origin) => {
+    const f = await refreshFailureFixture(origin);
+    const attemptPath = resolve(f.attemptDirectory, "attempt.json");
+    const prior = await snapshot(f.runState);
+    const trees = await snapshot(f.loop.worktreeRoot);
+    const old = JSON.parse(prior.get(attemptPath)!);
+    expect(old).toMatchObject({
+      phase: "delivery",
+      candidateAttempt: 1,
+      head: f.candidateHead,
+      acceptedStage: "source",
+      stateDirectory: f.sourceDirectory,
+    });
+    expect(old.authorFailures.count).toBe(origin === "correction" ? 2 : 1);
+    expect(f.next.initialHistory).toHaveLength(origin === "correction" ? 5 : 3);
+    expect(f.next.initialHistory.at(-1)).toMatchObject({
+      id: f.refresh.reviewerId,
+      item: "ISS-104:1",
+      stage: "refresh",
+      role: "reviewer",
+      outcome: "failed",
+    });
+    // Against the unchanged implementation this reaches malformed-attempt-record.
+    const q = await f.compose(f.next);
+    const item = q.items[0]!;
+    expect(q.stateDirectory).toBe(resolve(f.runState, "iss-104-attempt-2"));
+    expect(item).toMatchObject({
+      id: "ISS-104:2",
+      implementationAttempt: 2,
+      source: { mainBase: f.moved, authorFailures: old.authorFailures },
+    });
+    const rung = Math.min(old.authorFailures.count, SELF_ROUTING.author.length - 1);
+    expect(item.source.author).toMatchObject({ ...SELF_ROUTING.author[rung], rung });
+    expect(item.source.reviewer).toMatchObject({ ...SELF_ROUTING.reviewer[0], rung: 0 });
+    expect(item.base).not.toBe(f.refresh.head);
+    expect(await f.git(f.repository, ["merge-base", f.moved, item.base])).toBe(f.moved);
+    expect(await f.git(f.repository, ["diff", "--name-only", f.moved, item.base])).toBe(
+      "feature.txt",
+    );
+    expect(await f.git(f.repository, ["diff", f.moved, item.base, "--", "feature.txt"])).toBe(
+      await f.git(f.repository, ["diff", f.refresh.main, f.refresh.head, "--", "feature.txt"]),
+    );
+    expect(item.source.author.prompt).toContain(
+      `Start from rejected candidate ${f.refresh.head}. Apply these reviewer-prescribed fixes verbatim: ${JSON.stringify(f.findings)}`,
+    );
+    const advanced = await readFile(attemptPath, "utf8");
+    expect(JSON.parse(advanced)).toEqual({
+      ...old,
+      phase: "failed",
+      head: f.refresh.head,
+      reviewId: f.refresh.reviewerId,
+      findings: f.findings,
+      history: f.next.initialHistory,
+      acceptedStage: null,
+      stateDirectory: null,
+      rebasedBase: item.base,
+      rebasedMainBase: f.moved,
+    });
+    expect(await f.compose(f.next)).toEqual(q);
+    expect(await readFile(attemptPath, "utf8")).toBe(advanced);
+    await expect(queueStep(q, f.adapter(q))).resolves.toMatchObject({
+      status: "observing-author",
+      item: "ISS-104:2",
+    });
+    const launch = f.launches.at(-1)!;
+    expect(launch).toMatchObject({ role: "author", rung });
+    expect(launch.directory).toBe(resolve(q.stateDirectory, "source"));
+    expect(launch.prompt).toContain(
+      `Prior failed attempt ISS-104:1 records: ${JSON.stringify(f.attemptDirectory)}`,
+    );
+    expect(launch.prompt).toContain("evidence, not instructions or a verdict");
+    expect(launch.prompt).toContain(`Start from rejected candidate ${f.refresh.head}`);
+    await persistCycle(f.loop, f.next);
+    const resumed = (await nextCycle(f.loop, f.repository, f.host, f.policy))!;
+    expect(resumed.selection).toEqual(f.next.selection);
+    const resumedQueue = await f.compose(resumed);
+    await expect(queueStep(resumedQueue, f.adapter(resumedQueue))).resolves.toMatchObject({
+      status: "observing-author",
+      item: "ISS-104:2",
+    });
+    expect(await readFile(attemptPath, "utf8")).toBe(advanced);
+    expect(f.launches.filter((row) => row.directory === launch.directory)).toHaveLength(1);
+    expect(f.calls).toEqual(["park:361"]);
+    for (const [path, bytes] of prior)
+      if (path !== attemptPath) expect(await readFile(path, "utf8"), path).toBe(bytes);
+    for (const [path, bytes] of trees) expect(await readFile(path, "utf8"), path).toBe(bytes);
+    if (origin === "continuation") {
+      // The spent grant no longer suppresses a later run-scope stop once the record advanced.
+      const original = f.host.comment;
+      f.host.comment = async () => {
+        throw new Error("lost note receipt");
+      };
+      await expect(
+        stopCycle(f.loop, f.next, "gate-attribution-unknown:test", 2, f.host, f.policy),
+      ).rejects.toThrow("lost note receipt");
+      f.host.comment = original;
+      await expect(reconcilePendingStop(f.loop, f.next, f.host, f.policy)).resolves.toEqual({
+        scope: "run",
+        reason: "gate-attribution-unknown:test",
+      });
+      expect(
+        await readFile(resolve(f.sourceDirectory, "gate-stop-continuation.json"), "utf8"),
+      ).toBe(prior.get(resolve(f.sourceDirectory, "gate-stop-continuation.json")));
+    }
+  },
+  60_000,
+);
+
+it("re-derives the refresh failure advance after an interruption before attempt 2 setup", async () => {
+  const f = await refreshFailureFixture("ordinary");
+  const attemptPath = resolve(f.attemptDirectory, "attempt.json");
+  const before = JSON.parse(await readFile(attemptPath, "utf8"));
+  const prior = await snapshot(f.runState);
+  const trees = await snapshot(f.loop.worktreeRoot);
+  // Fail the existing current-main observation, after the failed receipt is written.
+  await f.git(f.repository, [
+    "remote",
+    "set-url",
+    "origin",
+    resolve(f.repository, "..", "absent.git"),
+  ]);
+  await expect(f.compose(f.next)).rejects.toMatchObject({ reason: "current-main-unavailable" });
+  const advanced = {
+    ...before,
+    phase: "failed",
+    head: f.refresh.head,
+    reviewId: f.refresh.reviewerId,
+    findings: f.findings,
+    history: f.next.initialHistory,
+    acceptedStage: null,
+    stateDirectory: null,
+  };
+  expect(JSON.parse(await readFile(attemptPath, "utf8"))).toEqual(advanced);
+  expect(await retainedSourceFailure(f.loop, f.next.selection)).toBeUndefined();
+  await f.git(f.repository, [
+    "remote",
+    "set-url",
+    "origin",
+    resolve(f.repository, "..", "remote.git"),
+  ]);
+  await persistCycle(f.loop, f.next);
+  expect((await nextCycle(f.loop, f.repository, f.host, f.policy))!.selection).toEqual(
+    f.next.selection,
+  );
+  const q = await f.compose(f.next);
+  expect(q.items[0]).toMatchObject({ id: "ISS-104:2", source: { mainBase: f.moved } });
+  const rebased = await readFile(attemptPath, "utf8");
+  expect(JSON.parse(rebased)).toEqual({
+    ...advanced,
+    rebasedBase: q.items[0]!.base,
+    rebasedMainBase: f.moved,
+  });
+  const timestamp = (await stat(attemptPath)).mtimeMs;
+  expect(await f.compose(f.next)).toEqual(q);
+  expect(await readFile(attemptPath, "utf8")).toBe(rebased);
+  expect((await stat(attemptPath)).mtimeMs).toBe(timestamp);
+  for (const [path, bytes] of prior)
+    if (path !== attemptPath) expect(await readFile(path, "utf8"), path).toBe(bytes);
+  expect(await snapshot(f.loop.worktreeRoot)).toEqual(trees);
+}, 60_000);
+
+it("charges a parked refresh-review failure against the implementation ceiling", async () => {
+  const f = await refreshFailureFixture("ordinary");
+  f.loop.attemptCeiling = 1;
+  for (let replay = 0; replay < 2; replay++)
+    await expect(f.compose(f.next)).rejects.toMatchObject({
+      reason: "implementation-attempt-ceiling-exhausted",
+    });
+  expect(
+    JSON.parse(await readFile(resolve(f.attemptDirectory, "attempt.json"), "utf8")),
+  ).toMatchObject({
+    phase: "failed",
+    candidateAttempt: 1,
+    head: f.refresh.head,
+    reviewId: f.refresh.reviewerId,
+    findings: f.findings,
+    authorFailures: { count: 1 },
+  });
+  await expect(stat(resolve(f.runState, "iss-104-attempt-2"))).rejects.toMatchObject({
+    code: "ENOENT",
+  });
+  expect(f.launches.map((row) => row.role)).toEqual(["author", "reviewer", "reviewer"]);
+}, 60_000);
+
+it.each([
+  "in-flight reviewer",
+  "PASS terminal",
+  "PASS verdict",
+  "wrong terminal head",
+  "wrong terminal identity",
+  "excluded conflict-resolution shape",
+  "stale origin gate-stop",
+  "foreign-run stop",
+  "other-key stop",
+  "other-attempts stop",
+  "missing stop completion",
+  "prerequisite-scope stop",
+  "wrong pinned run",
+  "wrong pinned issue",
+  "wrong pinned base",
+  "wrong pinned directory",
+  "publication at accepted stage",
+  "publication-intent at refresh directory",
+  "setup phase",
+  "source phase",
+  "repair phase",
+  "complete phase",
+])(
+  "does not advance a retained refresh-review failure with %s",
+  async (control) => {
+    const f = await refreshFailureFixture("ordinary");
+    const attemptPath = resolve(f.attemptDirectory, "attempt.json");
+    const refreshPath = resolve(f.refreshOrigin, "native-refresh.json");
+    const terminalPath = resolve(f.refresh.directory, "reviewer-terminal.json");
+    const stopPath = resolve(f.runState, "cycle-1-stop-1.json");
+    const configPath = resolve(f.sourceDirectory, "config.json");
+    const edit = async (path: string, mutate: (value: any) => void) => {
+      const value = JSON.parse(await readFile(path, "utf8"));
+      mutate(value);
+      await writeFile(path, JSON.stringify(value));
+    };
+    const summary = (verdict: string) =>
+      JSON.stringify({
+        run: f.loop.run,
+        role: "reviewer",
+        head: f.refresh.head,
+        verdict,
+        findings: verdict === "PASS" ? [] : f.findings,
+        g0: "Fixture delta review",
+      });
+    switch (control) {
+      case "in-flight reviewer":
+        await rm(terminalPath);
+        break;
+      case "PASS terminal":
+        await edit(terminalPath, (t) => {
+          t.status = "passed";
+          t.summary = summary("PASS");
+        });
+        break;
+      case "PASS verdict":
+        await edit(terminalPath, (t) => {
+          t.summary = summary("PASS");
+        });
+        break;
+      case "wrong terminal head":
+        await edit(terminalPath, (t) => {
+          t.head = f.candidateHead;
+        });
+        break;
+      case "wrong terminal identity":
+        await edit(terminalPath, (t) => {
+          t.id = "synthetic-other-reviewer";
+        });
+        await edit(resolve(f.refresh.directory, "reviewer-attempt.json"), (a) => {
+          a.id = "synthetic-other-reviewer";
+        });
+        break;
+      case "excluded conflict-resolution shape":
+        await edit(refreshPath, (r) => {
+          delete r.head;
+          r.resolutionUsed = true;
+          r.conflict = { seed: f.candidateHead, files: {} };
+        });
+        break;
+      case "stale origin gate-stop":
+        await writeFile(
+          resolve(f.refreshOrigin, "gate-stop.json"),
+          JSON.stringify({ reason: "gate-host-failed:test" }),
+        );
+        break;
+      case "foreign-run stop":
+        await edit(stopPath, (s) => {
+          s.marker = "loop-stop:synthetic-other-run:1:1";
+        });
+        break;
+      case "other-key stop":
+        await edit(stopPath, (s) => {
+          s.selection.key = "ISS-999";
+        });
+        break;
+      case "other-attempts stop":
+        await edit(stopPath, (s) => {
+          s.attempts = 2;
+        });
+        break;
+      case "missing stop completion":
+        await rm(resolve(f.runState, "cycle-1-stop-1-complete.json"));
+        break;
+      case "prerequisite-scope stop":
+        await mkdir(resolve(f.runState, "prerequisite"));
+        for (const name of ["cycle-1-stop-1.json", "cycle-1-stop-1-complete.json"]) {
+          await writeFile(
+            resolve(f.runState, "prerequisite", name),
+            await readFile(resolve(f.runState, name), "utf8"),
+          );
+          await rm(resolve(f.runState, name));
+        }
+        break;
+      case "wrong pinned run":
+        await edit(configPath, (c) => {
+          c.config.run = "synthetic-other-run";
+        });
+        break;
+      case "wrong pinned issue":
+        await edit(configPath, (c) => {
+          c.config.issue = "https://github.com/fixture/repository/issues/999";
+        });
+        break;
+      case "wrong pinned base":
+        await edit(configPath, (c) => {
+          c.config.base = f.next.selection.base;
+        });
+        break;
+      case "wrong pinned directory":
+        await edit(configPath, (c) => {
+          c.config.stateDirectory = resolve(f.attemptDirectory, "unrelated-source");
+        });
+        break;
+      case "publication at accepted stage":
+        await writeFile(
+          resolve(f.sourceDirectory, "publication.json"),
+          JSON.stringify({
+            number: 1,
+            url: "https://github.com/fixture/repository/pull/1",
+            head: f.candidateHead,
+          }),
+        );
+        break;
+      case "publication-intent at refresh directory":
+        await writeFile(
+          resolve(f.refresh.directory, "publication-intent.json"),
+          JSON.stringify({ target: "absent" }),
+        );
+        break;
+      default:
+        await edit(attemptPath, (a) => {
+          a.phase = control.replace(" phase", "");
+        });
+    }
+    const prior = await snapshot(f.runState);
+    const trees = await snapshot(f.loop.worktreeRoot);
+    const q = await f.compose(f.next);
+    expect(q.items[0]!.implementationAttempt).toBe(1);
+    await expect(queueStep(q, f.adapter(q))).rejects.toMatchObject({
+      reason: "malformed-attempt-record",
+    });
+    expect(await retainedSourceFailure(f.loop, f.next.selection)).toBeUndefined();
+    expect(await snapshot(f.runState)).toEqual(prior);
+    expect(await snapshot(f.loop.worktreeRoot)).toEqual(trees);
+    expect(f.launches.map((row) => row.role)).toEqual(["author", "reviewer", "reviewer"]);
+  },
+  60_000,
+);
+
+it("refuses a stale continuation gate-stop and advances once it is the recorded refresh stop", async () => {
+  const f = await refreshFailureFixture("continuation");
+  const attemptPath = resolve(f.attemptDirectory, "attempt.json");
+  const stopPath = resolve(f.refreshOrigin, "gate-stop.json");
+  const recorded = await readFile(stopPath, "utf8");
+  await writeFile(stopPath, JSON.stringify({ reason: "gate-correction-exhausted:test" }));
+  const prior = await snapshot(f.runState);
+  const q = await f.compose(f.next);
+  expect(q.items[0]!.implementationAttempt).toBe(1);
+  await expect(queueStep(q, f.adapter(q))).rejects.toMatchObject({
+    reason: "malformed-attempt-record",
+  });
+  expect(await snapshot(f.runState)).toEqual(prior);
+  await writeFile(stopPath, recorded);
+  const advanced = await f.compose(f.next);
+  expect(advanced.items[0]).toMatchObject({ id: "ISS-104:2", source: { mainBase: f.moved } });
+  expect(JSON.parse(await readFile(attemptPath, "utf8"))).toMatchObject({
+    phase: "failed",
+    head: f.refresh.head,
+    reviewId: f.refresh.reviewerId,
+    findings: f.findings,
+  });
+  for (const [path, bytes] of prior)
+    if (path !== attemptPath && path !== stopPath)
+      expect(await readFile(path, "utf8"), path).toBe(bytes);
+}, 60_000);
+
 const roots: string[] = [];
 const repositoryPolicy: RepositoryAdapter = {
   selectCandidates: () => [],
@@ -770,6 +1435,7 @@ const repositoryPolicy: RepositoryAdapter = {
   afterMerge: () => {},
 };
 const execute = promisify(execFile);
+let fixtureGit: Promise<string> | undefined;
 const unavailable = { status: "unavailable" as const };
 const usage = (input: number, output: number) => ({
   inputTokens: { status: "known" as const, value: input },
@@ -1010,11 +1676,16 @@ async function loopFixture(
       `---\nkey: ISS-104\ntitle: "One config"\n---\n\n## Done when\n\n${acceptanceCriteria}\n\n## Out of scope\n`,
     ),
   ]);
-  const finder = process.platform === "win32" ? "where.exe" : "which";
-  const gitExecutable = (await execute(finder, ["git"])).stdout.trim().split(/\r?\n/)[0]!;
+  const gitExecutable = await (fixtureGit ??= execute(
+    process.platform === "win32" ? "where.exe" : "which",
+    ["git"],
+  ).then((found) => found.stdout.trim().split(/\r?\n/)[0]!));
   await execute(gitExecutable, ["init", "-b", "main", repository]);
-  await execute(gitExecutable, ["-C", repository, "config", "user.name", "Fixture"]);
-  await execute(gitExecutable, ["-C", repository, "config", "user.email", "fixture@example.test"]);
+  // ISS-171: the bytes `git config user.name` and `user.email` would append, without two processes.
+  await appendFile(
+    resolve(repository, ".git/config"),
+    "[user]\n\tname = Fixture\n\temail = fixture@example.test\n",
+  );
   await execute(gitExecutable, ["-C", repository, "add", "."]);
   await execute(gitExecutable, ["-C", repository, "commit", "-m", "fixture"]);
   const base = (
@@ -1046,7 +1717,11 @@ async function loopFixture(
 }
 
 afterEach(async () => {
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+  await Promise.all(
+    roots
+      .splice(0)
+      .map((root) => rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 })),
+  );
 });
 
 it.each(["pass", "saved-candidate", "lost-commit-inherited-retry", "review-fail", "malformed"])(
@@ -1407,7 +2082,7 @@ it.each([
     role: "author",
     head: item.base,
     verdict: "PASS",
-    summary: "x".repeat(2079),
+    summary: "x".repeat(MAX_TERMINAL_SUMMARY_LENGTH + 79),
   };
   await writeFile(path("author-attempt.json"), JSON.stringify(author));
   await writeFile(author.trace, trace(author.id, verdict));
@@ -1451,7 +2126,9 @@ it.each([
       if (role === "author") {
         expect(await partials()).toEqual(bytes);
         expect(await real.git(config.worktree, ["rev-parse", "HEAD"])).toBe(item.base);
-        expect(prompt).toContain("Author summary length is 2079 characters; maximum is 2000");
+        expect(prompt).toContain(
+          `Author summary length is ${MAX_TERMINAL_SUMMARY_LENGTH + 79} characters; maximum is ${MAX_TERMINAL_SUMMARY_LENGTH}`,
+        );
         expect(prompt).toContain(JSON.stringify(author.trace));
         expect(prompt).toContain("Inspect and verify");
         expect(prompt).toContain(JSON.stringify(path("author-retry-discard.json")));
@@ -1555,7 +2232,10 @@ it.each([
       trace(retry!.id, {
         ...verdict,
         head: mode === "wrong-verdict-head" ? "f".repeat(40) : item.base,
-        summary: mode === "second-malformed" ? "x".repeat(2001) : "Synthetic verified work.",
+        summary:
+          mode === "second-malformed"
+            ? "x".repeat(MAX_TERMINAL_SUMMARY_LENGTH + 1)
+            : "Synthetic verified work.",
       }),
     );
     await writeFile(retry!.trace.replace(/\.jsonl$/, ".exit.json"), JSON.stringify({ code: 0 }));
@@ -1564,7 +2244,10 @@ it.each([
         await expect(run()).rejects.toMatchObject({
           reason: mode === "second-malformed" ? "author-malformed" : "author-wrong-head",
           ...(mode === "second-malformed"
-            ? { retries: 1, diagnostics: expect.stringContaining("2001") }
+            ? {
+                retries: 1,
+                diagnostics: expect.stringContaining(`${MAX_TERMINAL_SUMMARY_LENGTH + 1}`),
+              }
             : {}),
         });
       expect(launches).toEqual(["author"]);
@@ -2700,11 +3383,10 @@ it("admits repository-wide source scope without a pre-authored repair path list"
 
 it("resolves ladders before setup and rejects the old fixed-seat config", async () => {
   const f = await loopFixture();
-  const row = {
-    ...SELF_ROUTING,
-    row: 7,
-    review: 11 as const,
-  };
+  const rows: RoutingRow[] = JSON.parse(
+    await readFile(new URL("../../adapters/chase-sets-routing.json", import.meta.url), "utf8"),
+  );
+  const row = rows.find((row) => row.row === 7 && row.review === 11)!;
   const policy: RepositoryAdapter = {
     ...repositoryPolicy,
     issueContext: async (input) => ({
@@ -2734,33 +3416,27 @@ it("resolves ladders before setup and rejects the old fixed-seat config", async 
     readFile(resolve(f.stateRoot, config.run, "iss-104-attempt-1/setup/config.json"), "utf8"),
   ).rejects.toMatchObject({ code: "ENOENT" });
   const queue = await queueConfigFromLoop(
-    { ...config, routingRows: [row] },
+    { ...config, routingRows: rows },
     f.repository,
     f.selected,
     policy,
   );
   expect(queue.items[0]?.source).toMatchObject({
     routing: { row: 7, review: 11 },
-    author: { ...row.author[0], ladder: row.author },
-    reviewer: { ...row.reviewer[0], ladder: row.reviewer },
+    author: { model: "gpt-6-astra", effort: "high", ladder: row.author },
+    reviewer: { model: "claude-opus-5-5", effort: "high", ladder: row.reviewer },
   });
   expect(queue.items[0]?.repair.author).toMatchObject({ ...row.author[0], ladder: row.author });
   const self = await queueConfigFromLoop(
-    { ...f.loop, routingRows: [row] },
+    { ...f.loop, repository: "todd-skelton/orchestration-platform", routingRows: rows },
     f.repository,
     f.selected,
-    {
-      ...policy,
-      issueContext: async (input) => ({
-        ...(await policy.issueContext(input)),
-        routing: { row: "self" },
-      }),
-    },
+    selfAdapter,
   );
   expect(self.items[0]?.source).toMatchObject({
     routing: { row: "self" },
-    author: { ...SELF_ROUTING.author[0], ladder: SELF_ROUTING.author },
-    reviewer: { ...SELF_ROUTING.reviewer[0], ladder: SELF_ROUTING.reviewer },
+    author: { model: "gpt-6-astra", effort: "high", ladder: SELF_ROUTING.author },
+    reviewer: { model: "claude-opus-5-5", effort: "high", ladder: SELF_ROUTING.reviewer },
   });
   const {
     author: _author,
@@ -2771,6 +3447,54 @@ it("resolves ladders before setup and rejects the old fixed-seat config", async 
   expect(() => validateLoopConfig({ ...f.loop, adapter: "chase-sets" })).toThrow(
     "routing-table-required",
   );
+});
+
+it("composes all shipped Chase pairs before setup and reconstructs the same selection", async () => {
+  const f = await loopFixture();
+  const rows: RoutingRow[] = JSON.parse(
+    await readFile(new URL("../../adapters/chase-sets-routing.json", import.meta.url), "utf8"),
+  );
+  const expected = [
+    [2, "gpt-6-luna", "high", "claude-opus-5-5"],
+    [3, "claude-sonnet-5", "medium", "gpt-6-sol"],
+    [4, "gpt-6-astra", "medium", "claude-opus-5-5"],
+    [7, "gpt-6-astra", "high", "claude-opus-5-5"],
+    [10, "gpt-6-sol", "high", "claude-opus-5-5"],
+    [14, "claude-opus-5-5", "medium", "gpt-6-sol"],
+    [15, "claude-opus-5-5", "high", "gpt-6-sol"],
+  ] as const;
+  for (const [row, author, effort, reviewer] of expected) {
+    for (const review of [11, 12] as const) {
+      const routing = { row, review };
+      const selected = f.selected;
+      const loop = {
+        ...f.loop,
+        run: `shipped-${row}-${review}`,
+        adapter: "chase-sets",
+        routingRows: rows,
+      };
+      const policy: RepositoryAdapter = {
+        ...repositoryPolicy,
+        issueContext: async (input) => ({
+          ...(await repositoryPolicy.issueContext(input)),
+          routing,
+        }),
+      };
+      const queue = await queueConfigFromLoop(loop, f.repository, selected, policy);
+      expect(queue.items[0]!.source).toMatchObject({
+        routing,
+        author: { model: author, effort, rung: 0 },
+        reviewer: { model: reviewer, effort: review === 11 ? "high" : "medium", rung: 0 },
+      });
+      const shipped = rows.find((entry) => entry.row === row && entry.review === review)!;
+      expect(queue.items[0]!.source.author.ladder).toEqual(shipped.author);
+      expect(queue.items[0]!.source.reviewer.ladder).toEqual(shipped.reviewer);
+      expect(await queueConfigFromLoop(loop, f.repository, selected, policy)).toEqual(queue);
+      await expect(
+        readFile(resolve(queue.items[0]!.setup.stateDirectory, "config.json")),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+    }
+  }
 });
 
 it("derives the complete internal queue from one compact loop config and selected issue", async () => {
@@ -2941,29 +3665,30 @@ it("runs the composed self-repository setup through the real Git adapter", async
   ).resolves.toMatchObject({ stdout: `${selected.base}\n` });
 }, 30_000);
 
-it("authors fresh runs beside preserved issue worktrees and reuses each run on resume", async () => {
-  const f = await loopFixture();
-  const git = async (args: string[], cwd = f.repository) =>
-    (await execute(f.gitExecutable, ["-C", cwd, ...args])).stdout.trim();
-  const preserved = resolve(f.repository, "..", "preserved-source");
-  await git(["worktree", "add", "-b", "codex/iss-104", preserved, f.selected.base]);
-  await writeFile(resolve(preserved, "unfinished.txt"), "preserved work\n");
-  const preservedStatus = await git(["status", "--porcelain"], preserved);
-  let installs = 0;
-  const setupAdapter = gitSetupAdapter({
-    async install(_launcher, _args, cwd) {
-      installs++;
-      await mkdir(resolve(cwd, "node_modules"), { recursive: true });
-      await writeFile(resolve(cwd, "node_modules/.modules.yaml"), "fixture: true\n");
-      return "succeeded";
-    },
-  });
-  const branches = new Set<string>();
-  for (const run of ["fresh-one", "fresh-two", "fresh..three.lock"]) {
+const freshRuns = ["fresh-one", "fresh-two", "fresh..three.lock"];
+
+it.each(freshRuns)(
+  "authors fresh run %s beside a preserved issue worktree and reuses it on resume",
+  async (run) => {
+    const f = await loopFixture();
+    const git = async (args: string[], cwd = f.repository) =>
+      (await execute(f.gitExecutable, ["-C", cwd, ...args])).stdout.trim();
+    const preserved = resolve(f.repository, "..", "preserved-source");
+    await git(["worktree", "add", "-b", "codex/iss-104", preserved, f.selected.base]);
+    await writeFile(resolve(preserved, "unfinished.txt"), "preserved work\n");
+    const preservedStatus = await git(["status", "--porcelain"], preserved);
+    let installs = 0;
+    const setupAdapter = gitSetupAdapter({
+      async install(_launcher, _args, cwd) {
+        installs++;
+        await mkdir(resolve(cwd, "node_modules"), { recursive: true });
+        await writeFile(resolve(cwd, "node_modules/.modules.yaml"), "fixture: true\n");
+        return "succeeded";
+      },
+    });
     const loop = { ...f.loop, run, worktreeRoot: resolve(f.loop.worktreeRoot, run) };
     const queue = await queueConfigFromLoop(loop, f.repository, f.selected, repositoryPolicy);
     const item = queue.items[0]!;
-    branches.add(item.setup.sourceBranch);
     expect(item.delivery.policy).toMatchObject({ sourceBranch: "codex/iss-104" });
     expect(item.delivery.localBranch).toBe(item.setup.sourceBranch);
     const adapter = repositoryQueueAdapter(queue, f.repository, { setup: setupAdapter });
@@ -2977,8 +3702,8 @@ it("authors fresh runs beside preserved issue worktrees and reuses each run on r
     };
     await expect(queueStep(queue, toAuthor)).resolves.toMatchObject({ status: "observing-author" });
     expect(authors).toBe(1);
+    expect(installs).toBe(3);
     const before = await git(["worktree", "list", "--porcelain"]);
-    const installCount = installs;
     const resumed = await queueConfigFromLoop(loop, f.repository, f.selected, repositoryPolicy);
     expect(resumed).toEqual(queue);
     await expect(
@@ -2987,16 +3712,63 @@ it("authors fresh runs beside preserved issue worktrees and reuses each run on r
     await expect(queueStep(resumed, toAuthor)).resolves.toMatchObject({
       status: "observing-author",
     });
-    expect(installs).toBe(installCount);
+    expect(authors).toBe(2);
+    expect(installs).toBe(3);
     expect(await git(["worktree", "list", "--porcelain"])).toBe(before);
     expect(await git(["branch", "--show-current"], item.setup.sourceWorktree)).toBe(
       item.setup.sourceBranch,
     );
     for (const path of [item.setup.pilotWorktree, item.setup.reviewWorktree])
       expect(await git(["branch", "--show-current"], path)).toBe("");
+    expect(await git(["branch", "--show-current"], preserved)).toBe("codex/iss-104");
+    expect(await git(["rev-parse", "HEAD"], preserved)).toBe(f.selected.base);
+    expect(await git(["status", "--porcelain"], preserved)).toBe(preservedStatus);
+    expect(await readFile(resolve(preserved, "unfinished.txt"), "utf8")).toBe("preserved work\n");
+  },
+  30_000,
+);
+
+it("composes distinct Git-safe source branches across coexisting fresh runs without installs", async () => {
+  const f = await loopFixture();
+  const git = async (args: string[], cwd = f.repository) =>
+    (await execute(f.gitExecutable, ["-C", cwd, ...args])).stdout.trim();
+  const preserved = resolve(f.repository, "..", "preserved-source");
+  await git(["worktree", "add", "-b", "codex/iss-104", preserved, f.selected.base]);
+  await writeFile(resolve(preserved, "unfinished.txt"), "preserved work\n");
+  const preservedStatus = await git(["status", "--porcelain"], preserved);
+  const adapter = gitSetupAdapter({ gitExecutable: f.gitExecutable });
+  const branches = new Set<string>();
+  const sources: QueueItem["setup"][] = [];
+  for (const run of freshRuns) {
+    const loop = { ...f.loop, run, worktreeRoot: resolve(f.loop.worktreeRoot, run) };
+    const queue = await queueConfigFromLoop(loop, f.repository, f.selected, repositoryPolicy);
+    const item = queue.items[0]!;
+    const branch = item.setup.sourceBranch;
+    branches.add(branch);
+    await expect(
+      execute(f.gitExecutable, ["-C", f.repository, "check-ref-format", "--branch", branch]),
+    ).resolves.toMatchObject({ stdout: `${branch}\n` });
+    await adapter.assertExecutor(item.setup, f.repository);
+    await expect(adapter.observeWorktree(item.setup, "source", false)).resolves.toEqual({
+      state: "absent",
+    });
+    await adapter.createWorktree(item.setup, "source");
+    await expect(adapter.observeWorktree(item.setup, "source", true)).resolves.toEqual({
+      state: "confirmed",
+      head: f.selected.base,
+      branch,
+    });
+    sources.push(item.setup);
   }
   expect(branches.size).toBe(3);
-  expect(installs).toBe(9);
+  const registered = (await git(["worktree", "list", "--porcelain"])).split("\n\n");
+  for (const { sourceWorktree, sourceBranch } of sources)
+    expect(registered).toContain(
+      `worktree ${sourceWorktree.replaceAll("\\", "/")}\nHEAD ${f.selected.base}\nbranch refs/heads/${sourceBranch}`,
+    );
+  expect(registered).toContain(
+    `worktree ${(await realpath(preserved)).replaceAll("\\", "/")}\nHEAD ${f.selected.base}\nbranch refs/heads/codex/iss-104`,
+  );
   expect(await git(["branch", "--show-current"], preserved)).toBe("codex/iss-104");
   expect(await git(["rev-parse", "HEAD"], preserved)).toBe(f.selected.base);
   expect(await git(["status", "--porcelain"], preserved)).toBe(preservedStatus);

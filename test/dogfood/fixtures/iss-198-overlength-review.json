@@ -1,0 +1,23 @@
+[
+  {
+    "type": "thread.started",
+    "thread_id": "01a0c504-5dc0-75a1-8cab-bd3b093919b4"
+  },
+  {
+    "type": "item.completed",
+    "item": {
+      "id": "item_57",
+      "type": "agent_message",
+      "text": "{\"run\":\"m1-iss167-20260921T1457\",\"role\":\"reviewer\",\"head\":\"6730bbb7346893872bc49d41ddb42d4b506f8912\",\"verdict\":\"PASS\",\"findings\":[{\"file\":\"scripts/dogfood/conflict.ts\",\"line\":79,\"severity\":\"note\",\"text\":\"The fence keys on correctionPaths, so accepted-replan lineages now stop at conflict-resolution-scope-escape before launching instead of failing the same conflict later at outside-footprint. Terminal outcome and finalStep routing are unchanged, but this narrows a shared path beyond ISS-167.\"},{\"file\":\"scripts/dogfood/queue.ts\",\"line\":789,\"severity\":\"note\",\"text\":\"A reviewed-exhausted attempt permanently requires the packet for that issue on this host; a fresh run can never satisfy it because validateLoopConfig binds attemptDirectory to config.run. Intended per AC2 and parallel to accepted-replan-required, but the only remedy is restarting the original run.\"}],\"g0\":\"No. Admission must rest on the operator's ruling packet plus the retained terminal stop, reviewed head and PASS review, so nothing smaller can both refuse a fresh source attempt and authorize one integration. I checked the shipped shape against the retained m1-iss146-147-20260914T2325 records: attempt.json, source/native-refresh.json (resolutionUsed true, no head/conflict/publication), candidate.json and the PASS reviewer-terminal all match reviewedExhausted, and cycle-4-stop-1(-complete) match the marker checks, so the detector recognizes the real target without new state. It reuses acceptedReplan's wx claim, native refresh/conflict/DELTA and ordinary delivery rather than a ledger or resolver, keeps the retained attempt, worktree and history byte-unchanged, and starts delivery directly with no invented author or terminal. I ran typecheck, format:check and planning:check green here; the sandbox is read-only so pnpm test could not execute, and the author's trace shows 1352 passed plus the focused file 19/19 under core.autocrlf true and default, with the flipped-assertion control failing as expected. The base-to-candidate delta is test-only.\"}"
+    }
+  },
+  {
+    "type": "turn.completed",
+    "usage": {
+      "input_tokens": 4058978,
+      "cached_input_tokens": 3884150,
+      "output_tokens": 43461,
+      "reasoning_output_tokens": 34232
+    }
+  }
+]

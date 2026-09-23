@@ -1,6 +1,9 @@
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { delimiter, dirname, resolve } from "node:path";
 import { QueueBlocked } from "../../../scripts/dogfood/queue.ts";
+// ISS-165: the supervisor composes the real native adapter; only queue,
+// supervision and repository effects are synthetic here.
+export { codexAdapter } from "../../../scripts/dogfood/dispatch-adapter.ts";
 import { nextCycle as nativeNextCycle } from "../../../scripts/dogfood/supervision.ts";
 export const nextCycle = (loop, root, supervisor, repository) =>
   nativeNextCycle(loop, root, supervisor, repository, () => validateLoopExecutor(loop, root));
@@ -298,6 +301,22 @@ export function repositoryQueueAdapter(config, _executingRoot, options) {
         {},
       );
       if (controls.stopReason) throw new QueueBlocked(controls.stopReason);
+      // ISS-165 TEST-ONLY trigger at the queue's source boundary: the composed
+      // options.native is the actual supervisor composition; only its external
+      // execution is replaced here. Production never reaches this branch.
+      if (controls.nativeDbProfile) {
+        const native = options.native;
+        const methods = native
+          ? Object.keys(native).filter((key) => typeof native[key] === "function")
+          : null;
+        const reply = native?.nativeDbProfile
+          ? await native.nativeDbProfile(controls.nativeDbProfile)
+          : { status: "unsupported", diagnostic: "native-db-profile-absent" };
+        await writeFile(
+          resolve(process.env.SUPERVISE_FIXTURE_STATE, "command-native-db.json"),
+          `${JSON.stringify({ methods, reply })}\n`,
+        );
+      }
       if (!sourceObserved && !controls.observeImmediately) {
         sourceObserved = true;
         return { status: "observing-author" };

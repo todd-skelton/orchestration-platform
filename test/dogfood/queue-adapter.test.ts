@@ -4,6 +4,7 @@ import { once } from "node:events";
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { PassThrough } from "node:stream";
 import { promisify } from "node:util";
 import { afterEach, expect, it, vi } from "vitest";
 import * as boardLoader from "../../scripts/planning/board-check.mjs";
@@ -22,7 +23,16 @@ import type {
   DeliveryPlan,
   PublicationEvidence,
 } from "../../scripts/dogfood/delivery.js";
-import { sha, type Adapter, type Attempt } from "../../scripts/dogfood/flow.js";
+import {
+  sha,
+  type Adapter,
+  type Attempt,
+  type NativeDbIdentity,
+} from "../../scripts/dogfood/flow.js";
+import {
+  createNativeDbAdmission,
+  nativeDbProfileAdapter,
+} from "../../scripts/dogfood/supervise.mjs";
 import type { RepairAdapter } from "../../scripts/dogfood/repair-adapter.js";
 import type { RepositoryAdapter } from "../../scripts/dogfood/repository-adapter.js";
 import type { SetupAdapter, SetupRole } from "../../scripts/dogfood/setup.js";
@@ -39,6 +49,7 @@ import {
 import { gitSetupAdapter } from "../../scripts/dogfood/setup-adapter.js";
 import { codexAdapter } from "../../scripts/dogfood/dispatch-adapter.js";
 import { SELF_ROUTING } from "../../scripts/dogfood/routing.mjs";
+import { MAX_TERMINAL_SUMMARY_LENGTH } from "../../scripts/dogfood/terminal-summary.mjs";
 import { sourceFailureFixture, historicalStops, snapshot } from "./fixtures/source-failure.js";
 import { prerequisiteFixture, prerequisiteProof } from "./fixtures/prerequisite.js";
 import {
@@ -444,7 +455,11 @@ async function fixture(history: QueueParticipant[] = []) {
 
 afterEach(async () => {
   vi.restoreAllMocks();
-  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
+  await Promise.all(
+    roots
+      .splice(0)
+      .map((root) => rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 })),
+  );
 });
 
 async function planningSource(
@@ -732,6 +747,175 @@ it.each([
     ).toContain("retained partial work");
   }
   expect((await adapter().history()).every((p) => p.rung !== undefined)).toBe(true);
+});
+
+// ISS-165: options.native carries the run-owned channel through the bounded
+// source and repair adapters. The harness captures each actual receiver at its
+// `git` entry and is the only caller; the queue never requests.
+it("retains the composed native profile method through the bounded source and repair adapters", async () => {
+  const current = await fixture();
+  const input = new PassThrough();
+  const output = new PassThrough();
+  const written: string[] = [];
+  output.on("data", (chunk) => written.push(String(chunk)));
+  const syntheticRun = "synthetic-native-component";
+  const admission = createNativeDbAdmission(syntheticRun, input, output, {
+    approvedParents: [current.root],
+  });
+  const identity: NativeDbIdentity = {
+    profile: "reconciliation-pg16/v1",
+    run: syntheticRun,
+    issue: 338,
+    attempt: 1,
+    executorHead: stable,
+    product: { repository: "fixture/repository", head: candidate, tree: "f".repeat(40) },
+    declaration: {
+      version: 1,
+      profile: "reconciliation-pg16/v1",
+      files: ["one", "two", "three"].map((name) => ({
+        file: `${name}.db.test.ts`,
+        cases: [`${name} reconciles`],
+      })),
+      mutants: [],
+    },
+    patchDigests: [],
+    stagedInputDirectory: resolve(current.root, "staged-input"),
+  };
+  let sourceHead = base;
+  let reviewHead = base;
+  const receivers: Adapter[] = [];
+  const launches: string[] = [];
+  const native = nativeDbProfileAdapter(
+    {
+      async preflight() {},
+      async git(worktree, args) {
+        if (!receivers.includes(this)) receivers.push(this);
+        if (args[0] === "rev-parse" && args[1] === "--show-toplevel") return worktree;
+        if (args[0] === "rev-parse") {
+          if (worktree === current.paths.pilot) return stable;
+          return worktree === current.paths.review ? reviewHead : sourceHead;
+        }
+        if (args[0] === "checkout") {
+          reviewHead = String(args.at(-1));
+          return "";
+        }
+        if (args[0] === "merge-base") return args[1]!;
+        if (args[0] === "diff")
+          return args.includes("--cached") || (args.at(-1) === "HEAD" && sourceHead === candidate)
+            ? ""
+            : "scripts/dogfood/queue.ts\0";
+        if (args[0] === "show") return args.includes("-z") ? "\none\n\n" : "one";
+        if (args[0] === "commit") sourceHead = candidate;
+        return "";
+      },
+      async launch(role, config) {
+        const stage = config.stateDirectory === current.paths.repair ? "repair" : "source";
+        launches.push(`${stage}:${role}`);
+        return {
+          id: `synthetic-${stage}-${role}`,
+          pid: launches.length,
+          trace: resolve(config.stateDirectory, `${role}.jsonl`),
+          launchedAt: 1,
+        };
+      },
+      async observe(role, config, attempt) {
+        if (config.stateDirectory === current.paths.repair)
+          return { id: attempt.id, status: "running" };
+        return role === "author"
+          ? { status: "passed", id: attempt.id, head: base }
+          : {
+              status: "failed",
+              id: attempt.id,
+              head: candidate,
+              summary: JSON.stringify({
+                run: current.source.run,
+                role: "reviewer",
+                head: candidate,
+                verdict: "FAIL",
+                findings: [
+                  {
+                    file: "scripts/dogfood/queue.ts",
+                    line: 3,
+                    severity: "blocking",
+                    text: "synthetic fixable review defect",
+                  },
+                ],
+                g0: "The prescribed repair is the simplest change.",
+              }),
+            };
+      },
+      async checks() {
+        return { head: candidate, checks: [] };
+      },
+    },
+    admission,
+  );
+  const flush = () => new Promise((done) => setImmediate(done));
+  const invoke = async (adapter: Adapter) => {
+    expect(typeof adapter.nativeDbProfile).toBe("function");
+    const ordinal = written.length + 1;
+    const pending = adapter.nativeDbProfile!(identity);
+    await flush();
+    expect(written).toHaveLength(ordinal);
+    expect(JSON.parse(written[ordinal - 1]!)).toEqual({
+      schemaVersion: "dogfood-native-db-request/v1",
+      correlation: ordinal,
+      ...identity,
+    });
+    input.write(
+      `${JSON.stringify({
+        schemaVersion: "dogfood-native-db-reply/v1",
+        correlation: ordinal,
+        status: "completed",
+        owner: { lockId: "0".repeat(32), head: candidate, lane: syntheticRun },
+        evidencePath: resolve(current.root, "evidence"),
+        diagnostic: null,
+      })}\n`,
+    );
+    expect(await pending).toEqual({
+      correlation: ordinal,
+      status: "completed",
+      owner: { lockId: "0".repeat(32), head: candidate, lane: syntheticRun },
+      evidencePath: resolve(current.root, "evidence"),
+      diagnostic: null,
+    });
+  };
+  const adapter = repositoryQueueAdapter(current.config, current.paths.controller, { native });
+  // Flow reaches the bounded stage adapter; the queue's own location check
+  // reaches the raw composition. Both are receivers, neither requests.
+  const bounded = () => receivers.filter((receiver) => receiver !== native);
+  await expect(adapter.source(current.item)).resolves.toMatchObject({ status: "fixable-review" });
+  expect(launches).toEqual(["source:author", "source:reviewer"]);
+  expect(written).toEqual([]);
+  expect(receivers).toContain(native);
+  expect(bounded()).toHaveLength(1);
+  expect(bounded()[0]!.authorRung).toBeDefined();
+  await invoke(bounded()[0]!);
+  await expect(adapter.repair(current.item)).resolves.toMatchObject({
+    status: "observing-author",
+  });
+  expect(launches).toEqual(["source:author", "source:reviewer", "repair:author"]);
+  expect(written).toHaveLength(1);
+  expect(bounded()).toHaveLength(2);
+  await invoke(bounded()[1]!);
+  // Replay from retained records: fresh bounded receivers, no request from the queue.
+  await expect(adapter.repair(current.item)).resolves.toMatchObject({
+    status: "observing-author",
+  });
+  await expect(adapter.source(current.item)).resolves.toMatchObject({ status: "fixable-review" });
+  expect(launches).toHaveLength(3);
+  expect(bounded()).toHaveLength(4);
+  await flush();
+  expect(written).toHaveLength(2);
+  expect((await adapter.history()).map((row) => row.outcome)).toEqual(["passed", "failed"]);
+  admission.close();
+  for (const receiver of bounded().slice(2))
+    expect(await receiver.nativeDbProfile!(identity)).toMatchObject({
+      correlation: null,
+      status: "refused",
+      diagnostic: "native-db-channel-closed",
+    });
+  expect(written).toHaveLength(2);
 });
 
 it.each([
@@ -1381,7 +1565,14 @@ it.each([false, true])(
           expect(prompt).toContain(
             "Is there a simpler shape that still satisfies every acceptance criterion and every stated not-built reason? Answer No with one reason, or name the shape and the constraint you checked it against.",
           );
-          if (!correction) expect(prompt).toContain(JSON.stringify(current.source.allowedPaths));
+          if (!correction) {
+            expect(prompt).toContain(JSON.stringify(current.source.allowedPaths));
+            // ISS-198: the assembled source-stage prompt (flow report text plus
+            // the queue's report suffix) states the one shared bound in both halves.
+            expect(
+              [...prompt.matchAll(/(\d+) characters/g)].map((match) => Number(match[1])),
+            ).toEqual([MAX_TERMINAL_SUMMARY_LENGTH, MAX_TERMINAL_SUMMARY_LENGTH]);
+          }
         }
         const selected = correction ? `gate-${role}` : role;
         const deadAuthor = selected === "author" && launches.length === 0;

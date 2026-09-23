@@ -1,5 +1,13 @@
 import { execFile } from "node:child_process";
-import { mkdir, mkdtemp, readFile, readdir, realpath, writeFile } from "node:fs/promises";
+import {
+  appendFile,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  realpath,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
@@ -24,22 +32,27 @@ import type { RepositoryAdapter } from "../../../scripts/dogfood/repository-adap
 import type { Adapter } from "../../../scripts/dogfood/flow.js";
 import { SELF_ROUTING } from "../../../scripts/dogfood/routing.mjs";
 
+const execute = promisify(execFile);
+// ISS-196: the ISS-171 idiom; one executable lookup per worker, not per fixture entry.
+let fixtureGit: Promise<string> | undefined;
+
 // All issue identities, workers and delivery results in this fixture are synthetic.
 export async function sourceFailureFixture(priorWorkers = 0, files: string[] = []) {
   const root = await realpath(await mkdtemp(resolve(tmpdir(), "source-fail-native-")));
   const repository = resolve(root, "repository");
   await mkdir(repository);
-  const execute = promisify(execFile);
-  const gitExecutable = (
-    await execute(process.platform === "win32" ? "where.exe" : "which", ["git"])
-  ).stdout
-    .trim()
-    .split(/\r?\n/)[0]!;
+  const gitExecutable = await (fixtureGit ??= execute(
+    process.platform === "win32" ? "where.exe" : "which",
+    ["git"],
+  ).then((found) => found.stdout.trim().split(/\r?\n/)[0]!));
   const git = async (cwd: string, args: string[]) =>
     (await execute(gitExecutable, ["-C", cwd, ...args])).stdout.trim();
   await git(repository, ["init", "-b", "main"]);
-  await git(repository, ["config", "user.name", "Synthetic Fixture"]);
-  await git(repository, ["config", "user.email", "fixture@example.test"]);
+  // ISS-171: the bytes `git config user.name` and `user.email` would append, without two processes.
+  await appendFile(
+    resolve(repository, ".git/config"),
+    "[user]\n\tname = Synthetic Fixture\n\temail = fixture@example.test\n",
+  );
   await writeFile(resolve(repository, ".gitignore"), "node_modules/\n");
   await writeFile(resolve(repository, "product.txt"), "synthetic base\n");
   for (const file of files) {
@@ -48,8 +61,16 @@ export async function sourceFailureFixture(priorWorkers = 0, files: string[] = [
     await writeFile(path, "synthetic preserved base\n");
   }
   await git(repository, ["add", "."]);
-  await git(repository, ["commit", "-m", "synthetic old executor"]);
-  const base = await git(repository, ["rev-parse", "HEAD"]);
+  // ISS-196: the commit summary names the new head in full, without a `rev-parse HEAD` process.
+  const committed = await git(repository, [
+    "-c",
+    "core.abbrev=no",
+    "commit",
+    "-m",
+    "synthetic old executor",
+  ]);
+  const base = /^\[main \(root-commit\) ([0-9a-f]{40})\] /.exec(committed)?.[1];
+  if (!base) throw new Error(`fixture commit summary did not name its head: ${committed}`);
   const loop: LoopConfig = {
     schemaVersion: "dogfood-loop/v1",
     run: "synthetic-source-fail",

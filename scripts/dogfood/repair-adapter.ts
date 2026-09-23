@@ -2,6 +2,7 @@
 import { step } from "./flow.ts";
 import type { Adapter, Attempt, Config, Role } from "./flow.js";
 import type { ReviewFinding } from "./repair-policy.mjs";
+import { MAX_TERMINAL_SUMMARY_LENGTH } from "./terminal-summary.mjs";
 
 export interface RepairHandoff {
   mainBase: string;
@@ -32,7 +33,7 @@ export function sourceReviewerReportPrompt(reviewPaths: string[]) {
     'Use verdict "PASS" or "FAIL" and findings shaped exactly {file,line,severity,text}, where severity is "blocking" or "note". ' +
     'Answer G0 with a string: "Is there a simpler shape that still satisfies every acceptance criterion and every stated not-built reason? Answer No with one reason, or name the shape and the constraint you checked it against." A blocking finding requires FAIL; notes never block. ' +
     reviewLocationContract(reviewPaths) +
-    " Keep the complete JSON report within 2000 characters."
+    ` Keep the complete JSON report within ${MAX_TERMINAL_SUMMARY_LENGTH} characters.`
   );
 }
 
@@ -45,7 +46,7 @@ function reviewerReportPrompt(handoff: RepairHandoff) {
     'Use verdict "PASS" or "FAIL" and findings shaped exactly {file,line,severity,text}, where severity is "blocking" or "note". ' +
     'Answer G0 with a string: "Is there a simpler shape that still satisfies every acceptance criterion and every stated not-built reason? Answer No with one reason, or name the shape and the constraint you checked it against." A blocking finding requires FAIL; notes never block. ' +
     reviewLocationContract(handoff.sourcePaths) +
-    " Keep the complete JSON report within 2000 characters."
+    ` Keep the complete JSON report within ${MAX_TERMINAL_SUMMARY_LENGTH} characters.`
   );
 }
 

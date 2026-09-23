@@ -9,6 +9,7 @@ import { repositoryQueueAdapter as nativeQueue } from "../../../scripts/dogfood/
 import { gitSetupAdapter } from "../../../scripts/dogfood/setup-adapter.ts";
 export * from "../../../scripts/dogfood/queue.ts";
 export * from "../../../scripts/dogfood/supervision.ts";
+export { codexAdapter } from "../../../scripts/dogfood/dispatch-adapter.ts";
 
 const exec = promisify(execFile);
 const control = process.env.PREREQUISITE_FIXTURE;
@@ -91,7 +92,9 @@ export function repositoryQueueAdapter(config, root, options) {
         return "succeeded";
       },
     }),
+    // Replace only external execution; the supervisor's composed members stay.
     native: {
+      ...options.native,
       git,
       preflight: async () => {},
       waitForProvider: async () => {},
@@ -152,7 +155,12 @@ export function repositoryQueueAdapter(config, root, options) {
 registerHooks({
   resolve(specifier, context, nextResolve) {
     if (
-      ["./queue.ts", "./supervision.ts", "./repository-adapter.mjs"].includes(specifier) &&
+      [
+        "./queue.ts",
+        "./supervision.ts",
+        "./repository-adapter.mjs",
+        "./dispatch-adapter.ts",
+      ].includes(specifier) &&
       context.parentURL?.endsWith("/supervise.mjs")
     )
       return { url: import.meta.url, shortCircuit: true };

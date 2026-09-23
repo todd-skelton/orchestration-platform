@@ -62,6 +62,7 @@ export async function probeProvider(
   signal: AbortSignal,
   request = fetch,
   model?: string,
+  poolReady = false,
 ) {
   let token: string;
   try {
@@ -87,8 +88,14 @@ export async function probeProvider(
       )
     )
       throw new Error("malformed provider models response");
-    if (!models.data.some((entry) => entry.id === model))
-      throw new QueueBlocked("provider-model-refused", model);
+    if (!poolReady && !models.data.some((entry) => entry.id === model))
+      throw new QueueBlocked(
+        "provider-model-refused",
+        `models catalog omitted ${model}; catalog head: ${models.data
+          .slice(0, 10)
+          .map((entry) => entry.id)
+          .join(", ")}`.slice(0, 200),
+      );
   } else await response.body?.cancel();
 }
 
@@ -138,7 +145,7 @@ export async function probePoolModel(
   // The pool does not know the model, or its observations are stale: the
   // models probe alone decides.
   if (!mentioned) return;
-  if (entries.some((entry) => entry.status === "ready")) return;
+  if (entries.some((entry) => entry.status === "ready")) return true;
   // Mentioned only by disabled accounts: no eligible account, no known end.
   if (entries.length === 0) throw new Error(`pool has no enabled account for ${model}`);
   // Only a block whose every end is a known future time can be measured
@@ -171,9 +178,10 @@ export async function admitLaunch(
   await waitForProvider(
     config,
     async (signal, deadline) => {
-      await probeProvider(baseUrl, authCommand, signal, request, config[role].model);
-      if (statusUrl)
-        await probePoolModel(statusUrl, config[role].model, signal, deadline, request, clock?.now);
+      const poolReady = statusUrl
+        ? await probePoolModel(statusUrl, config[role].model, signal, deadline, request, clock?.now)
+        : false;
+      await probeProvider(baseUrl, authCommand, signal, request, config[role].model, poolReady);
     },
     clock,
     report,
@@ -319,6 +327,28 @@ function events(trace: string, complete: boolean): any[] {
   if (!complete && !trace.endsWith("\n")) lines.pop();
   return lines.filter((line) => line.trim()).map((line) => JSON.parse(line));
 }
+// ISS-198: reviewer 75f8e370 in m1-iss167-20260921T1457 closed its sole
+// schema-valid verdict with a Markdown fence and was discarded as malformed.
+// One well-formed fenced block is transport, not trailing prose: the opening
+// fence line immediately precedes the object and only the closing fence
+// follows it. A second block, prose after the fence or a fence without an
+// object still refuse.
+const OPENING_FENCE = /(?:^|\n)[ \t]*```[^\n`]*\n[ \t]*$/;
+const CLOSING_FENCE = /^[ \t]*\r?\n\s*```\s*$/;
+// The retry prompt and stop diagnostics quote this many characters of a
+// discarded final message (half from each end, where framing faults sit),
+// JSON-quoted so the excerpt stays one delimited line.
+export const MAX_VERDICT_EXCERPT_LENGTH = 600;
+export function verdictExcerpt(message: string) {
+  if (message.length <= MAX_VERDICT_EXCERPT_LENGTH) return JSON.stringify(message);
+  const half = MAX_VERDICT_EXCERPT_LENGTH / 2;
+  return `${JSON.stringify(message.slice(0, half))} ... ${JSON.stringify(message.slice(-half))}`;
+}
+const malformedVerdict = (role: Role, message: string, reason: string) =>
+  new QueueBlocked(
+    "malformed-worker-verdict",
+    `${reason} Discarded ${role} message excerpt (at most ${MAX_VERDICT_EXCERPT_LENGTH} characters, JSON-quoted): ${verdictExcerpt(message)}`,
+  );
 function finalVerdict(message: string): unknown {
   // ISS-150: prose braces need not begin JSON. Once a complete object parses,
   // require it to end the message, rejecting additional objects or trailing prose.
@@ -346,7 +376,12 @@ function finalVerdict(message: string): unknown {
           start = end;
           break;
         }
-        check(message.slice(end + 1).trim() === "", "malformed-worker-verdict");
+        const after = message.slice(end + 1);
+        check(
+          after.trim() === "" ||
+            (OPENING_FENCE.test(message.slice(0, start)) && CLOSING_FENCE.test(after)),
+          "malformed-worker-verdict",
+        );
         return object;
       }
     }
@@ -416,26 +451,34 @@ export function parseTrace(
   const messages = rows.filter(
     (row) => row.type === "item.completed" && row.item?.type === "agent_message",
   );
+  const message = messages.at(-1)?.item.text ?? "null";
+  // Every discard carries its reason and a bounded excerpt of the discarded
+  // message, so the single retry sees what was lost (ISS-198).
+  const malformed = (reason: string) => malformedVerdict(role, message, reason);
+  const demand = (ok: unknown, reason: string) => {
+    if (!ok) throw malformed(reason);
+  };
   let verdict: any;
   try {
-    const message = messages.at(-1)?.item.text ?? "null";
     verdict = finalVerdict(message);
   } catch {
-    throw new Error("malformed-worker-verdict");
+    throw malformed(
+      "The final message does not end with exactly one JSON object, optionally inside one fenced block.",
+    );
   }
-  check(
+  demand(
     verdict &&
       typeof verdict.run === "string" &&
       typeof verdict.role === "string" &&
       /^[a-f0-9]{40}$/.test(verdict.head) &&
       ["PASS", "FAIL"].includes(verdict.verdict),
-    "malformed-worker-verdict",
+    "The JSON object is not a run, role, 40-hex head and PASS/FAIL verdict.",
   );
   check(
     verdict.run === config.run && verdict.role === role,
     "worker-verdict-identity-mismatch:malformed-worker-verdict-compatibility",
   );
-  check(
+  demand(
     role === "reviewer"
       ? Object.keys(verdict).length === 6 &&
           ["run", "role", "head", "verdict", "findings", "g0"].every((key) =>
@@ -448,17 +491,17 @@ export function parseTrace(
             Object.hasOwn(verdict, key),
           ) &&
           typeof verdict.summary === "string",
-    "malformed-worker-verdict",
+    role === "reviewer"
+      ? "The reviewer object must have exactly run, role, head, verdict, findings (array) and g0 (string)."
+      : "The author object must have exactly run, role, head, verdict and summary (string).",
   );
   if (role === "author" && verdict.summary.length > MAX_TERMINAL_SUMMARY_LENGTH)
-    throw new QueueBlocked(
-      "malformed-worker-verdict",
+    throw malformed(
       `Author summary length is ${verdict.summary.length} characters; maximum is ${MAX_TERMINAL_SUMMARY_LENGTH}. Inspect and verify the work, then return a valid verdict with a shorter summary.`,
     );
   const summary = role === "reviewer" ? JSON.stringify(verdict) : terminalSummary(verdict.summary);
   if (role === "reviewer" && summary && summary.length > MAX_TERMINAL_SUMMARY_LENGTH)
-    throw new QueueBlocked(
-      "malformed-worker-verdict",
+    throw malformed(
       `Reviewer verdict serialized length is ${summary.length} characters; maximum is ${MAX_TERMINAL_SUMMARY_LENGTH}. Shorten findings and G0 to fit.`,
     );
   return {

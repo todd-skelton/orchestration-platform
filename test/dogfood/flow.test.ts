@@ -1,9 +1,27 @@
 import { mkdtemp, realpath, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
+import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it } from "vitest";
-import { correctGate, QueueBlocked, step, workerPrompt } from "../../scripts/dogfood/flow.js";
-import type { Adapter, Check, Config, Role, Terminal } from "../../scripts/dogfood/flow.js";
+import {
+  correctGate,
+  QueueBlocked,
+  reviewRefresh,
+  step,
+  workerPrompt,
+} from "../../scripts/dogfood/flow.js";
+import type {
+  Adapter,
+  Check,
+  Config,
+  NativeDbIdentity,
+  Role,
+  Terminal,
+} from "../../scripts/dogfood/flow.js";
+import {
+  createNativeDbAdmission,
+  nativeDbProfileAdapter,
+} from "../../scripts/dogfood/supervise.mjs";
 import {
   deliveryStep,
   type DeliveryAdapter,
@@ -22,12 +40,35 @@ import { stopCycle } from "../../scripts/dogfood/supervision.js";
 import type { LoopConfig } from "../../scripts/dogfood/queue.js";
 import { reviewedRepairAdapter } from "../../scripts/dogfood/repair-adapter.js";
 import { SELF_ROUTING } from "../../scripts/dogfood/routing.mjs";
+import { MAX_TERMINAL_SUMMARY_LENGTH } from "../../scripts/dogfood/terminal-summary.mjs";
+import {
+  MAX_VERDICT_EXCERPT_LENGTH,
+  verdictExcerpt,
+} from "../../scripts/dogfood/dispatch-adapter.js";
+import fencedReview from "./fixtures/iss-198-fenced-review.json" with { type: "json" };
+import longReview from "./fixtures/iss-198-overlength-review.json" with { type: "json" };
 import { resolveConflict } from "../../scripts/dogfood/conflict.js";
 import { evidenceDescriptor, writeEvidence } from "./fixtures/continuation.js";
 
 const base = "a".repeat(40),
   head = "b".repeat(40),
   pilotRevision = "c".repeat(40);
+// Synthetic retained seed used by adapter-lifecycle tests; real census capture
+// and its Git identities are exercised by refresh.test.ts.
+const conflictSeed = {
+  seed: base,
+  files: {
+    "scripts/repair.mjs": "prefix\n<<<<<<< HEAD\na\n=======\nb\n>>>>>>> main\nsuffix\n",
+  },
+  census: {
+    candidate: head,
+    main: pilotRevision,
+    seed: base,
+    k: ["scripts/repair.mjs"],
+    u: [],
+    blobs: { "scripts/repair.mjs": { candidate: head, main: pilotRevision, seed: base } },
+  },
+};
 const cleanup: string[] = [];
 
 it.each(["source", "repair", "gate", "conflict-boundary"])(
@@ -78,13 +119,7 @@ it.each(["source", "repair", "gate", "conflict-boundary"])(
                 f.pilot,
                 pilotRevision,
                 head,
-                {
-                  seed: base,
-                  files: {
-                    "scripts/repair.mjs":
-                      "prefix\n<<<<<<< HEAD\na\n=======\nb\n>>>>>>> main\nsuffix\n",
-                  },
-                },
+                conflictSeed,
                 async () => {
                   throw new Error("saved conflict seed must be reused");
                 },
@@ -94,7 +129,10 @@ it.each(["source", "repair", "gate", "conflict-boundary"])(
     f.setCached("scripts/repair.mjs\0");
     f.setUntracked("scripts/new.mjs\0");
     f.statuses.author = "malformed";
-    f.summarize("author", "Author summary length is 2079 characters; maximum is 2000.");
+    f.summarize(
+      "author",
+      `Author summary length is ${MAX_TERMINAL_SUMMARY_LENGTH + 79} characters; maximum is ${MAX_TERMINAL_SUMMARY_LENGTH}.`,
+    );
     await expect(run()).resolves.toMatchObject({ status: "observing-author", retries: 1 });
     const saved = await readFile(resolve(f.config.stateDirectory, "author-attempt.json"), "utf8");
     await expect(run()).resolves.toMatchObject({ status: "observing-author", retries: 1 });
@@ -104,7 +142,7 @@ it.each(["source", "repair", "gate", "conflict-boundary"])(
     expect(f.launches).toEqual(["author", "author"]);
     expect(f.resets).toEqual([]);
     expect(f.cleans).toEqual([]);
-    expect(f.launchPrompts[1]).toContain("2079");
+    expect(f.launchPrompts[1]).toContain(`${MAX_TERMINAL_SUMMARY_LENGTH + 79}`);
     expect(f.launchPrompts[1]).toContain("author-1.jsonl");
     expect(f.launchPrompts[1]).toContain("verify the retained work");
     if (caller === "repair") {
@@ -132,6 +170,190 @@ it.each(["source", "repair", "gate", "conflict-boundary"])(
       expect(f.launchPrompts[2]).toContain(pilotRevision);
     }
     if (caller !== "conflict-boundary") expect(validations).toBeGreaterThan(0);
+  },
+);
+
+// ISS-165: one run-owned channel behind the optional typed method. The harness
+// captures each actual entry adapter at its own `git` receiver and is the only
+// caller; production flow never requests, including from retained completed state.
+const syntheticRun = "synthetic-native-component";
+function nativeChannel(root: string) {
+  const input = new PassThrough();
+  const output = new PassThrough();
+  const written: string[] = [];
+  output.on("data", (chunk) => written.push(String(chunk)));
+  const admission = createNativeDbAdmission(syntheticRun, input, output, {
+    approvedParents: [root],
+  });
+  const identity = (): NativeDbIdentity => ({
+    profile: "reconciliation-pg16/v1",
+    run: syntheticRun,
+    issue: 1,
+    attempt: 1,
+    executorHead: pilotRevision,
+    product: { repository: "owner/repo", head, tree: "d".repeat(40) },
+    declaration: {
+      version: 1,
+      profile: "reconciliation-pg16/v1",
+      files: ["one", "two", "three"].map((name) => ({
+        file: `${name}.db.test.ts`,
+        cases: [`${name} reconciles`],
+      })),
+      mutants: [],
+    },
+    patchDigests: [],
+    stagedInputDirectory: resolve(root, "staged-input"),
+  });
+  const flush = () => new Promise((done) => setImmediate(done));
+  const invoke = async (adapter: Adapter) => {
+    expect(typeof adapter.nativeDbProfile).toBe("function");
+    const before = written.length;
+    const pending = adapter.nativeDbProfile!(identity());
+    await flush();
+    expect(written).toHaveLength(before + 1);
+    const sent = JSON.parse(written[before]!);
+    expect(sent).toEqual({
+      schemaVersion: "dogfood-native-db-request/v1",
+      correlation: before + 1,
+      ...identity(),
+    });
+    input.write(
+      `${JSON.stringify({
+        schemaVersion: "dogfood-native-db-reply/v1",
+        correlation: sent.correlation,
+        status: "completed",
+        owner: { lockId: "0".repeat(32), head, lane: syntheticRun },
+        evidencePath: resolve(root, "evidence"),
+        diagnostic: null,
+      })}\n`,
+    );
+    expect(await pending).toEqual({
+      correlation: sent.correlation,
+      status: "completed",
+      owner: { lockId: "0".repeat(32), head, lane: syntheticRun },
+      evidencePath: resolve(root, "evidence"),
+      diagnostic: null,
+    });
+  };
+  return { admission, written, invoke, flush };
+}
+
+it.each(["source", "repair", "gate", "conflict-boundary", "review-refresh"])(
+  "retains the composed native profile method at the %s entry without a production request",
+  async (caller) => {
+    const f = await fixture();
+    const root = resolve(f.config.stateDirectory, "..");
+    const c = nativeChannel(root);
+    const receivers = new Set<Adapter>();
+    const composed = nativeDbProfileAdapter(
+      {
+        ...f.adapter,
+        async git(tree, args) {
+          receivers.add(this);
+          return f.adapter.git(tree, args);
+        },
+      },
+      c.admission,
+    );
+    for (const name of Object.keys(f.adapter) as (keyof Adapter)[])
+      if (name !== "git") expect(composed[name]).toBe(f.adapter[name]);
+    f.config.mainBase = pilotRevision;
+    f.config.allowedPaths = ["."];
+    if (caller === "gate") f.config.correctionPaths = ["scripts/repair.mjs"];
+    const inherited = resolve(f.config.stateDirectory, "inherited");
+    if (caller === "review-refresh") {
+      await mkdir(inherited);
+      await writeFile(
+        resolve(inherited, "author-attempt.json"),
+        JSON.stringify({
+          id: "author",
+          pid: 1,
+          trace: resolve(inherited, "a.jsonl"),
+          launchedAt: 1,
+        }),
+      );
+      await writeFile(
+        resolve(inherited, "author-terminal.json"),
+        JSON.stringify({ status: "passed", id: "author", head: base }),
+      );
+      await writeFile(resolve(inherited, "config.json"), JSON.stringify({ config: { base } }));
+      f.setHead(head);
+    }
+    const handoff = {
+      mainBase: pilotRevision,
+      correctiveBase: base,
+      failedReview: {
+        findings: [
+          {
+            file: "scripts/repair.mjs",
+            line: 1,
+            severity: "blocking" as const,
+            text: "Synthetic prescribed repair.",
+          },
+        ],
+      },
+      predecessorCompleteSweep: "synthetic-predecessor-review",
+      sourceRecords: resolve(f.config.stateDirectory, "predecessor"),
+      implementation: { attempts: 2, ceiling: 4 },
+      sourcePaths: ["scripts/repair.mjs"],
+      acceptanceCriteria: ["Preserve the original criterion."],
+    };
+    const run = () =>
+      caller === "repair"
+        ? reviewedRepairAdapter(composed, f.pilot).dispatch(f.config, handoff)
+        : caller === "gate"
+          ? correctGate(
+              f.config,
+              composed,
+              f.pilot,
+              "test",
+              "Synthetic failing assertion artifact.",
+            )
+          : caller === "conflict-boundary"
+            ? resolveConflict(
+                f.config,
+                composed,
+                f.pilot,
+                pilotRevision,
+                head,
+                conflictSeed,
+                async () => {
+                  throw new Error("saved conflict seed must be reused");
+                },
+              )
+            : caller === "review-refresh"
+              ? reviewRefresh(f.config, composed, f.pilot, inherited)
+              : step(f.config, composed, f.pilot);
+    await expect(run()).resolves.toMatchObject({
+      status: caller === "review-refresh" ? "observing-reviewer" : "observing-author",
+    });
+    expect(c.written).toEqual([]);
+    expect(receivers.size).toBeGreaterThan(0);
+    // The spread callers hand flow a new object; the direct callers hand it the composition.
+    expect([...receivers].some((adapter) => adapter !== composed)).toBe(
+      ["repair", "conflict-boundary"].includes(caller),
+    );
+    for (const adapter of receivers) {
+      expect(adapter.launch).toBeDefined();
+      expect(adapter.observe).toBeDefined();
+      await c.invoke(adapter);
+    }
+    const requests = receivers.size;
+    expect(c.written).toHaveLength(requests);
+    if (caller !== "source") return;
+    f.authorDone();
+    await expect(run()).resolves.toMatchObject({ status: "observing-reviewer" });
+    f.reviewerDone();
+    await expect(run()).resolves.toMatchObject({ status: "awaiting-publication" });
+    await f.publish();
+    await expect(run()).resolves.toMatchObject({ status: "ready" });
+    receivers.clear();
+    await expect(run()).resolves.toMatchObject({ status: "ready" });
+    await c.flush();
+    expect(c.written).toHaveLength(requests);
+    expect([...receivers]).toEqual([composed]);
+    await c.invoke(composed);
+    expect(f.launches).toEqual(["author", "reviewer"]);
   },
 );
 
@@ -399,7 +621,8 @@ it.each(["sibling", "untracked", "rename"])(
 );
 
 afterEach(async () => {
-  for (const path of cleanup.splice(0)) await rm(path, { recursive: true, force: true });
+  for (const path of cleanup.splice(0))
+    await rm(path, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
 });
 async function fixture() {
   const root = await realpath(await mkdtemp(resolve(tmpdir(), "dogfood-test-")));
@@ -612,6 +835,82 @@ async function fixture() {
   };
 }
 
+it("replays literal predecessor placements and rungs but refuses changed ladder fingerprints", async () => {
+  const f = await fixture();
+  // Retained configuration is deliberately independent of the shipped defaults.
+  const author = [
+    { model: "gpt-5.6-luna", effort: "high" },
+    { model: "gpt-5.6-luna", effort: "xhigh" },
+    { model: "claude-sonnet-5", effort: "medium" },
+  ];
+  const reviewer = [
+    { model: "claude-opus-5", effort: "high" },
+    { model: "gpt-5.6-sol", effort: "high" },
+  ];
+  f.config.routing = { row: 2, review: 11 };
+  f.config.author = { ...author[0]!, ladder: author, prompt: "author" };
+  f.config.reviewer = { ...reviewer[0]!, ladder: reviewer, prompt: "reviewer" };
+  f.config.inheritedWorkerRetry = true;
+  f.adapter.authorRung = async () => 1;
+  const launch = f.adapter.launch;
+  f.adapter.launch = async (role, config, prompt) => {
+    if (role === "reviewer" && config.reviewer.model === "claude-opus-5")
+      throw new QueueBlocked("provider-model-refused");
+    return launch(role, config, prompt);
+  };
+  f.authorDone();
+  await expect(f.run()).resolves.toMatchObject({ status: "observing-reviewer", retries: 1 });
+  const files = [
+    "config.json",
+    "author-attempt.json",
+    "author-terminal.json",
+    "reviewer-intent.json",
+    "reviewer-attempt.json",
+  ];
+  const snapshot = () =>
+    Promise.all(files.map((file) => readFile(resolve(f.config.stateDirectory, file), "utf8")));
+  const retained = await snapshot();
+  expect(JSON.parse(retained[1]!)).toMatchObject({
+    routing: { row: 2, review: 11 },
+    rung: 1,
+    placement: { model: "gpt-5.6-luna", effort: "xhigh" },
+  });
+  expect(JSON.parse(retained[4]!)).toMatchObject({
+    routing: { row: 2, review: 11 },
+    rung: 1,
+    placement: { model: "gpt-5.6-sol", effort: "high" },
+    models: { author: "gpt-5.6-luna", reviewer: "gpt-5.6-sol" },
+  });
+  const observe = f.adapter.observe;
+  f.adapter.observe = async (role, config, attempt) => {
+    expect(config[role]).toMatchObject(
+      role === "author"
+        ? { model: "gpt-5.6-luna", effort: "xhigh", rung: 1 }
+        : { model: "gpt-5.6-sol", effort: "high", rung: 1 },
+    );
+    return observe(role, config, attempt);
+  };
+  for (let replay = 0; replay < 2; replay++) {
+    await expect(f.run()).resolves.toMatchObject({ status: "observing-reviewer", retries: 1 });
+    expect(await snapshot()).toEqual(retained);
+    await expect(
+      readFile(resolve(f.config.stateDirectory, "reviewer-terminal.json")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  }
+  const observations = f.observations.length;
+  // Change even an unused rung: equality must fail before replay or another launch.
+  for (const role of ["author", "reviewer"] as const) {
+    const placement = f.config[role].ladder![0]!;
+    const predecessor = placement.model;
+    placement.model = role === "author" ? "gpt-6-luna" : "claude-opus-5-5";
+    await expect(f.run()).rejects.toThrow("conflicting-run-configuration");
+    expect(await snapshot()).toEqual(retained);
+    placement.model = predecessor;
+  }
+  expect(f.observations).toHaveLength(observations);
+  expect(f.launches).toEqual(["author", "reviewer"]);
+});
+
 it.each(["probe", "launch"])(
   "uses one reviewer fallback only for %s model refusal, retaining it on resume",
   async (refusal) => {
@@ -628,15 +927,15 @@ it.each(["probe", "launch"])(
     const models: string[] = [];
     f.adapter.launch = async (role, config, prompt) => {
       models.push(config[role].model);
-      if (role === "reviewer" && config.reviewer.model === "claude-opus-5" && refusal === "probe")
+      if (role === "reviewer" && config.reviewer.model === "claude-opus-5-5" && refusal === "probe")
         throw new QueueBlocked("provider-model-refused");
       return launch(role, config, prompt);
     };
     f.adapter.observe = async (role, config, attempt) => {
       if (role === "reviewer") {
-        if (config.reviewer.model === "claude-opus-5")
+        if (config.reviewer.model === "claude-opus-5-5")
           return { id: attempt.id, status: "dead", modelRefused: true };
-        expect(config.reviewer.model).toBe("gpt-5.6-sol");
+        expect(config.reviewer.model).toBe("gpt-6-sol");
         return { id: attempt.id, status: "running" };
       }
       return observe(role, config, attempt);
@@ -644,14 +943,14 @@ it.each(["probe", "launch"])(
     f.authorDone();
     await expect(f.run()).resolves.toMatchObject({ status: "observing-reviewer" });
     await expect(f.run()).resolves.toMatchObject({ status: "observing-reviewer" });
-    expect(models).toEqual(["gpt-6-astra", "claude-opus-5", "gpt-5.6-sol"]);
+    expect(models).toEqual(["gpt-6-astra", "claude-opus-5-5", "gpt-6-sol"]);
     const attempt = JSON.parse(
       await readFile(resolve(f.config.stateDirectory, "reviewer-attempt.json"), "utf8"),
     );
     expect(attempt).toMatchObject({
       routing: { row: "self" },
-      placement: { model: "gpt-5.6-sol", effort: "high" },
-      models: { author: "gpt-6-astra", reviewer: "gpt-5.6-sol" },
+      placement: { model: "gpt-6-sol", effort: "high" },
+      models: { author: "gpt-6-astra", reviewer: "gpt-6-sol" },
     });
     expect(attempt.retries).toBeUndefined();
   },
@@ -703,7 +1002,7 @@ it.each(["verdict", "malformed", "outage", "death"])(
     if (failure === "verdict") await expect(f.run()).rejects.toThrow("reviewer-failed");
     else await expect(f.run()).resolves.toMatchObject({ status: "observing-reviewer" });
     expect(models).toEqual(
-      failure === "verdict" ? ["claude-opus-5"] : ["claude-opus-5", "claude-opus-5"],
+      failure === "verdict" ? ["claude-opus-5-5"] : ["claude-opus-5-5", "claude-opus-5-5"],
     );
   },
 );
@@ -761,7 +1060,7 @@ it("stops when the fallback is also refused and does not fall back for arbitrary
     f.authorDone();
     await expect(f.run()).rejects.toThrow(reason);
     expect(models).toEqual(
-      reason === "provider-model-refused" ? ["claude-opus-5", "gpt-5.6-sol"] : ["claude-opus-5"],
+      reason === "provider-model-refused" ? ["claude-opus-5-5", "gpt-6-sol"] : ["claude-opus-5-5"],
     );
   }
 });
@@ -1264,12 +1563,12 @@ describe("supervised sequential pilot (fake attempts, never live acceptance)", (
     expect(workerPrompt(f.config, "author", base, "Improve the selected issue.")).toBe(
       `Improve the selected issue.\n\nPilot run one-trial; role author; exact base: ${base}.\n` +
         'Allowed author paths: ["scripts/repair.mjs"]. Author may edit source only: do not stage, commit, or change Git metadata; leave HEAD at the exact base. Reviewer must leave its worktree unchanged. Never push, publish, merge, or change credentials.\n' +
-        `Explain substantive findings in progress messages before the final response; these remain in the captured trace. Final response must be ONLY JSON: {"run":"one-trial","role":"author","head":"${base}","verdict":"PASS","summary":""} (or verdict FAIL), with a short "summary" string of at most 2000 characters; use an empty string when there are no findings. Review every changed assertion independently. Before reporting, run \`pnpm typecheck\`, \`pnpm format:check\` and \`pnpm test\` in this worktree, and fix what fails.\n`,
+        `Explain substantive findings in progress messages before the final response; these remain in the captured trace. Final response must be ONLY JSON: {"run":"one-trial","role":"author","head":"${base}","verdict":"PASS","summary":""} (or verdict FAIL), with a short "summary" string of at most ${MAX_TERMINAL_SUMMARY_LENGTH} characters; use an empty string when there are no findings. Review every changed assertion independently. Before reporting, run \`pnpm typecheck\`, \`pnpm format:check\` and \`pnpm test\` in this worktree, and fix what fails.\n`,
     );
     expect(workerPrompt(f.config, "reviewer", head, "Improve the selected issue.")).toBe(
       `Improve the selected issue.\n\nPilot run one-trial; role reviewer; exact review head: ${head}.\n` +
         'Allowed author paths: ["scripts/repair.mjs"]. Author may edit source only: do not stage, commit, or change Git metadata; leave HEAD at the exact base. Reviewer must leave its worktree unchanged. Never push, publish, merge, or change credentials.\n' +
-        `Explain substantive findings in progress messages before the final response; these remain in the captured trace. Final response must be ONLY JSON: {"run":"one-trial","role":"reviewer","head":"${head}","verdict":"PASS","findings":[],"g0":"<answer>"} (or verdict FAIL). Answer G0 with a string: "Is there a simpler shape that still satisfies every acceptance criterion and every stated not-built reason? Answer No with one reason, or name the shape and the constraint you checked it against." Return the JSON object alone; its serialized length (JSON.stringify) must be at most 2000 characters. Write findings and G0 to fit within that total. Each finding is exactly {"file":"<changed path>","line":1,"severity":"blocking"|"note","text":"<finding>"}. A blocking finding requires FAIL; notes never block. Review every changed assertion independently.\n`,
+        `Explain substantive findings in progress messages before the final response; these remain in the captured trace. Final response must be ONLY JSON: {"run":"one-trial","role":"reviewer","head":"${head}","verdict":"PASS","findings":[],"g0":"<answer>"} (or verdict FAIL). Answer G0 with a string: "Is there a simpler shape that still satisfies every acceptance criterion and every stated not-built reason? Answer No with one reason, or name the shape and the constraint you checked it against." Return the JSON object alone; its serialized length (JSON.stringify) must be at most ${MAX_TERMINAL_SUMMARY_LENGTH} characters. Write findings and G0 to fit within that total. Each finding is exactly {"file":"<changed path>","line":1,"severity":"blocking"|"note","text":"<finding>"}. A blocking finding requires FAIL; notes never block. Review every changed assertion independently.\n`,
     );
   });
   it("leaves configured commit-bound gates to the executor while requiring honest source readiness", async () => {
@@ -1725,7 +2024,7 @@ describe("supervised sequential pilot (fake attempts, never live acceptance)", (
     other.dirtyReview();
     await expect(other.run()).rejects.toThrow("reviewer-modified-worktree");
   });
-  it.each([undefined, 2276, 2302])(
+  it.each([undefined, MAX_TERMINAL_SUMMARY_LENGTH + 1, MAX_TERMINAL_SUMMARY_LENGTH + 302])(
     "retries a malformed reviewer with its length diagnostic (%s) and resumes",
     async (length) => {
       const f = await fixture();
@@ -1736,7 +2035,7 @@ describe("supervised sequential pilot (fake attempts, never live acceptance)", (
       const diagnostic =
         length === undefined
           ? undefined
-          : `Reviewer verdict serialized length is ${length} characters; maximum is 2000. Shorten findings and G0 to fit.`;
+          : `Reviewer verdict serialized length is ${length} characters; maximum is ${MAX_TERMINAL_SUMMARY_LENGTH}. Shorten findings and G0 to fit.`;
       if (diagnostic) f.summarize("reviewer", diagnostic);
       f.retry("running");
       await expect(f.run()).resolves.toMatchObject({ status: "observing-reviewer", retries: 1 });
@@ -1793,6 +2092,102 @@ describe("supervised sequential pilot (fake attempts, never live acceptance)", (
       ).toMatchObject({ id: "reviewer-retry", retries: 1 });
     },
   );
+  // ISS-198: the real observer drives the flow's reviewer retry. Red before:
+  // iss-167-attempt-1's reviewer-attempt.json retryContext carried only
+  // "(malformed-worker-verdict)" and iss-167-attempt-2's carried the length
+  // diagnostic alone; neither showed the relaunched reviewer any discarded text.
+  it.each([
+    [
+      "oversized",
+      (run: string) => {
+        // The recorded 2036-character verdict under this fixture's run name,
+        // padded to one character above the bound.
+        const verdict = { ...JSON.parse(longReview[1]!.item!.text), run };
+        const padding = MAX_TERMINAL_SUMMARY_LENGTH + 1 - JSON.stringify(verdict).length;
+        return JSON.stringify({ ...verdict, g0: verdict.g0 + "x".repeat(padding) });
+      },
+      `Reviewer verdict serialized length is ${MAX_TERMINAL_SUMMARY_LENGTH + 1} characters; maximum is ${MAX_TERMINAL_SUMMARY_LENGTH}. Shorten findings and G0 to fit.`,
+    ],
+    [
+      "unparseable",
+      () => `${fencedReview[1]!.item!.text}\nDone.`,
+      "The final message does not end with exactly one JSON object, optionally inside one fenced block.",
+    ],
+  ] as const)(
+    "gives the reviewer retry the reason and excerpt of a discarded %s report, then stops on a schema-invalid report",
+    async (_name, message, reason) => {
+      const f = await fixture();
+      const ids = [fencedReview[0]!.thread_id!, longReview[0]!.thread_id!];
+      const launch = f.adapter.launch;
+      f.adapter.launch = async (role, selectedConfig, prompt) => {
+        const attempt = await launch(role, selectedConfig, prompt);
+        const count = f.launches.filter((launched) => launched === "reviewer").length;
+        return role === "reviewer"
+          ? { ...attempt, id: ids[count - 1]!, pid: process.pid, launchedAt: Date.now() }
+          : attempt;
+      };
+      const observe = f.adapter.observe;
+      f.adapter.observe = (role, selectedConfig, attempt) =>
+        role === "reviewer"
+          ? codexAdapter().observe(
+              role,
+              { ...selectedConfig, reviewWorktree: resolve(import.meta.dirname, "../..") },
+              attempt,
+            )
+          : observe(role, selectedConfig, attempt);
+      const writeReviewer = async (count: number, threadId: string, text: string) =>
+        writeFile(
+          resolve(f.config.stateDirectory, `reviewer-${count}.jsonl`),
+          [
+            { type: "thread.started", thread_id: threadId },
+            { type: "item.completed", item: { type: "agent_message", text } },
+            { type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } },
+          ]
+            .map((event) => JSON.stringify(event))
+            .join("\n") + "\n",
+        );
+      const exited = (count: number) =>
+        writeFile(
+          resolve(f.config.stateDirectory, `reviewer-${count}.exit.json`),
+          JSON.stringify({ code: 0 }),
+        );
+      const discarded = message(f.config.run);
+      await writeReviewer(1, ids[0]!, discarded);
+      await exited(1);
+      // A transport-valid report whose finding line is 0 is still refused by parseReview.
+      await writeReviewer(
+        2,
+        ids[1]!,
+        JSON.stringify({
+          run: f.config.run,
+          role: "reviewer",
+          head,
+          verdict: "PASS",
+          findings: [{ file: "scripts/repair.mjs", line: 0, severity: "note", text: "x" }],
+          g0: "No simpler change.",
+        }),
+      );
+      await f.run();
+      f.authorDone();
+      await f.run();
+      // The retry is launched and observed live in the same step; it is still running.
+      await expect(f.run()).resolves.toMatchObject({ status: "observing-reviewer", retries: 1 });
+      const excerpt = `Discarded reviewer message excerpt (at most ${MAX_VERDICT_EXCERPT_LENGTH} characters, JSON-quoted): ${verdictExcerpt(discarded)}`;
+      const context = JSON.parse(
+        await readFile(resolve(f.config.stateDirectory, "reviewer-attempt.json"), "utf8"),
+      ).retryContext;
+      expect(context).toContain("could not be parsed (malformed-worker-verdict)");
+      expect(context).toContain(`Diagnostics: ${reason} ${excerpt}`);
+      expect(f.launchPrompts.at(-1)).toContain(`Diagnostics: ${reason} ${excerpt}`);
+      expect(context.length).toBeLessThan(MAX_TERMINAL_SUMMARY_LENGTH + 500);
+      await exited(2);
+      await expect(f.run()).rejects.toMatchObject({
+        message: "reviewer-malformed",
+        diagnostics: expect.stringContaining('"line":0'),
+      });
+      expect(f.launches).toEqual(["author", "reviewer", "reviewer"]);
+    },
+  );
   it("stops with a typed reason when the reviewer retry is malformed", async () => {
     const f = await fixture();
     await f.run();
@@ -1839,11 +2234,14 @@ describe("supervised sequential pilot (fake attempts, never live acceptance)", (
   it("keeps failure reasons authoritative while surfacing bounded advisory diagnostics", async () => {
     const failed = await fixture();
     await failed.run();
-    failed.summarize("author", `PASS at the correct head:${"x".repeat(2100)}`);
+    failed.summarize(
+      "author",
+      `PASS at the correct head:${"x".repeat(MAX_TERMINAL_SUMMARY_LENGTH + 100)}`,
+    );
     failed.statuses.author = "failed";
     await expect(failed.run()).rejects.toMatchObject({
       message: "author-failed",
-      diagnostics: `PASS at the correct head:${"x".repeat(1975)}`,
+      diagnostics: `PASS at the correct head:${"x".repeat(MAX_TERMINAL_SUMMARY_LENGTH - 25)}`,
     });
 
     const passed = await fixture();

@@ -13,7 +13,10 @@ capability is added only when a real cycle records a blocker.
    in its draft is closed, and it belongs to the earliest open milestone.
 3. Authors run `pnpm typecheck`, `pnpm format:check` and `pnpm test` in their
    worktree before handing off. The hosted three-OS `bootstrap` workflow is
-   the only required check on a PR.
+   the only required check on a PR. The loop observes its own
+   `REQUIRED_CHECKS` before merging, unchanged;
+   `node scripts/planning/require-bootstrap-checks.mjs check` reports whether
+   GitHub currently requires those same three contexts on `main` (ISS-175).
 4. Review is a verdict (PASS or FAIL), findings with `file:line`, and a G0
    answer: "Is there a simpler shape that still satisfies every acceptance
    criterion and every stated not-built reason? Answer No with one reason, or
@@ -46,18 +49,30 @@ capability is added only when a real cycle records a blocker.
 
 Reviewer prompts require the JSON object alone, with
 `JSON.stringify(verdict).length` at most
-`MAX_TERMINAL_SUMMARY_LENGTH` (2000) characters, including findings and G0.
+`MAX_TERMINAL_SUMMARY_LENGTH` (4000) characters, including findings and G0.
+That one constant, exported by `scripts/dogfood/terminal-summary.mjs` and
+declared without restating its value, drives the adapter bounds, `parseReview`,
+the flow length branch and every reviewer prompt. ISS-198 raised it to 4000
+after `m1-iss167-20260921T1457` discarded a schema-valid 2036-character PASS
+verdict; the bound stays finite and is not removed.
 Extraction accepts the last complete top-level JSON object in the final agent
 message when prose precedes it, provided it is the only object and only
-whitespace follows. Balanced non-JSON prefix fragments are ignored as a whole,
-including any nested JSON objects. Trailing prose, multiple objects, missing objects and
-invalid verdicts remain malformed; key, identity, head, enum and findings
-checks remain unchanged. An otherwise valid over-length verdict remains
+whitespace follows, or the object sits alone inside one well-formed Markdown
+fenced block: the opening fence line immediately precedes it and only the
+closing fence follows (ISS-198, after the same run discarded a fenced
+schema-valid verdict). Balanced non-JSON prefix fragments are ignored as a
+whole, including any nested JSON objects. Trailing prose, a second fenced
+block, multiple objects, missing objects and invalid verdicts remain malformed;
+key, identity, head, enum and findings checks remain unchanged. An otherwise valid over-length verdict remains
 malformed with its measured length and cap in the terminal summary and the
-existing single automatic retry context (ISS-150). Authors share this extraction
-rule (ISS-177), retaining their JSON-only prompts, five-key schema and
-2000-character summary cap; the whole author message has no summary cap.
-An oversized author summary reports its measured length and the 2000 limit.
+existing single automatic retry context (ISS-150). Every discard appends to its
+reason a JSON-quoted excerpt of the discarded message, at most
+`MAX_VERDICT_EXCERPT_LENGTH` (600) characters taken half from each end, so the
+retry sees what was lost without an unbounded prompt (ISS-198). Authors share
+this extraction rule (ISS-177), retaining their JSON-only prompts, five-key
+schema and the same `MAX_TERMINAL_SUMMARY_LENGTH` summary cap; the whole
+author message has no summary cap.
+An oversized author summary reports its measured length and that limit.
 Completed malformed authors use the same single transient retry, retaining
 staged, unstaged and untracked partial work at the recorded base rather than
 the dead-author reset. The retry receives the diagnostic, prior trace and
@@ -177,18 +192,51 @@ existing `native-refresh.json`. After aborting the conflicting integration, the
 executor merges the reviewed head with that same current main and pins the
 marked text as an intermediate merge commit. This input preserves both parents
 and supplies a clean, repeatable base for the ordinary author lifecycle; it is
-never an accepted delivery head. The existing author placement resolves only
-the marked hunks. Text outside them (including line endings), other files and
-file modes cannot change.
+never an accepted delivery head. The existing author placement resolves the
+marked hunks; text outside those hunks (including line endings) stays immutable
+in every captured conflict file K.
 Only ordinary text conflicts with both sides present are supported; unsupported
 conflicts stop as `conflict-resolution-unsupported`. Scope escape or author
 failure stops as `conflict-resolution-scope-escape` or
 `conflict-resolution-failed` (ISS-147).
 
+ISS-199 admits necessary unmarked preservation edits after ISS-146's cycle-10
+conflict author recorded that its hunk-only scope prohibited them. Before a
+new conflict author, the existing refresh record retains a census bound to
+reviewed candidate C, integration main M and seed S (whose parents are C and M).
+K is exactly the native captured conflict set, never rederived. U contains
+only paths outside K present at the same exact path in all three immutable
+Git trees as mode `100644` blobs without NUL, with C different from M and S
+different from each. Empty files are text. NUL-delimited tree records preserve
+spaces and tabs; comparisons do not infer renames, inspect import graphs or
+run gates on the marked tree. The record saves sorted K/U and each path's
+C/M/S blob IDs before launch. Git/read/save failure retains ordinary setup
+error handling; it cannot mean an empty census.
+
+Ordinary unfenced resolution may edit U only to preserve both parents' intent.
+Overlap is neither proof of breakage nor a repair obligation: U may remain
+unchanged. Changed U files must remain regular text without conflict markers.
+Additions, deletions, renames, mode changes, symlinks, binary conversions and
+edits outside K union U remain scope escapes. K always retains its literal
+hunk-only boundary. A separately ruled `correctionPaths`/`allowedPaths` fence
+retains its narrower K-only contract even for a U path named in the packet;
+the captured-K fence still runs before seed and launch. Unsupported native
+capture never enters the census. The consumed ISS-146 packet gains no edit
+permission, relaunch or resolution renewal.
+
+Author and DELTA prompts retain the complete census; stop diagnostics point
+to `native-refresh.json` while the ordinary published excerpt stays bounded.
+Replay uses that saved census and seed, not newer main or author edits. A
+missing census can be computed before the first worker configuration is pinned;
+legacy pinned, in-flight and completed workers keep their old K-only contract
+without backfill. Existing retry and commit reconciliation remain in place.
+
 The independent delta reviewer inherits the original review, author trace and
-source records, plus the resolution author's captured execution evidence. It
-checks the resolved hunks and direct callers for semantic expansion or lost
-feature/main behavior at the exact resulting head. A failed review remains
+source records, both parents and any saved census, plus the resolution author's
+captured execution evidence. It checks the resolved K hunks, every changed U
+file and their direct callers for semantic expansion or lost feature/main
+behavior at the exact resulting head. Census membership and old PASS are not
+acceptance. A failed review remains
 `refresh-review-failed`; neither a clean merge nor author PASS supplies review
 authority. The existing per-main refresh directory retains worker attempts,
 terminals, candidate and review evidence. Restart resumes those workers and
@@ -197,6 +245,42 @@ participants or native launch charges. Ordinary worker retries remain inside
 this resolution. A later conflict in the same delivery lineage stops as
 `conflict-resolution-exhausted`, including across main movements and restarts.
 Conflict-free refresh still uses the existing delta review without an author.
+
+ISS-167 continues one such exhausted reviewed integration in the same run without
+another source attempt, after #457's attempt 2 stopped as
+`continuation-failed`/`conflict-resolution-exhausted` with its PASS review intact.
+The optional closed `integrationContinuation` packet
+(`dogfood-integration-continuation/v1`) names the repository, issue key and URL,
+the same run, the retained attempt directory and absolute attempt, the completed
+stop marker, the reviewed head and review identity, the ruling URL and the ruled
+`allowedPaths`. It applies only when that issue is selected again through explicit
+planning unpark; unrelated work composes as usual. Before setup, composition
+observes the failed attempt record, its pinned source, candidate and PASS review
+terminal, the refresh with `resolutionUsed` and no seed, head or publication, and
+the completed stop; any mismatch refuses without a claim. The lineage is then
+claimed once in a `wx` file under `stateRoot`, outside every run, so a changed
+packet, marker, run or directory cannot spend it again, and no composition without
+the packet renews a reviewed-exhausted attempt on this host
+(`integration-continuation-required`). The old attempt, its worktree and the
+run's accumulated participants (including later cycles) stay unchanged and charged.
+
+The item keeps the attempt identity and starts delivery directly in one
+`integration` directory beneath the retained attempt, with new worktrees and a new
+local branch from the reviewed head; no source author, terminal or review is
+invented. Ordinary native refresh merges current main, which must descend from the
+recorded main, so the seed's parents are exactly the reviewed head and that main.
+Its own single resolution allowance applies with the retained ISS-158 counter and
+the one shared worker retry: unmerged files and hunks are captured before any
+launch, an unmerged path outside `allowedPaths` stops as
+`conflict-resolution-scope-escape` and a non-text conflict as
+`conflict-resolution-unsupported` with zero launches, and the existing validator
+restricts edits to marked hunks inside those paths. A clean merge needs only the
+DELTA reviewer. Fresh exact-head DELTA PASS, all local and after-mirror gates,
+publication, hosted checks and native landing remain mandatory; gate correction is
+`gate-correction-not-authorized`, a later main conflict is exhausted without renewal,
+and any work failure parks the issue as `continuation-failed` while unrelated work
+advances. Replay resumes the same integration and its claim; a parked integration
+cannot be replayed into another author, attempt or publication.
 
 An exact remote/PR head with DIRTY or CONFLICTING status is a confirmed
 publication with a conflict, including when a publish response was lost or the
@@ -216,13 +300,20 @@ are unchanged (ISS-155).
 Native delivery captures the complete gate output and terminal execution before
 considering correction.
 The candidate terminal records the exact executable, arguments, working directory
-and reviewed head. Recognized compiler, formatter or completed test assertion
-diagnostics must name committed candidate files. The same command runs in an
+and reviewed head. Recognized compiler, formatter, completed test assertion or
+Chase Sets scoped static generated-artifact staleness diagnostics
+(`<repo-relative path> is stale|missing` from a `generate-*.mjs --check`
+producer, wholly accounting for the final `[VERIFY_STATIC_RUN]` block) must
+name committed candidate files. The same command runs in an
 isolated committed tree at the recorded delivery main base, with an offline,
 frozen dependency install. Changed manifests or lockfiles remain unknown.
 The candidate and base logs and terminal records remain in the delivery runtime (ISS-152).
 
-Only a passing base control admits candidate attribution. Base reproduction
+Only a passing base control admits candidate attribution. The scoped static
+base control receives the candidate's derived changed-file set as
+`CHANGED_FILES_JSON`, and its pass counts only when the failing link's
+`[VERIFY_STATIC_RUN]` marker appears in the base log; a vacuous base selection
+stays unknown (ISS-192). Base reproduction
 stops as `gate-base-failed:<gate>`. Startup, install, log I/O and cleanup failures
 stop as `gate-host-failed:<gate>`; drift retains its workspace stop. Missing or
 incomplete diagnostics, unsupported gates, timeouts, resource failures and mixed
@@ -366,6 +457,9 @@ the original base, attempt number and historical review identity/findings, recov
 participants, and clears the accepted stage and directory. Source, review,
 refresh, worker, stop and completed-stop records and the old worktree remain
 unchanged. Nonfailed and in-flight authors do not establish this transition (ISS-160).
+Composition also advances a parked delivery-phase refresh-review failure once,
+at its reviewed refresh head and with the reviewer's findings, before scanning
+failed attempts (ISS-195).
 
 Completed stops still skip their cycle, and pending notes reconcile before
 composition. Only explicit planning unpark can select the issue again in the
@@ -422,8 +516,8 @@ and `reviewer`, with ordered placement arrays:
     { "model": "claude-fable-5-1", "effort": "high" }
   ],
   "reviewer": [
-    { "model": "claude-opus-5", "effort": "high" },
-    { "model": "gpt-5.6-sol", "effort": "high" }
+    { "model": "claude-opus-5-5", "effort": "high" },
+    { "model": "gpt-6-sol", "effort": "high" }
   ]
 }
 ```
@@ -449,14 +543,34 @@ Empty ladders, repeated placements and the old fixed-seat shape are rejected;
 there is no live-config migration. Reviewer models must be disjoint from all
 author models. `routing-reviewer-not-independent` rejects overlap, and
 `invalid-routing-fallback` rejects repeated reviewer models. The self ladder
-is Astra/high, Astra/xhigh, Fable/high, with Opus/high then Sol/high review.
+is Astra/high, Astra/xhigh, Fable/high, with Opus 5.5/high then GPT-6 Sol/high review.
 Static `author` and `reviewer` config fields remain the self adapter's fallback
 only when its context has no routing row; Chase Sets requires `routingRows`.
+
+ISS-202 applies Todd's successor ruling to the existing native ladders:
+`gpt-5.6-luna` becomes `gpt-6-luna`, `gpt-5.6-sol` becomes `gpt-6-sol`, and
+`claude-opus-5` becomes `claude-opus-5-5`, preserving roles, efforts and order.
+Current ladder short labels Luna/Sol mean GPT-6 and Opus means Opus 5.5;
+historical text and records retain their original identities. Replacement
+transfers no predecessor benchmark, score, verdict or capability evidence,
+and native Opus row 14/15 roles grant no incumbent permission or new roles.
+Cutover is quiescent and for authorized fresh runs/paths only, after independent
+exact-head review and three-OS bootstrap green, with supervisors absent.
+Immediately before an authorized install the host captures native account_pool/CLI
+admission for each exact successor model/effort with UTC instant and result;
+catalogue presence and earlier probes do not establish admission or quality.
+This grants no probe, installation, start, unpark or #457 renewal authority.
+Old runs/configs, participant identities and all charges stay unchanged.
+Same-config replay retains its saved placement/rung; changed ladders retain
+`conflicting-run-configuration` before launch, without aliases, backfill or waiver.
+Preserved-run continuation needs separate disposition: no automatic resume,
+budget reset or exhausted-lineage re-entry. Generic operator strings remain
+open configuration and static configs are not rewritten.
 
 Each launch persists a zero-based rung index before dispatch, then retains it
 with the worker attempt and participant placement. Resume uses the recorded
 rung. Learning notes include it; older records without a rung remain history.
-`docs/model-selection.md` describes the shipped ladders and benchmark basis.
+`docs/model-selection.md` describes the shipped ladders and historical benchmark basis.
 Workers still use the existing Codex launcher and account_pool provider.
 
 `planning/roadmap.json` registers milestones and issues. Each issue has a
@@ -473,10 +587,23 @@ blocked_by: [ISS-120, ISS-121]
 
 ## Why
 
+## Decision
+
 ## Done when
 
 ## Out of scope
 ```
+
+The optional `## Decision` section sits between Why and Done when and contains
+one paragraph of exactly five sentences, in order: the constraint, the simplest
+viable alternative, the option chosen, the downside accepted, and the observation
+that would show the choice was wrong (ISS-174). It is expected for changes to
+persisted records, published names, prompts or process rules; `planning:check`
+does not validate it.
+
+A `QUALITY_PROFILE` line or Quality Packet belongs to the Chase Sets delivery
+skill; self drafts do not carry it, and a platform reviewer verifies every
+packet claim independently and never adopts one as evidence.
 
 `## Done when` accepts unordered `-`, `*`, or `+` items or ordinary top-level
 `N.` ordered items, with indented continuation lines. The self adapter consumes
@@ -559,9 +686,18 @@ hosted CI only.
 - Config: `/root/orchestration-m1/loop.json`; state under
   `/root/orchestration-m1/runtime/<run>`; worktrees under
   `/root/orchestration-m1/worktrees`; log `/root/orchestration-m1/supervisor.log`.
-- Start from Windows (the launcher detaches itself and prints the PID):
-  `wsl -d Ubuntu -- bash /root/orchestration-m1/repo/scripts/executor/run-loop.sh [config.json]`
+- Start from Windows with `scripts/executor/start-loop.ps1 [-Config <config>]
+  [-VerifierWorktree <path>]` (PowerShell 7). It stays attached to one
+  `C:\Windows\System32\wsl.exe -d Ubuntu -- bash
+  /root/orchestration-m1/repo/scripts/executor/run-loop.sh <config>` child
+  through redirected stdio with `WSLENV` empty, and exits with the
+  supervisor's code on idle, a terminal stop, cancel or a start failure
+  (ISS-164). `run-loop.sh` no longer detaches: it keeps the provider and tool
+  setup and runs the attached supervisor, whose stdout is exclusively the
+  protocol stream while its stderr and the pnpm banner go to `supervisor.log`.
 - Check: `wsl -d Ubuntu -- tail -n 3 /root/orchestration-m1/supervisor.log`.
+  Every protocol line is also appended there, so the log still ends in the
+  final status.
   A final `idle` line means nothing is runnable in the configured scope; it
   does not establish milestone completion while admitted work is blocked.
   A non-zero exit means a stop whose learning note is on the issue.
@@ -586,6 +722,69 @@ hosted CI only.
   and the single dead-worker retry. No worker holds a native Codex login.
 - Chase Sets runs use `/root/orchestration-m2/repo` and
   `/root/orchestration-m2/loop.json` with the same tools (ISS-110).
+
+### Private request stream
+
+ISS-164 gives one run one private request/reply stream between the attached
+Windows parent and the supervisor, for the incumbent's native database
+verification. `supervise.mjs` exports `createNativeDbAdmission(run, input,
+output)`: one pending correlation per channel, increasing per run, and a typed
+result `{correlation, status: completed|refused|unknown, owner, evidencePath,
+diagnostic}`. Production main owns and closes the channel but never requests;
+the first ordinary selected-issue request belongs to ISS-170 and adapter
+composition to ISS-165. Worker JSON never reaches the stream: `launchObserver`
+retains `stdio: "ignore"`, and a reply that is not a closed v1 reply resolves
+the pending request `unknown`, as do EOF, a partial line and an oversize
+line. Nothing after close is sent, and a second request while one is pending
+is refused locally.
+
+ISS-165 composes that channel onto the queue's native adapter. `flow.ts`
+declares the optional typed `Adapter.nativeDbProfile(identity)` with closed
+`NativeDbIdentity` and `NativeDbReply` types, and `supervise.mjs` exports
+`nativeDbProfileAdapter(native, channel)`; main passes
+`nativeDbProfileAdapter(codexAdapter(loop.gitExecutable), admission)` as
+`options.native` to `repositoryQueueAdapter`. The existing `...native` spreads
+in the bounded queue, repair and conflict adapters carry the method unchanged
+to every source, repair, refresh, correction and reviewer entry; queue.ts,
+dispatch-adapter.ts and repair-adapter.ts are byte-identical. An absent method
+is unsupported, never success; the channel still owns schema, correlation and
+parsing; and no production caller exists before ISS-170. Main's channel has no
+approved parents, so a request before ISS-170 is a typed local refusal. Only
+test harnesses invoke the method, through the actual composed adapter captured
+at its existing entry.
+
+The closed v1 request is `schemaVersion: dogfood-native-db-request/v1`,
+`correlation`, `profile: reconciliation-pg16/v1`, `run`, `issue`,
+`attempt`, `executorHead`, `product {repository, head, tree}`,
+`declaration {version: 1, profile, files[3] {file, cases}, mutants[0..3] {id,
+file, cases, assertion}}`, `patchDigests[0..3] {id, digest}` and
+`stagedInputDirectory`. The reply is `schemaVersion:
+dogfood-native-db-reply/v1`, `correlation`, `status`, `owner: null |
+{lockId, head, lane}`, `evidencePath` and `diagnostic`; completed requires
+owner and evidence path, and completion is lifecycle only, never PASS. Every
+object is closed with the incumbent's bounds: 65536/8192 UTF-8 bytes, IDs 1..128
+`[A-Za-z0-9._:-]`, repository segments 1..100, assertions and diagnostics
+1..2048, cases 1..512 and unique per file, paths 1..1024 with absolute paths
+under approved parents and relative paths without traversal, issue/attempt
+1..2147483647, correlation a safe integer, 40 lowercase hex revisions, 64 hex
+digests and 32 hex lock IDs. No command, environment, script, runner-path or
+duration field exists.
+
+The parent binds the first request's run, refuses a foreign run, a repeated
+correlation or an unknown top-level key, and answers `refused` with
+`native-db-anchor-unsupported` when `-VerifierWorktree` is absent or is not
+a clean worktree on a live branch, and `native-db-runner-absent` when the
+ROOT container has no `.orchestrator/invoke-heavy-verifier.ps1`. Otherwise it
+writes the request under the anchor's ignored `.orchestrator/native-db` and
+runs `invoke-heavy-verifier.ps1 -NativeDbProfile 'reconciliation-pg16/v1'
+-NativeRequestPath <request> -Worktree <anchor> -Lane <run> -Branch <branch>
+-ClaimedHead <head>` in branch mode, reading `<request>.reply.json`. A
+missing, foreign or malformed reply is `unknown`. The parent never edits
+`verify-lock.d`, releases an owner, signals Linux or authors cleanup facts; a
+WSL exit is not Linux cleanup, and Linux survivors after Windows loss remain
+the incumbent's responsibility. The test-only trigger is a disposable copied
+runtime whose entry requests once through the actual factory with a Node
+parent stand-in; there is no production selector, flag or declaration.
 - A Chase Sets config may set `"targetMilestone": 155`, using the positive
   repository milestone number, to limit the native pull window to that
   milestone (ISS-135). Product readiness, dependencies and exclusions still
@@ -664,12 +863,17 @@ controller root, a new validated executor may resume an old setup plan with only
 agrees, and old plans, invocations, stops and worker budgets remain unchanged (ISS-159).
 
 The pool keeps a model listed while all of its credentials are suspended.
+ISS-197 also recorded the pool omitting models from its `/models` catalog
+while simultaneously serving them and reporting a non-disabled account `ready`;
+that capture did not test the all-credentials-suspended condition.
 A weekly quota block returns `429 model_cooldown`, which is neither a refusal
 nor an outage to the trace classifier; two such worker deaths park an issue
 as `launcher-failed`. The launch probe also reads the pool supervisor's per-account, per-model
 routing status from `CODEX_POOL_STATUS_URL`
-after the models probe. Any non-disabled account reporting the model `ready`
-admits the launch; a model no account mentions is left to the models probe.
+before the catalog check. Any non-disabled account reporting the model `ready`
+admits it without a catalog membership check; the authenticated `/models`
+request and body validation still run on that admission. A model no account
+mentions is left to the catalog, as is every model without a configured status URL.
 When every account blocks the model, a block clearing inside
 `providerOutageCeilingMs` waits as `waiting-provider` with the pool's reset
 time, and a longer block is `provider-model-refused`: the worker advances its

@@ -1,11 +1,32 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  open,
+  readdir,
+  readFile,
+  realpath,
+  rm,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
+import { PassThrough } from "node:stream";
 import { promisify } from "node:util";
 import { afterEach, expect, it, vi } from "vitest";
-import { sha, step, type Adapter, type Config } from "../../scripts/dogfood/flow.js";
+import {
+  sha,
+  step,
+  type Adapter,
+  type Config,
+  type NativeDbIdentity,
+} from "../../scripts/dogfood/flow.js";
+import {
+  createNativeDbAdmission,
+  nativeDbProfileAdapter,
+} from "../../scripts/dogfood/supervise.mjs";
 import {
   assertControllerExecutor,
   gateDiagnostics,
@@ -27,6 +48,7 @@ import {
 import { pullRequest as chaseSetsPullRequest } from "../../adapters/chase-sets.mjs";
 import { repositoryDeliveryPolicy } from "../../scripts/dogfood/repository-adapter.mjs";
 import { isItemStopReason } from "../../scripts/dogfood/supervision.js";
+import { MAX_TERMINAL_SUMMARY_LENGTH } from "../../scripts/dogfood/terminal-summary.mjs";
 import {
   queueStep,
   queueUsage,
@@ -294,6 +316,10 @@ it("SYNTHETIC stable completion still refuses a missing terminal required job", 
 });
 
 const gateFaults = vi.hoisted(() => ({ cleanup: false }));
+const workspaceGit = vi.hoisted(() => vi.fn<(args: string[], cwd: string) => string>());
+const workspaceCommands = vi.hoisted(() => ({
+  observe: undefined as ((args: string[], cwd: string) => void) | undefined,
+}));
 vi.mock("node:child_process", async (original) => {
   const actual = await original<typeof import("node:child_process")>();
   const { promisify } = await import("node:util");
@@ -305,8 +331,11 @@ vi.mock("node:child_process", async (original) => {
       args: string[],
       options: import("node:child_process").ExecFileOptions,
     ) => {
+      if (executable === "workspace-git")
+        return Promise.resolve({ stdout: workspaceGit(args, String(options.cwd)), stderr: "" });
       if (gateFaults.cleanup && args[0] === "worktree" && args[1] === "remove")
         return Promise.reject(new Error("fixture control cleanup failed"));
+      if (executable === "git") workspaceCommands.observe?.(args, String(options.cwd));
       return execute(executable, args, options);
     },
   });
@@ -486,6 +515,271 @@ it("recognizes complete assertion identities but rejects incomplete and mixed te
   ).toEqual(["feature.ts"]);
 });
 
+// ISS-192: the Chase Sets scoped static gate's generated-artifact staleness throws.
+function staticBlock(producer: string, artifact: string, state: "stale" | "missing") {
+  return [
+    "[VERIFY_STATIC_RUN] check:synthetic-artifact-index",
+    `$ node ./scripts/${producer} --check`,
+    `file:///synthetic/scripts/${producer}:90`,
+    "    throw new Error(`${relative} is " + state + "`);",
+    "          ^",
+    "",
+    `Error: ${artifact} is ${state}`,
+    `    at checkExpectedFile (file:///synthetic/scripts/${producer}:90:11)`,
+    `    at async main (file:///synthetic/scripts/${producer}:122:18)`,
+    "",
+    "Node.js v24.15.0",
+    "[ELIFECYCLE] Command failed with exit code 1.",
+    "[ELIFECYCLE] Command failed with exit code 1.",
+    "",
+  ].join("\n");
+}
+
+const staticPrefix =
+  "[SKIPPED-BY-SCOPE] check:synthetic-budget: packages/synthetic/**\n[VERIFY_STATIC_SCOPE] scanned=2/3; skipped=1; excluded=0; changed=4; source=git merge-base.\n[VERIFY_STATIC_RUN] check:synthetic-inventory\n$ node ./scripts/check-synthetic-inventory.mjs\nSynthetic inventory covers all modules.\n";
+
+it("recognizes generated-artifact staleness only when the failing static block is wholly accounted for", () => {
+  const stale =
+    staticPrefix +
+    staticBlock("generate-synthetic-alpha-index.mjs", "docs/SYNTHETIC_INDEX.md", "stale");
+  expect(gateDiagnostics("verify:static:scoped", stale)).toEqual([
+    "docs/SYNTHETIC_INDEX.md is stale",
+  ]);
+  expect(
+    gateDiagnostics(
+      "verify:static:scoped",
+      staticPrefix +
+        staticBlock(
+          "generate-synthetic-beta-manifest.mjs",
+          "docs/SYNTHETIC_MANIFEST.md",
+          "missing",
+        ),
+    ),
+  ).toEqual(["docs/SYNTHETIC_MANIFEST.md is missing"]);
+  expect(
+    gateDiagnostics(
+      "verify:static:scoped",
+      staticPrefix +
+        "[VERIFY_STATIC_RUN] check:synthetic-artifact-index\n$ node ./scripts/generate-synthetic-beta-manifest.mjs --check\ndocs/SYNTHETIC_MANIFEST.md is missing\ndocs/SYNTHETIC_INDEX.md is stale\n[ELIFECYCLE] Command failed with exit code 1.\n",
+    ),
+  ).toEqual(["docs/SYNTHETIC_MANIFEST.md is missing", "docs/SYNTHETIC_INDEX.md is stale"]);
+  // The retained cs-3779:1 shape.
+  expect(
+    gateDiagnostics(
+      "verify:static:scoped",
+      staticPrefix +
+        staticBlock(
+          "generate-design-system-component-index.mjs",
+          "packages/design-system/COMPONENT_INDEX.md",
+          "stale",
+        ),
+    ),
+  ).toEqual(["packages/design-system/COMPONENT_INDEX.md is stale"]);
+  expect(gateDiagnostics("verify:static:scoped", "\u001b[31m" + stale + "\u001b[0m")).toEqual([
+    "docs/SYNTHETIC_INDEX.md is stale",
+  ]);
+  for (const unknown of [
+    // An additional failing check inside the final block.
+    stale.replace(
+      "Node.js v24.15.0",
+      "Node.js v24.15.0\nSynthetic budget exceeded: 3 raw elements",
+    ),
+    // An unrecognized tail after the lifecycle lines.
+    stale + "unexpected trailing runner text\n",
+    // A later block that is not a generated-artifact throw.
+    stale +
+      "[VERIFY_STATIC_RUN] check:synthetic-budget\n$ node ./scripts/check-synthetic-budget.mjs\n[ELIFECYCLE] Command failed with exit code 1.\n",
+    // No `generate-*.mjs --check` producer echoed the diagnostic.
+    stale.replace(
+      "$ node ./scripts/generate-synthetic-alpha-index.mjs --check",
+      "$ node ./scripts/check-synthetic-index.mjs",
+    ),
+    // A throw frame without its caret.
+    stale.replace("          ^\n", ""),
+    // Producer prose after the shape, an absolute path, and no marker at all.
+    stale.replace("is stale\n", "is stale. Run pnpm run generate:synthetic-alpha-index.\n"),
+    stale.replace("Error: docs/SYNTHETIC_INDEX.md", "Error: /synthetic/docs/SYNTHETIC_INDEX.md"),
+    stale.replaceAll("[VERIFY_STATIC_RUN] ", ""),
+    // Timeouts, resource failures and fatal runner errors keep the existing guard.
+    stale.replace(
+      "Node.js v24.15.0",
+      "Error: check:synthetic-artifact-index timed out after 30000ms",
+    ),
+    stale + "FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory\n",
+    stale + "[ELIFECYCLE] Command failed with signal SIGKILL.\n",
+  ])
+    expect(gateDiagnostics("verify:static:scoped", unknown)).toEqual([]);
+  for (const other of ["typecheck", "format:check", "test"])
+    expect(gateDiagnostics(other, stale)).toEqual([]);
+});
+
+it.each([
+  ["candidate", "candidate"],
+  ["vacuous", "unknown"],
+  ["base", "base"],
+  ["extra", "unknown"],
+  ["tail", "unknown"],
+  ["timeout", "unknown"],
+  ["resource", "unknown"],
+  ["uncommitted", "unknown"],
+])(
+  "attributes scoped static generated-artifact staleness %s through a non-vacuous base control",
+  async (mode, expected) => {
+    const { current, git } = await repositoryFixture(
+      "https://github.com/todd-skelton/orchestration-platform.git",
+    );
+    const commit = async () => {
+      await git(["add", "-A"], current.worktree);
+      await git(
+        [
+          "-c",
+          "user.name=fixture",
+          "-c",
+          "user.email=fixture@example.test",
+          "commit",
+          "-m",
+          "static gate fixture",
+        ],
+        current.worktree,
+      );
+      return git(["rev-parse", "HEAD"], current.worktree);
+    };
+    await writeFile(
+      resolve(current.worktree, "package.json"),
+      JSON.stringify({
+        scripts: { "verify:static:scoped": "node ./scripts/verify-static-scoped.mjs" },
+      }),
+    );
+    await writeFile(resolve(current.worktree, "pnpm-lock.yaml"), "fixture lock\n");
+    await writeFile(resolve(current.worktree, "feature.ts"), "base\n");
+    await mkdir(resolve(current.worktree, "docs"));
+    await writeFile(
+      resolve(current.worktree, "docs/SYNTHETIC_INDEX.md"),
+      "| Synthetic | index |\n",
+    );
+    await writeFile(
+      resolve(current.worktree, "docs/SYNTHETIC_OLD.md"),
+      "renamed synthetic document\n",
+    );
+    const main = await commit();
+    await writeFile(resolve(current.worktree, "feature.ts"), "candidate\n");
+    await git(["mv", "docs/SYNTHETIC_OLD.md", "docs/SYNTHETIC_NEW.md"], current.worktree);
+    current.candidateHead = await commit();
+    await git(["checkout", "--detach", current.candidateHead], current.reviewWorktree);
+    const launcher = resolve(current.stateDirectory, "static-gate-tool.mjs");
+    await writeFile(
+      launcher,
+      `
+    import { readFileSync } from "node:fs";
+    const mode = ${JSON.stringify(mode)};
+    if (process.argv[2] === "install") process.exit(0);
+    const candidate = readFileSync("feature.ts", "utf8").includes("candidate");
+    const scope = process.env.CHANGED_FILES_JSON;
+    const artifact = mode === "uncommitted" ? "docs/SYNTHETIC_ABSENT.md is missing" : "docs/SYNTHETIC_INDEX.md is stale";
+    const block = () => {
+      console.log("[VERIFY_STATIC_RUN] check:synthetic-artifact-index");
+      console.log("$ node ./scripts/generate-synthetic-alpha-index.mjs --check");
+      console.log("file:///synthetic/scripts/generate-synthetic-alpha-index.mjs:90");
+      console.log("    throw new Error(relative + \\" is stale\\");");
+      console.log("          ^");
+      console.log("");
+      if (mode === "timeout") console.log("Error: check:synthetic-artifact-index timed out after 30000ms");
+      else if (mode === "resource") console.log("FATAL ERROR: Reached heap limit Allocation failed - JavaScript heap out of memory");
+      else console.log("Error: " + artifact);
+      console.log("    at checkExpectedFile (file:///synthetic/scripts/generate-synthetic-alpha-index.mjs:90:11)");
+      console.log("");
+      console.log("Node.js v24.15.0");
+      if (mode === "extra") console.log("Synthetic budget exceeded: 3 raw elements");
+      console.log("[ELIFECYCLE] Command failed with exit code 1.");
+      if (mode === "tail") console.log("unexpected trailing runner text");
+    };
+    if (!candidate) {
+      // The base tree's own merge-base selects nothing; only the supplied scope runs the link.
+      if (mode === "vacuous" || scope === undefined) {
+        console.log("[SKIPPED-BY-SCOPE] check:synthetic-artifact-index: empty derived diff");
+        console.log("[VERIFY_STATIC_SCOPE] scanned=0/1; skipped=1; excluded=0; changed=0; source=git merge-base.");
+        process.exit(0);
+      }
+      console.log("[VERIFY_STATIC_SCOPE] scanned=1/1; skipped=0; excluded=0; changed=" + JSON.parse(scope).length + "; source=CHANGED_FILES_JSON.");
+      console.log("[VERIFY_STATIC_CHANGED] " + scope);
+      if (mode === "base") { block(); process.exit(1); }
+      console.log("[VERIFY_STATIC_RUN] check:synthetic-artifact-index");
+      console.log("$ node ./scripts/generate-synthetic-alpha-index.mjs --check");
+      console.log("Synthetic artifact index is current.");
+      process.exit(0);
+    }
+    console.log("[VERIFY_STATIC_SCOPE] scanned=2/2; skipped=0; excluded=0; changed=3; source=" + (scope === undefined ? "git merge-base" : "CHANGED_FILES_JSON") + ".");
+    console.log("[VERIFY_STATIC_RUN] check:synthetic-inventory");
+    console.log("$ node ./scripts/check-synthetic-inventory.mjs");
+    console.log("retained output".repeat(1000));
+    block();
+    process.exit(1);
+  `,
+    );
+    vi.stubEnv("npm_execpath", launcher);
+    const adapter = githubDeliveryAdapter();
+    const result = await adapter.runGate(current, "verify:static:scoped", current.candidateHead);
+    if (typeof result !== "object" || result.status !== "failed" || !result.evidence)
+      throw new Error("missing gate evidence");
+    const failure = result.evidence;
+    expect(failure.command).toEqual({
+      executable: process.execPath,
+      argv: [launcher, "run", "verify:static:scoped"],
+      cwd: current.worktree,
+    });
+    const bytes = await readFile(failure.log, "utf8");
+    expect(bytes.length).toBeGreaterThan(4000);
+    expect(bytes).toContain("source=git merge-base.");
+    if (expected === "unknown" && mode !== "vacuous") {
+      expect(failure.cause).toBe("unknown");
+      expect(failure.diagnostics).toEqual(
+        mode === "uncommitted" ? ["docs/SYNTHETIC_ABSENT.md is missing"] : [],
+      );
+    } else {
+      expect(failure).toMatchObject({
+        cause: "diagnostic",
+        diagnostics: ["docs/SYNTHETIC_INDEX.md is stale"],
+      });
+      const control = await adapter.attributeGate!(current, "verify:static:scoped", failure, main);
+      expect(control).toMatchObject({ cause: expected, main });
+      const terminal = JSON.parse(
+        await readFile(resolve(control.log, "../base-terminal.json"), "utf8"),
+      );
+      expect(terminal).toEqual({
+        head: main,
+        command: { ...failure.command, cwd: terminal.command.cwd },
+        code: expected === "base" ? 1 : 0,
+        signal: null,
+      });
+      expect(terminal.command.cwd).not.toBe(current.worktree);
+      const base = await readFile(control.log, "utf8");
+      if (mode === "vacuous") {
+        expect(base).toContain(
+          "[SKIPPED-BY-SCOPE] check:synthetic-artifact-index: empty derived diff",
+        );
+        expect(base).not.toContain("[VERIFY_STATIC_RUN] check:synthetic-artifact-index");
+      } else {
+        expect(base).toContain("[VERIFY_STATIC_RUN] check:synthetic-artifact-index");
+        expect(base).toContain("source=CHANGED_FILES_JSON.");
+        expect(JSON.parse(base.match(/^\[VERIFY_STATIC_CHANGED\] (.+)$/m)![1]!)).toEqual([
+          "docs/SYNTHETIC_OLD.md",
+          "docs/SYNTHETIC_NEW.md",
+          "feature.ts",
+        ]);
+      }
+      expect(await git(["rev-parse", "HEAD"], current.worktree)).toBe(current.candidateHead);
+      await expect(
+        adapter.attributeGate!(current, "verify:static:scoped", failure, main),
+      ).resolves.toEqual(control);
+    }
+    expect(await git(["status", "--porcelain"], current.worktree)).toBe("");
+    expect(await readFile(failure.log, "utf8")).toBe(bytes);
+    await expect(
+      adapter.runGate(current, "verify:static:scoped", current.candidateHead),
+    ).resolves.toEqual(result);
+  },
+);
+
 function reviewerReport(
   current: DeliveryConfig,
   verdict: "PASS" | "FAIL" = "PASS",
@@ -653,8 +947,10 @@ async function cleanController(root: string) {
 
 afterEach(async () => {
   gateFaults.cleanup = false;
+  workspaceCommands.observe = undefined;
   vi.unstubAllEnvs();
-  for (const root of roots.splice(0)) await rm(root, { recursive: true, force: true });
+  for (const root of roots.splice(0))
+    await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
 });
 
 async function repositoryFixture(remote: string) {
@@ -784,6 +1080,330 @@ function publicationRow(current: PublicationEvidence, values: Record<string, unk
 }
 
 it.each([
+  "common-directory",
+  "HEAD",
+  "dirty",
+  "fetch",
+  "push",
+  "controller-revision",
+  "controller-dirty",
+  "root-dirty",
+  "root-branch",
+  "review-HEAD",
+  "review-dirty",
+] as const)(
+  "SYNTHETIC reuses only the call-local root common directory and refuses later %s drift",
+  async (drift) => {
+    const root = await realpath(await mkdtemp(resolve(tmpdir(), "delivery-reads-")));
+    roots.push(root);
+    const current = config(root);
+    if (drift === "root-dirty") current.controllerRoot = resolve(root, "external-controller");
+    const remote = `https://github.com/${current.repository}.git`;
+    const reads: [string[], string, string][] = [];
+    for (const cwd of [current.repositoryRoot, current.worktree, current.reviewWorktree]) {
+      reads.push(
+        [["rev-parse", "--git-common-dir"], cwd, root],
+        [["remote", "get-url", "--all", "origin"], cwd, remote],
+        [["remote", "get-url", "--push", "--all", "origin"], cwd, remote],
+      );
+    }
+    // One `status --porcelain=v2 --branch` per distinct working directory serves the head, the
+    // branch and cleanliness; the coincident controller/repository root reads once.
+    const status = (oid: string, branch: string, ...entries: string[]) =>
+      [`# branch.oid ${oid}`, `# branch.head ${branch}`, ...entries].join("\n") + "\n";
+    const statusArgs = ["status", "--porcelain=v2", "--branch"];
+    const distinct = current.controllerRoot !== current.repositoryRoot;
+    reads.push([statusArgs, current.controllerRoot, status(current.controllerRevision, "main")]);
+    if (distinct)
+      reads.push([statusArgs, current.repositoryRoot, status(current.controllerRevision, "main")]);
+    reads.push(
+      [statusArgs, current.worktree, status(current.candidateHead, "codex/iss-074-delivery")],
+      [statusArgs, current.reviewWorktree, status(current.candidateHead, "(detached)")],
+    );
+    expect(distinct).toBe(drift === "root-dirty");
+    const changed = {
+      "common-directory": [current.reviewWorktree, "rev-parse --git-common-dir", dirname(root)],
+      HEAD: [
+        current.worktree,
+        statusArgs.join(" "),
+        status("b".repeat(40), "codex/iss-074-delivery"),
+      ],
+      dirty: [
+        current.worktree,
+        statusArgs.join(" "),
+        status(current.candidateHead, "codex/iss-074-delivery", "? uncommitted.txt"),
+      ],
+      fetch: [current.worktree, "remote get-url --all origin", "https://github.com/foreign/repo"],
+      push: [
+        current.reviewWorktree,
+        "remote get-url --push --all origin",
+        "https://github.com/foreign/repo",
+      ],
+      "controller-revision": [
+        current.controllerRoot,
+        statusArgs.join(" "),
+        status("b".repeat(40), "main"),
+      ],
+      "controller-dirty": [
+        current.controllerRoot,
+        statusArgs.join(" "),
+        status(current.controllerRevision, "main", "? controller.txt"),
+      ],
+      "root-dirty": [
+        current.repositoryRoot,
+        statusArgs.join(" "),
+        status(current.controllerRevision, "main", "? root.txt"),
+      ],
+      "root-branch": [
+        current.repositoryRoot,
+        statusArgs.join(" "),
+        status(current.controllerRevision, "not-main"),
+      ],
+      "review-HEAD": [
+        current.reviewWorktree,
+        statusArgs.join(" "),
+        status("b".repeat(40), "(detached)"),
+      ],
+      "review-dirty": [
+        current.reviewWorktree,
+        statusArgs.join(" "),
+        status(current.candidateHead, "(detached)", "? review.txt"),
+      ],
+    }[drift]!;
+    let drifted = false;
+    workspaceGit.mockReset();
+    workspaceGit.mockImplementation((args, cwd) => {
+      const read = reads.find(
+        ([command, directory]) => directory === cwd && command.join(" ") === args.join(" "),
+      );
+      if (!read) throw new Error(`unexpected Git command: ${args.join(" ")}`);
+      return drifted && cwd === changed[0] && args.join(" ") === changed[1] ? changed[2]! : read[2];
+    });
+    const commands = { gh: vi.fn(), ghJson: vi.fn() };
+    const adapter = githubDeliveryAdapter(commands, "workspace-git");
+    await expect(adapter.verifyWorkspace(current, current.candidateHead)).resolves.toBe(true);
+    expect(workspaceGit).toHaveBeenCalledTimes(distinct ? 13 : 12);
+    expect(workspaceGit.mock.calls).toEqual(reads.map(([args, cwd]) => [args, cwd]));
+
+    drifted = true;
+    workspaceGit.mockClear();
+    await expect(adapter.verifyWorkspace(current, current.candidateHead)).resolves.toBe(false);
+    await expect(
+      adapter.publish(
+        current,
+        {
+          sourceBranch: "codex/iss-074-delivery",
+          baseBranch: "main",
+          title: "fixture",
+          body: "fixture",
+          draft: true,
+        },
+        "absent",
+      ),
+    ).rejects.toThrow("candidate-workspace-drift");
+    expect(workspaceGit.mock.calls).toContainEqual([changed[1]!.split(" "), changed[0]]);
+    for (const call of workspaceGit.mock.calls)
+      expect(reads.map(([args, cwd]) => [args, cwd])).toContainEqual(call);
+    expect(commands.gh).not.toHaveBeenCalled();
+    expect(commands.ghJson).not.toHaveBeenCalled();
+    expect(await readdir(root)).toEqual([]);
+  },
+);
+
+// The per-call read vector: nine family/target reads, then one live status per distinct
+// working directory in controller, repository root, worktree, review worktree order.
+function workspaceReads(current: DeliveryConfig): [string[], string][] {
+  const reads: [string[], string][] = [];
+  for (const cwd of [current.repositoryRoot, current.worktree, current.reviewWorktree])
+    reads.push(
+      [["rev-parse", "--git-common-dir"], cwd],
+      [["remote", "get-url", "--all", "origin"], cwd],
+      [["remote", "get-url", "--push", "--all", "origin"], cwd],
+    );
+  for (const cwd of new Set([
+    current.controllerRoot,
+    current.repositoryRoot,
+    current.worktree,
+    current.reviewWorktree,
+  ]))
+    reads.push([["status", "--porcelain=v2", "--branch"], cwd]);
+  return reads;
+}
+
+it.each(["same", "separate"] as const)(
+  "reads the full per-call set on a fresh %s-controller workspace whose main is ahead of its upstream",
+  async (shape) => {
+    const { current, git } = await repositoryFixture(
+      "https://github.com/todd-skelton/orchestration-platform.git",
+    );
+    const repositoryRoot = current.repositoryRoot;
+    const base = current.controllerRevision;
+    await writeFile(resolve(repositoryRoot, "ahead.txt"), "ahead\n");
+    await git(["add", "ahead.txt"]);
+    await git([
+      "-c",
+      "user.name=fixture",
+      "-c",
+      "user.email=fixture@example.test",
+      "commit",
+      "--quiet",
+      "-m",
+      "ahead",
+    ]);
+    await git(["update-ref", "refs/remotes/origin/main", base]);
+    await git(["config", "branch.main.remote", "origin"]);
+    await git(["config", "branch.main.merge", "refs/heads/main"]);
+    current.controllerRevision = await git(["rev-parse", "HEAD"]);
+    expect(current.controllerRevision).not.toBe(base);
+    if (shape === "separate") {
+      const controller = resolve(repositoryRoot, "..", "external-controller");
+      await git(["clone", "--local", repositoryRoot, controller], repositoryRoot);
+      current.controllerRoot = controller;
+      expect(await git(["rev-parse", "HEAD"], controller)).toBe(current.controllerRevision);
+    }
+    // A clean tree ahead of its upstream reports `# branch.ab` while `status --porcelain` is empty.
+    expect(
+      (await git(["status", "--porcelain=v2", "--branch"], repositoryRoot)).split(/\r?\n/),
+    ).toEqual([
+      `# branch.oid ${current.controllerRevision}`,
+      "# branch.head main",
+      "# branch.upstream origin/main",
+      "# branch.ab +1 -0",
+    ]);
+    expect(await git(["status", "--porcelain"], repositoryRoot)).toBe("");
+    const expected = workspaceReads(current);
+    expect(expected).toHaveLength(shape === "same" ? 12 : 13);
+    const reads: [string[], string][] = [];
+    workspaceCommands.observe = (args, cwd) => reads.push([args, cwd]);
+    const commands = { gh: vi.fn(), ghJson: vi.fn() };
+    const adapter = githubDeliveryAdapter(commands);
+    await expect(adapter.verifyWorkspace(current, current.candidateHead)).resolves.toBe(true);
+    expect(reads).toEqual(expected);
+    reads.length = 0;
+    await expect(adapter.verifyWorkspace(current, current.candidateHead)).resolves.toBe(true);
+    expect(reads).toEqual(expected);
+    expect(commands.gh).not.toHaveBeenCalled();
+    expect(commands.ghJson).not.toHaveBeenCalled();
+  },
+);
+
+it.each(["detached", "unborn"] as const)(
+  "refuses a %s repository root HEAD through the shared status read",
+  async (state) => {
+    const { current, git } = await repositoryFixture(
+      "https://github.com/todd-skelton/orchestration-platform.git",
+    );
+    const adapter = githubDeliveryAdapter({ gh: vi.fn(), ghJson: vi.fn() });
+    await expect(adapter.verifyWorkspace(current, current.candidateHead)).resolves.toBe(true);
+    if (state === "detached") await git(["checkout", "--quiet", "--detach"]);
+    else await git(["checkout", "--quiet", "--orphan", "unborn"]);
+    const headers = (await git(["status", "--porcelain=v2", "--branch"]))
+      .split(/\r?\n/)
+      .filter((line) => line.startsWith("# branch."));
+    expect(headers).toEqual(
+      state === "detached"
+        ? [`# branch.oid ${current.controllerRevision}`, "# branch.head (detached)"]
+        : ["# branch.oid (initial)", "# branch.head unborn"],
+    );
+    const reads: [string[], string][] = [];
+    workspaceCommands.observe = (args, cwd) => reads.push([args, cwd]);
+    await expect(adapter.verifyWorkspace(current, current.candidateHead)).resolves.toBe(false);
+    expect(reads).toEqual(workspaceReads(current).slice(0, 10));
+    expect(reads.at(-1)).toEqual([
+      ["status", "--porcelain=v2", "--branch"],
+      current.controllerRoot,
+    ]);
+  },
+);
+
+it("derives nothing across calls: every mutated fact is reread live by the next call", async () => {
+  const authorized = "https://github.com/todd-skelton/orchestration-platform.git";
+  const { current, git } = await repositoryFixture(authorized);
+  const repositoryRoot = current.repositoryRoot;
+  await git(["config", "extensions.worktreeConfig", "true"]);
+  const perCall = workspaceReads(current);
+  expect(perCall).toHaveLength(12);
+  const reads: [string[], string][] = [];
+  workspaceCommands.observe = (args, cwd) => reads.push([args, cwd]);
+  const commands = { gh: vi.fn(), ghJson: vi.fn() };
+  const adapter = githubDeliveryAdapter(commands);
+  await expect(adapter.verifyWorkspace(current, current.candidateHead)).resolves.toBe(true);
+  expect(reads).toEqual(perCall);
+  // Each mutation drifts a fact owned by an earlier read than the previous one, so the exact
+  // read prefix proves which live command refused and that no earlier read was skipped.
+  const owner = async (mutate: () => Promise<void>, read: [string[], string]) => {
+    await mutate();
+    reads.length = 0;
+    await expect(adapter.verifyWorkspace(current, current.candidateHead)).resolves.toBe(false);
+    const index = perCall.findIndex(
+      ([args, cwd]) => cwd === read[1] && args.join(" ") === read[0].join(" "),
+    );
+    expect(index).toBeGreaterThanOrEqual(0);
+    expect(reads).toEqual(perCall.slice(0, index + 1));
+    expect(reads.at(-1)).toEqual(read);
+  };
+  const status = ["status", "--porcelain=v2", "--branch"];
+  await owner(async () => {
+    await git(
+      [
+        "-c",
+        "user.name=fixture",
+        "-c",
+        "user.email=fixture@example.test",
+        "commit",
+        "--quiet",
+        "--allow-empty",
+        "-m",
+        "moved",
+      ],
+      current.reviewWorktree,
+    );
+    expect(await git(["rev-parse", "HEAD"], current.reviewWorktree)).not.toBe(
+      current.candidateHead,
+    );
+    expect(await git(["status", "--porcelain"], current.reviewWorktree)).toBe("");
+  }, [status, current.reviewWorktree]);
+  await owner(async () => {
+    await writeFile(resolve(current.worktree, "uncommitted.txt"), "drift\n");
+  }, [status, current.worktree]);
+  await owner(async () => {
+    await git(["checkout", "--quiet", "-b", "not-main"], repositoryRoot);
+    expect(await git(["rev-parse", "HEAD"], repositoryRoot)).toBe(current.controllerRevision);
+    expect(await git(["status", "--porcelain"], repositoryRoot)).toBe("");
+  }, [status, current.controllerRoot]);
+  await owner(async () => {
+    await git(
+      [
+        "config",
+        "--worktree",
+        "remote.origin.pushurl",
+        "https://github.com/foreign/repository.git",
+      ],
+      current.reviewWorktree,
+    );
+    expect(await git(["remote", "get-url", "--push", "--all", "origin"], current.worktree)).toBe(
+      authorized,
+    );
+  }, [["remote", "get-url", "--push", "--all", "origin"], current.reviewWorktree]);
+  await owner(async () => {
+    const foreign = resolve(repositoryRoot, "..", "foreign-review");
+    await git(["clone", "--quiet", "--local", repositoryRoot, foreign], repositoryRoot);
+    // Git for Windows creates the gitfile hidden, so it is truncated in place rather than
+    // recreated: `writeFile` would fail there with EPERM.
+    const gitfile = await open(resolve(current.reviewWorktree, ".git"), "r+");
+    try {
+      await gitfile.truncate(0);
+      await gitfile.writeFile(`gitdir: ${resolve(foreign, ".git").replaceAll("\\", "/")}\n`);
+    } finally {
+      await gitfile.close();
+    }
+  }, [["rev-parse", "--git-common-dir"], current.reviewWorktree]);
+  expect(commands.gh).not.toHaveBeenCalled();
+  expect(commands.ghJson).not.toHaveBeenCalled();
+  expect(await readdir(current.stateDirectory)).toEqual([]);
+});
+
+it.each([
   "https://github.com/todd-skelton/orchestration-platform.git",
   "git@github.com:todd-skelton/orchestration-platform.git",
   "ssh://git@github.com/todd-skelton/orchestration-platform.git",
@@ -847,6 +1467,279 @@ it.each(["foreign-fetch", "foreign-push", "extra-push"] as const)(
     await expect(
       readFile(resolve(current.stateDirectory, "approved-pull-request.md"), "utf8"),
     ).rejects.toMatchObject({ code: "ENOENT" });
+  },
+);
+
+it.each([
+  ["same", "worktree", "fetch", "wrong"],
+  ["separate", "reviewWorktree", "push", "wrong"],
+  ["same", "reviewWorktree", "fetch", "multiple"],
+  ["separate", "worktree", "push", "multiple"],
+] as const)(
+  "rechecks real worktree-local %s-controller %s %s URLs after %s target drift",
+  async (shape, field, kind, drift) => {
+    const authorized = "https://github.com/todd-skelton/orchestration-platform.git";
+    const { current, git } = await repositoryFixture(authorized);
+    const repositoryRoot = current.repositoryRoot;
+    if (shape === "separate") {
+      const controller = resolve(repositoryRoot, "..", "external-controller");
+      await git(["clone", "--local", repositoryRoot, controller], repositoryRoot);
+      current.controllerRoot = controller;
+    }
+    await git(["config", "extensions.worktreeConfig", "true"], repositoryRoot);
+    await git(["config", "--unset-all", "remote.origin.url"], repositoryRoot);
+    await git(["config", "url.https://github.com/.insteadOf", "fixture:"], repositoryRoot);
+    const raw = "fixture:todd-skelton/orchestration-platform.git";
+    for (const cwd of [repositoryRoot, current.worktree, current.reviewWorktree]) {
+      await git(["config", "--worktree", "remote.origin.url", raw], cwd);
+      await git(["config", "--worktree", "remote.origin.pushurl", raw], cwd);
+      expect(await git(["remote", "get-url", "--all", "origin"], cwd)).toBe(authorized);
+      expect(await git(["remote", "get-url", "--push", "--all", "origin"], cwd)).toBe(authorized);
+    }
+    const commands = { gh: vi.fn(), ghJson: vi.fn() };
+    const adapter = githubDeliveryAdapter(commands);
+    await expect(adapter.verifyWorkspace(current, current.candidateHead)).resolves.toBe(true);
+
+    const key = kind === "fetch" ? "remote.origin.url" : "remote.origin.pushurl";
+    await git(
+      [
+        "config",
+        "--worktree",
+        ...(drift === "multiple" ? ["--add"] : []),
+        key,
+        drift === "multiple" ? raw : "fixture:foreign/repository.git",
+      ],
+      current[field],
+    );
+    const urlArgs = [
+      "remote",
+      "get-url",
+      ...(kind === "push" ? ["--push"] : []),
+      "--all",
+      "origin",
+    ];
+    expect((await git(urlArgs, current[field])).split(/\r?\n/)).toEqual(
+      drift === "multiple"
+        ? [authorized, authorized]
+        : ["https://github.com/foreign/repository.git"],
+    );
+    const other = field === "worktree" ? current.reviewWorktree : current.worktree;
+    expect(await git(urlArgs, other)).toBe(authorized);
+    expect(await git(urlArgs, repositoryRoot)).toBe(authorized);
+    const reads: string[][] = [];
+    workspaceCommands.observe = (args) => reads.push(args);
+    await expect(adapter.verifyWorkspace(current, current.candidateHead)).resolves.toBe(false);
+    await expect(
+      adapter.publish(current, { ...publicationEvidence(current), draft: true }, "absent"),
+    ).rejects.toThrow("candidate-workspace-drift");
+    expect(reads).toContainEqual(urlArgs);
+    for (const args of reads)
+      expect([
+        ["rev-parse", "--git-common-dir"],
+        ["remote", "get-url", "--all", "origin"],
+        ["remote", "get-url", "--push", "--all", "origin"],
+      ]).toContainEqual(args);
+    expect(commands.gh).not.toHaveBeenCalled();
+    expect(commands.ghJson).not.toHaveBeenCalled();
+    expect(await readdir(current.stateDirectory)).toEqual([]);
+  },
+);
+
+it("canonicalizes a real repository alias while retaining fresh worktree-family checks", async () => {
+  const { current, git } = await repositoryFixture(
+    "https://github.com/todd-skelton/orchestration-platform.git",
+  );
+  const repositoryRoot = current.repositoryRoot;
+  const alias = resolve(repositoryRoot, "..", "repository-alias");
+  await symlink(repositoryRoot, alias, "junction");
+  current.repositoryRoot = alias;
+  const rootCommon = resolve(alias, await git(["rev-parse", "--git-common-dir"], alias));
+  const sourceCommon = resolve(
+    current.worktree,
+    await git(["rev-parse", "--git-common-dir"], current.worktree),
+  );
+  expect(rootCommon).not.toBe(sourceCommon);
+  expect(await realpath(rootCommon)).toBe(await realpath(sourceCommon));
+  const commands = { gh: vi.fn(), ghJson: vi.fn() };
+  const adapter = githubDeliveryAdapter(commands);
+  await expect(adapter.verifyWorkspace(current, current.candidateHead)).resolves.toBe(true);
+
+  const foreign = resolve(repositoryRoot, "..", "foreign-review");
+  await git(["clone", "--local", repositoryRoot, foreign], repositoryRoot);
+  await git(
+    ["remote", "set-url", "origin", "https://github.com/todd-skelton/orchestration-platform.git"],
+    foreign,
+  );
+  expect(await git(["rev-parse", "HEAD"], foreign)).toBe(current.candidateHead);
+  const gitfile = resolve(current.reviewWorktree, ".git");
+  const original = await readFile(gitfile, "utf8");
+  async function writeGitfile(contents: string) {
+    const file = await open(gitfile, "r+");
+    try {
+      await file.truncate(0);
+      await file.writeFile(contents);
+    } finally {
+      await file.close();
+    }
+  }
+  let completed = false;
+  try {
+    await writeGitfile(`gitdir: ${resolve(foreign, ".git").replaceAll("\\", "/")}\n`);
+    expect(await git(["rev-parse", "HEAD"], current.reviewWorktree)).toBe(current.candidateHead);
+    expect(
+      await realpath(
+        resolve(
+          current.reviewWorktree,
+          await git(["rev-parse", "--git-common-dir"], current.reviewWorktree),
+        ),
+      ),
+    ).toBe(await realpath(resolve(foreign, ".git")));
+    const reads: string[][] = [];
+    workspaceCommands.observe = (args) => reads.push(args);
+    await expect(adapter.verifyWorkspace(current, current.candidateHead)).resolves.toBe(false);
+    await expect(
+      adapter.applyDraft(current, {
+        key: "ISS-074",
+        issue: 332,
+        title: "fixture",
+        body: "fixture",
+        attributes: { milestone: null },
+      }),
+    ).rejects.toThrow("candidate-workspace-drift");
+    expect(
+      reads.every(
+        (args) => args[0] === "rev-parse" || (args[0] === "remote" && args[1] === "get-url"),
+      ),
+    ).toBe(true);
+    expect(commands.gh).not.toHaveBeenCalled();
+    expect(commands.ghJson).not.toHaveBeenCalled();
+    expect(await readdir(current.stateDirectory)).toEqual([]);
+    completed = true;
+  } finally {
+    await writeGitfile(original).catch((error) => {
+      if (completed) throw error;
+    });
+  }
+});
+
+it.each(["drafts", "gate-publication"] as const)(
+  "refuses intervening real workspace drift between %s without later mutation or replay",
+  async (boundary) => {
+    const { current, git } = await repositoryFixture(
+      "https://github.com/todd-skelton/orchestration-platform.git",
+    );
+    await writePilotEvidence(current);
+    await git(["config", "extensions.worktreeConfig", "true"]);
+    const plan: DeliveryPlan = {
+      gates: { beforeMirror: [], afterMirror: ["fixture-gate"] },
+      drafts: [332, 333].map((issue) => ({
+        key: `ISS-${issue}`,
+        issue,
+        title: `issue ${issue}`,
+        body: `body ${issue}`,
+        attributes: { milestone: null },
+      })),
+      publication: {
+        sourceBranch: "codex/iss-074-delivery",
+        baseBranch: "main",
+        title: "fixture",
+        body: "fixture",
+        draft: true,
+      },
+      mergePolicy: { method: "squash" },
+      cleanup: {
+        worktrees: [current.worktree, current.reviewWorktree],
+        branch: "codex/iss-074-delivery",
+      },
+    };
+    const edited = new Set<number>();
+    const mutations: string[][] = [];
+    const laterGit: string[][] = [];
+    const gates: string[] = [];
+    const drift = async () => {
+      await git(
+        [
+          "config",
+          "--worktree",
+          "remote.origin.pushurl",
+          "https://github.com/foreign/repository.git",
+        ],
+        current.reviewWorktree,
+      );
+      workspaceCommands.observe = (args) => laterGit.push(args);
+    };
+    const adapter = githubDeliveryAdapter({
+      async gh(_config, args) {
+        mutations.push(args);
+        expect(args.slice(0, 2)).toEqual(["issue", "edit"]);
+        edited.add(Number(args[2]));
+        if (boundary === "drafts" && edited.size === 1) await drift();
+        return "";
+      },
+      async ghJson(_config, args) {
+        expect(args.slice(0, 2)).toEqual(["issue", "view"]);
+        const draft = plan.drafts.find((draft) => String(draft.issue) === args[2])!;
+        return {
+          number: draft.issue,
+          title: draft.title,
+          body: edited.has(draft.issue) ? draft.body : "old",
+          milestone: null,
+        };
+      },
+    });
+    adapter.runGate = async (_config, name) => {
+      gates.push(name);
+      if (boundary === "gate-publication") await drift();
+      return "passed";
+    };
+    // Keep provider observation local; the actual publication mutation boundary is unchanged.
+    adapter.observePublication = async () => ({ state: "needs-mutation", target: "absent" });
+    const publish = vi.spyOn(adapter, "publish");
+    await expect(adapter.verifyWorkspace(current, current.candidateHead)).resolves.toBe(true);
+    const policy = { plan: async () => plan };
+    await expect(deliveryStep(current, adapter, policy)).rejects.toThrow(
+      boundary === "drafts"
+        ? "candidate-workspace-drift"
+        : "publication-unconfirmed-reconcile-before-retry",
+    );
+    expect(mutations.map((args) => args.slice(0, 3))).toEqual(
+      (boundary === "drafts" ? [332] : [332, 333]).map((issue) => ["issue", "edit", String(issue)]),
+    );
+    expect(gates).toEqual(boundary === "drafts" ? [] : ["fixture-gate"]);
+    if (boundary === "drafts") {
+      expect(publish).not.toHaveBeenCalled();
+      await expect(
+        readFile(resolve(current.stateDirectory, "approved-ISS-333.md")),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+    } else {
+      expect(publish).toHaveBeenCalledTimes(1);
+      await expect(publish.mock.results[0]!.value).rejects.toThrow("candidate-workspace-drift");
+      expect(
+        JSON.parse(await readFile(resolve(current.stateDirectory, "gate-1.json"), "utf8")),
+      ).toEqual({ head: current.candidateHead, name: "fixture-gate" });
+    }
+    expect(
+      JSON.parse(await readFile(resolve(current.stateDirectory, "draft-ISS-332.json"), "utf8")),
+    ).toEqual({ head: current.candidateHead, issue: 332 });
+    await expect(
+      readFile(resolve(current.stateDirectory, "approved-pull-request.md")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    const mutationCount = mutations.length;
+    await expect(deliveryStep(current, adapter, policy)).rejects.toThrow(
+      "candidate-workspace-drift",
+    );
+    expect(mutations).toHaveLength(mutationCount);
+    expect(gates).toEqual(boundary === "drafts" ? [] : ["fixture-gate"]);
+    expect(publish).toHaveBeenCalledTimes(boundary === "drafts" ? 0 : 1);
+    expect(laterGit.length).toBeGreaterThan(0);
+    for (const args of laterGit)
+      expect([
+        ["rev-parse", "--git-common-dir"],
+        ["remote", "get-url", "--all", "origin"],
+        ["remote", "get-url", "--push", "--all", "origin"],
+        ["rev-parse", "HEAD"],
+        ["status", "--porcelain"],
+      ]).toContainEqual(args);
   },
 );
 
@@ -1375,7 +2268,10 @@ it.each([selfPullRequest, chaseSetsPullRequest])(
       [JSON.stringify({ ...report, head: "f".repeat(40) }), "unreviewed-delivery-source"],
       [JSON.stringify({ ...report, run: "wrong-run" }), "unreviewed-delivery-source"],
       [JSON.stringify({ ...report, g0: "" }), "unreviewed-delivery-source"],
-      [JSON.stringify({ ...report, g0: "x".repeat(2000) }), "unreviewed-delivery-source"],
+      [
+        JSON.stringify({ ...report, g0: "x".repeat(MAX_TERMINAL_SUMMARY_LENGTH) }),
+        "unreviewed-delivery-source",
+      ],
       [
         reviewerReport(current, "FAIL", [
           { file: "refresh.txt", line: 1, severity: "blocking", text: "Fix it" },
@@ -2725,58 +3621,73 @@ it.each(["author", "reviewer"] as const)(
     let reviewHead = source.base;
     const launches: string[] = [];
     const interruptedId = "33333333-3333-3333-3333-333333333333";
-    const native: Adapter = {
-      async preflight() {},
-      async git(tree, args) {
-        if (args[0] === "rev-parse")
-          return args[1] === "--show-toplevel"
-            ? tree
-            : tree === current.controllerRoot
-              ? current.controllerRevision
-              : tree === current.worktree
-                ? sourceHead
-                : reviewHead;
-        if (args[0] === "status") return "";
-        if (args[0] === "diff")
-          return args.includes("--binary")
-            ? "interrupted tracked patch"
-            : args.includes("--cached")
-              ? ""
-              : "source.txt\0";
-        if (args[0] === "commit") sourceHead = head;
-        if (args[0] === "checkout") reviewHead = args.at(-1)!;
-        if (args[0] === "merge-base") return source.base;
-        return "";
-      },
-      async launch(role, config) {
-        launches.push(role);
-        const id =
-          role === retriedRole && launches.filter((value) => value === role).length === 1
-            ? interruptedId
-            : role === "author"
-              ? authorId
-              : reviewId;
-        return {
-          id,
-          pid: 100 + launches.length,
-          trace: resolve(config.stateDirectory, `${role}-${id}.jsonl`),
-          launchedAt: 1,
-        };
-      },
-      async observe(role, _config, attempt) {
-        if (attempt.id === interruptedId)
-          return { id: attempt.id, status: role === "author" ? "dead" : "malformed" };
-        return {
-          id: attempt.id,
-          status: "passed",
-          head: role === "author" ? source.base : head,
-          ...(role === "reviewer" ? { summary: reviewerReport(current) } : {}),
-        };
-      },
-      async checks() {
-        throw new Error("unexpected worker CI observation");
-      },
-    };
+    // ISS-165: the run-owned channel composed onto the native adapter. Flow's
+    // `git` receiver is the actual adapter it holds; only the harness requests.
+    const receivers = new Set<Adapter>();
+    const channelInput = new PassThrough();
+    const channelOutput = new PassThrough();
+    const written: string[] = [];
+    channelOutput.on("data", (chunk) => written.push(String(chunk)));
+    const syntheticRun = "synthetic-native-component";
+    const admission = createNativeDbAdmission(syntheticRun, channelInput, channelOutput, {
+      approvedParents: [root],
+    });
+    const native = nativeDbProfileAdapter(execution(), admission);
+    function execution(): Adapter {
+      return {
+        async preflight() {},
+        async git(tree, args) {
+          receivers.add(this);
+          if (args[0] === "rev-parse")
+            return args[1] === "--show-toplevel"
+              ? tree
+              : tree === current.controllerRoot
+                ? current.controllerRevision
+                : tree === current.worktree
+                  ? sourceHead
+                  : reviewHead;
+          if (args[0] === "status") return "";
+          if (args[0] === "diff")
+            return args.includes("--binary")
+              ? "interrupted tracked patch"
+              : args.includes("--cached")
+                ? ""
+                : "source.txt\0";
+          if (args[0] === "commit") sourceHead = head;
+          if (args[0] === "checkout") reviewHead = args.at(-1)!;
+          if (args[0] === "merge-base") return source.base;
+          return "";
+        },
+        async launch(role, config) {
+          launches.push(role);
+          const id =
+            role === retriedRole && launches.filter((value) => value === role).length === 1
+              ? interruptedId
+              : role === "author"
+                ? authorId
+                : reviewId;
+          return {
+            id,
+            pid: 100 + launches.length,
+            trace: resolve(config.stateDirectory, `${role}-${id}.jsonl`),
+            launchedAt: 1,
+          };
+        },
+        async observe(role, _config, attempt) {
+          if (attempt.id === interruptedId)
+            return { id: attempt.id, status: role === "author" ? "dead" : "malformed" };
+          return {
+            id: attempt.id,
+            status: "passed",
+            head: role === "author" ? source.base : head,
+            ...(role === "reviewer" ? { summary: reviewerReport(current) } : {}),
+          };
+        },
+        async checks() {
+          throw new Error("unexpected worker CI observation");
+        },
+      };
+    }
     await expect(step(source, native, current.controllerRoot)).resolves.toMatchObject({
       status: "awaiting-publication",
       retries: 1,
@@ -2792,6 +3703,54 @@ it.each(["author", "reviewer"] as const)(
     const producer = await step(source, native, current.controllerRoot);
     expect(producer).toMatchObject({ status: "awaiting-publication", retries: 1 });
     expect(launches).toHaveLength(3);
+    // The resumed completion held the composed adapter and never requested.
+    expect([...receivers]).toEqual([native]);
+    expect(written).toEqual([]);
+    const identity: NativeDbIdentity = {
+      profile: "reconciliation-pg16/v1",
+      run: syntheticRun,
+      issue: 142,
+      attempt: 1,
+      executorHead: current.controllerRevision,
+      product: { repository: current.repository, head, tree: "f".repeat(40) },
+      declaration: {
+        version: 1,
+        profile: "reconciliation-pg16/v1",
+        files: ["one", "two", "three"].map((name) => ({
+          file: `${name}.db.test.ts`,
+          cases: [`${name} reconciles`],
+        })),
+        mutants: [],
+      },
+      patchDigests: [],
+      stagedInputDirectory: resolve(root, "staged-input"),
+    };
+    const harnessRequest = native.nativeDbProfile(identity);
+    await new Promise((done) => setImmediate(done));
+    expect(written).toHaveLength(1);
+    expect(JSON.parse(written[0]!)).toEqual({
+      schemaVersion: "dogfood-native-db-request/v1",
+      correlation: 1,
+      ...identity,
+    });
+    channelInput.write(
+      `${JSON.stringify({
+        schemaVersion: "dogfood-native-db-reply/v1",
+        correlation: 1,
+        status: "unknown",
+        owner: null,
+        evidencePath: null,
+        diagnostic: "synthetic incumbent could not determine the outcome",
+      })}\n`,
+    );
+    expect(await harnessRequest).toEqual({
+      correlation: 1,
+      status: "unknown",
+      owner: null,
+      evidencePath: null,
+      diagnostic: "synthetic incumbent could not determine the outcome",
+    });
+    expect(await stateSnapshot(current.stateDirectory)).toEqual(before);
     const github = githubDeliveryAdapter();
     await expect(github.source(current)).resolves.toMatchObject({ head, reviewId });
     const plan: DeliveryPlan = {
@@ -2899,6 +3858,13 @@ it.each(["author", "reviewer"] as const)(
     for (const [name, bytes] of Object.entries(before)) expect(completed[name]).toBe(bytes);
     expect(launches).toHaveLength(3);
     expect(current.retries).toBe(1);
+    expect(written).toHaveLength(1);
+    admission.close();
+    expect(await native.nativeDbProfile(identity)).toMatchObject({
+      correlation: null,
+      status: "refused",
+      diagnostic: "native-db-channel-closed",
+    });
   },
 );
 
