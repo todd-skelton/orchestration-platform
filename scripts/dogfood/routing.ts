@@ -21,8 +21,8 @@ export const SELF_ROUTING: RoutingRow = {
     { model: "claude-fable-5-1", effort: "high" },
   ],
   reviewer: [
-    { model: "claude-opus-5", effort: "high" },
-    { model: "gpt-5.6-sol", effort: "high" },
+    { model: "claude-opus-5-5", effort: "high" },
+    { model: "gpt-6-sol", effort: "high" },
   ],
 };
 

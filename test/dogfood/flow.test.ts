@@ -835,6 +835,82 @@ async function fixture() {
   };
 }
 
+it("replays literal predecessor placements and rungs but refuses changed ladder fingerprints", async () => {
+  const f = await fixture();
+  // Retained configuration is deliberately independent of the shipped defaults.
+  const author = [
+    { model: "gpt-5.6-luna", effort: "high" },
+    { model: "gpt-5.6-luna", effort: "xhigh" },
+    { model: "claude-sonnet-5", effort: "medium" },
+  ];
+  const reviewer = [
+    { model: "claude-opus-5", effort: "high" },
+    { model: "gpt-5.6-sol", effort: "high" },
+  ];
+  f.config.routing = { row: 2, review: 11 };
+  f.config.author = { ...author[0]!, ladder: author, prompt: "author" };
+  f.config.reviewer = { ...reviewer[0]!, ladder: reviewer, prompt: "reviewer" };
+  f.config.inheritedWorkerRetry = true;
+  f.adapter.authorRung = async () => 1;
+  const launch = f.adapter.launch;
+  f.adapter.launch = async (role, config, prompt) => {
+    if (role === "reviewer" && config.reviewer.model === "claude-opus-5")
+      throw new QueueBlocked("provider-model-refused");
+    return launch(role, config, prompt);
+  };
+  f.authorDone();
+  await expect(f.run()).resolves.toMatchObject({ status: "observing-reviewer", retries: 1 });
+  const files = [
+    "config.json",
+    "author-attempt.json",
+    "author-terminal.json",
+    "reviewer-intent.json",
+    "reviewer-attempt.json",
+  ];
+  const snapshot = () =>
+    Promise.all(files.map((file) => readFile(resolve(f.config.stateDirectory, file), "utf8")));
+  const retained = await snapshot();
+  expect(JSON.parse(retained[1]!)).toMatchObject({
+    routing: { row: 2, review: 11 },
+    rung: 1,
+    placement: { model: "gpt-5.6-luna", effort: "xhigh" },
+  });
+  expect(JSON.parse(retained[4]!)).toMatchObject({
+    routing: { row: 2, review: 11 },
+    rung: 1,
+    placement: { model: "gpt-5.6-sol", effort: "high" },
+    models: { author: "gpt-5.6-luna", reviewer: "gpt-5.6-sol" },
+  });
+  const observe = f.adapter.observe;
+  f.adapter.observe = async (role, config, attempt) => {
+    expect(config[role]).toMatchObject(
+      role === "author"
+        ? { model: "gpt-5.6-luna", effort: "xhigh", rung: 1 }
+        : { model: "gpt-5.6-sol", effort: "high", rung: 1 },
+    );
+    return observe(role, config, attempt);
+  };
+  for (let replay = 0; replay < 2; replay++) {
+    await expect(f.run()).resolves.toMatchObject({ status: "observing-reviewer", retries: 1 });
+    expect(await snapshot()).toEqual(retained);
+    await expect(
+      readFile(resolve(f.config.stateDirectory, "reviewer-terminal.json")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  }
+  const observations = f.observations.length;
+  // Change even an unused rung: equality must fail before replay or another launch.
+  for (const role of ["author", "reviewer"] as const) {
+    const placement = f.config[role].ladder![0]!;
+    const predecessor = placement.model;
+    placement.model = role === "author" ? "gpt-6-luna" : "claude-opus-5-5";
+    await expect(f.run()).rejects.toThrow("conflicting-run-configuration");
+    expect(await snapshot()).toEqual(retained);
+    placement.model = predecessor;
+  }
+  expect(f.observations).toHaveLength(observations);
+  expect(f.launches).toEqual(["author", "reviewer"]);
+});
+
 it.each(["probe", "launch"])(
   "uses one reviewer fallback only for %s model refusal, retaining it on resume",
   async (refusal) => {
@@ -851,15 +927,15 @@ it.each(["probe", "launch"])(
     const models: string[] = [];
     f.adapter.launch = async (role, config, prompt) => {
       models.push(config[role].model);
-      if (role === "reviewer" && config.reviewer.model === "claude-opus-5" && refusal === "probe")
+      if (role === "reviewer" && config.reviewer.model === "claude-opus-5-5" && refusal === "probe")
         throw new QueueBlocked("provider-model-refused");
       return launch(role, config, prompt);
     };
     f.adapter.observe = async (role, config, attempt) => {
       if (role === "reviewer") {
-        if (config.reviewer.model === "claude-opus-5")
+        if (config.reviewer.model === "claude-opus-5-5")
           return { id: attempt.id, status: "dead", modelRefused: true };
-        expect(config.reviewer.model).toBe("gpt-5.6-sol");
+        expect(config.reviewer.model).toBe("gpt-6-sol");
         return { id: attempt.id, status: "running" };
       }
       return observe(role, config, attempt);
@@ -867,14 +943,14 @@ it.each(["probe", "launch"])(
     f.authorDone();
     await expect(f.run()).resolves.toMatchObject({ status: "observing-reviewer" });
     await expect(f.run()).resolves.toMatchObject({ status: "observing-reviewer" });
-    expect(models).toEqual(["gpt-6-astra", "claude-opus-5", "gpt-5.6-sol"]);
+    expect(models).toEqual(["gpt-6-astra", "claude-opus-5-5", "gpt-6-sol"]);
     const attempt = JSON.parse(
       await readFile(resolve(f.config.stateDirectory, "reviewer-attempt.json"), "utf8"),
     );
     expect(attempt).toMatchObject({
       routing: { row: "self" },
-      placement: { model: "gpt-5.6-sol", effort: "high" },
-      models: { author: "gpt-6-astra", reviewer: "gpt-5.6-sol" },
+      placement: { model: "gpt-6-sol", effort: "high" },
+      models: { author: "gpt-6-astra", reviewer: "gpt-6-sol" },
     });
     expect(attempt.retries).toBeUndefined();
   },
@@ -926,7 +1002,7 @@ it.each(["verdict", "malformed", "outage", "death"])(
     if (failure === "verdict") await expect(f.run()).rejects.toThrow("reviewer-failed");
     else await expect(f.run()).resolves.toMatchObject({ status: "observing-reviewer" });
     expect(models).toEqual(
-      failure === "verdict" ? ["claude-opus-5"] : ["claude-opus-5", "claude-opus-5"],
+      failure === "verdict" ? ["claude-opus-5-5"] : ["claude-opus-5-5", "claude-opus-5-5"],
     );
   },
 );
@@ -984,7 +1060,7 @@ it("stops when the fallback is also refused and does not fall back for arbitrary
     f.authorDone();
     await expect(f.run()).rejects.toThrow(reason);
     expect(models).toEqual(
-      reason === "provider-model-refused" ? ["claude-opus-5", "gpt-5.6-sol"] : ["claude-opus-5"],
+      reason === "provider-model-refused" ? ["claude-opus-5-5", "gpt-6-sol"] : ["claude-opus-5-5"],
     );
   }
 });
