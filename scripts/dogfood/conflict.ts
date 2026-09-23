@@ -92,6 +92,7 @@ export async function resolveConflict(
   previousHead: string,
   conflict: Conflict,
   save: () => Promise<void>,
+  ruledPreservation?: { path: string; semantics: string }[],
 ) {
   const git = (args: string[]) => native.git(config.worktree, args);
   if (!conflict.files) {
@@ -147,14 +148,31 @@ export async function resolveConflict(
     conflict.census = await census(git, previousHead, main, conflict.seed, conflict.files);
     await save();
   }
-  const preservation = config.correctionPaths ? [] : (conflict.census?.u ?? []);
+  if (ruledPreservation && !(await readOptional(resolve(config.stateDirectory, "config.json")))) {
+    // Setup checks out S with autocrlf disabled; the original native capture may
+    // contain CRLF. Restore that representation before pinning the first worker,
+    // never on an in-flight author's replay. Its fixed bytes are the K contract.
+    for (const [file, contents] of Object.entries(conflict.files)) {
+      if (contents.includes("\0") || !withinConflictHunks(contents, contents.replace(hunks, "")))
+        throw new QueueBlocked("conflict-resolution-unsupported", file);
+      await writeFile(resolve(config.worktree, file), contents);
+    }
+    await git(["--literal-pathspecs", "add", "--", ...Object.keys(conflict.files)]);
+  }
+  if (ruledPreservation?.some((rule) => !conflict.census?.u.includes(rule.path)))
+    throw new QueueBlocked("conflict-resolution-scope-escape");
+  const preservation = ruledPreservation
+    ? ruledPreservation.map((rule) => rule.path)
+    : config.correctionPaths
+      ? []
+      : (conflict.census?.u ?? []);
   const authorRule = preservation.length
     ? "Resolve only Git's marked conflicting hunks in K; all outside-hunk bytes and line endings in K are immutable. U permits only necessary preservation edits retaining both parents' intent, not redesign or unrelated fixes. U membership is not a defect or a repair obligation; U may remain unchanged. Changed U files must remain regular text without NUL or conflict markers. Do not add, delete or rename files, change modes, or edit outside K union U. If preservation needs broader changes, return FAIL. This is the single bounded conflict resolution, not a fresh implementation."
     : "Resolve only Git's marked conflicting hunks. Preserve both reviewed feature behavior and current-main changes. Do not modify text outside those hunks, add files, redesign the feature or fix unrelated defects. If preservation needs broader changes, return FAIL. This is the single bounded conflict resolution, not a fresh implementation.";
   const reviewRule =
     "This is an independent DELTA review of conflict resolution. Check the resolved hunks and direct callers against both parents. Reject semantic scope expansion, dropped feature or current-main behavior, and missing execution evidence. Inherit the retained source review; do not restart a full source sweep or infer patch equivalence.";
   const context = conflict.census
-    ? ` Seed-bound conflict census: ${JSON.stringify(conflict.census)}. ${config.correctionPaths ? "The ruled path fence remains hunk-only: U is evidence, never edit authority, even when named in the fence." : "Check every changed U file and its direct callers for preservation of both parents, not semantic expansion. Census membership, old PASS and a clean merge are not acceptance."}`
+    ? ` Seed-bound conflict census: ${JSON.stringify(conflict.census)}. ${ruledPreservation ? `Only these fresh ruled U preservation semantics grant permission: ${JSON.stringify(ruledPreservation)}. Review each changed U file and direct callers; semantic expansion is FAIL.` : config.correctionPaths ? "The ruled path fence remains hunk-only: U is evidence, never edit authority, even when named in the fence." : "Check every changed U file and its direct callers for preservation of both parents, not semantic expansion. Census membership, old PASS and a clean merge are not acceptance."}`
     : "";
   const bounded: Config = {
     ...config,
@@ -217,7 +235,7 @@ export async function resolveConflict(
       error instanceof QueueBlocked &&
       ["author-failed", "author-malformed"].includes(error.reason)
     )
-      throw new QueueBlocked("conflict-resolution-failed", error.diagnostics);
+      throw new QueueBlocked("conflict-resolution-failed", error.diagnostics, error.retries);
     throw error;
   }
 }
