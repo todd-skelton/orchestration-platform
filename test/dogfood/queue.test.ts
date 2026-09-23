@@ -3456,7 +3456,7 @@ it("composes all shipped Chase pairs before setup and reconstructs the same sele
   );
   const expected = [
     [2, "gpt-6-luna", "high", "claude-opus-5-5"],
-    [3, "claude-sonnet-5", "medium", "gpt-6-sol"],
+    [3, "claude-opus-5-5", "medium", "gpt-6-sol"],
     [4, "gpt-6-astra", "medium", "claude-opus-5-5"],
     [7, "gpt-6-astra", "high", "claude-opus-5-5"],
     [10, "gpt-6-sol", "high", "claude-opus-5-5"],
