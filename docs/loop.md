@@ -526,7 +526,7 @@ the adapter's planning row, before setup. For Chase Sets, the operator adds
 exactly one marker to the issue body when refining it:
 
 ```html
-<!-- routing: {"version":1,"row":7,"review":11} -->
+<!-- routing: {"version":1,"row":2,"review":11} -->
 ```
 
 `row` selects the author placement and `review` explicitly selects review row
@@ -541,20 +541,21 @@ ISS-158 replaces fixed seats with per-row ladders after the repeated dead
 Astra/high launches in `m1-iss154-20260915T1004` and #7844's exhausted
 `m2-purchase-limit-20260915T0132` attempts. Set `routingRows` to the array in
 `adapters/chase-sets-routing.json`. Each row has only `row`, `review`, `author`
-and `reviewer`, with ordered placement arrays:
+and `reviewer`, with ordered placement arrays (current ISS-203 row 2 shown):
 
 ```json
 {
-  "row": 7,
+  "row": 2,
   "review": 11,
   "author": [
-    { "model": "gpt-6-astra", "effort": "high" },
-    { "model": "gpt-6-astra", "effort": "xhigh" },
-    { "model": "claude-fable-5-1", "effort": "high" }
+    { "model": "gpt-6-luna", "effort": "high" },
+    { "model": "gpt-6-luna", "effort": "xhigh" },
+    { "model": "gpt-6-sol", "effort": "medium" },
+    { "model": "claude-sonnet-5", "effort": "medium" }
   ],
   "reviewer": [
     { "model": "claude-opus-5-5", "effort": "high" },
-    { "model": "gpt-6-sol", "effort": "high" }
+    { "model": "gpt-6-astra", "effort": "high" }
   ]
 }
 ```
@@ -579,12 +580,45 @@ Delta and corrective reviews retain the selected reviewer rung.
 Empty ladders, repeated placements and the old fixed-seat shape are rejected;
 there is no live-config migration. Reviewer models must be disjoint from all
 author models. `routing-reviewer-not-independent` rejects overlap, and
-`invalid-routing-fallback` rejects repeated reviewer models. The self ladder
+`invalid-routing-fallback` rejects repeated reviewer models. The current self ladder
 is Astra/high, Astra/xhigh, Fable/high, with Opus 5.5/high then GPT-6 Sol/high review.
 Static `author` and `reviewer` config fields remain the self adapter's fallback
 only when its context has no routing row; Chase Sets requires `routingRows`.
 
-ISS-202 applies Todd's successor ruling to the existing native ladders:
+ISS-203 applies the complete provisional matrix in `docs/model-selection.md`
+to all fourteen Chase pairs, retaining self unchanged. Row 2 authors are
+Luna/high, Luna/xhigh, Sol/medium, Sonnet/medium, with Opus then Astra review.
+Row 3 authors are Opus/medium, Opus/high, Astra/medium, with Sol then Sonnet
+review. Row 15 authors are Opus/high then Astra/high, with Sol then Sonnet
+review; Opus/max is removed and later failures clamp at Astra/high. Rows 4,
+7, 10 and 14 retain their existing ladders. Both review seats use high for
+review 11 and medium for review 12, with models disjoint from every author rung.
+Every author tail is the other vendor; row 15's benchmark-based Opus/max skip
+joins the historical row-10 Sol/xhigh exception to effort-before-model.
+Sonnet review tails provide weaker refusal-only continuity, never a quality
+escalation. Reviewer exhaustion still stops the host with the pool reset time.
+
+These placements use the September 23 research report cited in ISS-203, not
+local quality certification. Weighted API benchmark USD/task is not subscription
+spend or accepted-artifact cost; provider-fallback Opus/Fable cells do not
+establish pure-model performance, reviewer recall, UI fit or a service bar.
+The documented same-row checkpoint and quality, latency, resource and exhaustion
+triggers require operator judgment, not automatic routing or trial authority.
+Failure-count advancement, repair/delta behavior and all ceilings remain unchanged.
+
+ISS-203 cutover is only for separately authorized fresh runs and paths, after
+independent exact-head PASS and final-head three-OS bootstrap green, with
+supervisors absent. Immediately before an authorized install, the host captures
+native account_pool/CLI admission for every exact target model/effort, with UTC
+instant, identity and result. Catalogue presence, earlier probes and fixtures
+establish neither timely admission nor quality. Workers touch no live executor,
+WSL run, provider or runtime. No installation, probe, start, unpark, host rotation
+or attempt renewal is authorized here. Saved configurations, fingerprints,
+histories, participant identities/rungs, attempts, retries, charges and ceilings
+remain intact: same-config replay keeps its rung, and changed ladders still refuse
+`conflicting-run-configuration` before launch, without alias, backfill or waiver.
+
+Historically, ISS-202 applied Todd's successor ruling to the then-existing native ladders:
 `gpt-5.6-luna` becomes `gpt-6-luna`, `gpt-5.6-sol` becomes `gpt-6-sol`, and
 `claude-opus-5` becomes `claude-opus-5-5`, preserving roles, efforts and order.
 Current ladder short labels Luna/Sol mean GPT-6 and Opus means Opus 5.5;
@@ -914,7 +948,8 @@ mentions is left to the catalog, as is every model without a configured status U
 When every account blocks the model, a block clearing inside
 `providerOutageCeilingMs` waits as `waiting-provider` with the pool's reset
 time, and a longer block is `provider-model-refused`: the worker advances its
-ISS-158 ladder, whose last rung is the other vendor, and an exhausted ladder
+ISS-158 author ladder, whose last rung remains the other vendor under ISS-203,
+or its independent refusal-only reviewer ladder, and an exhausted ladder
 stops the host with the reset time. The block's end is compared with the one
 absolute wait deadline the models probe already owns, never a fresh duration.
 A block whose end is unknown, past or unparsable at any account is

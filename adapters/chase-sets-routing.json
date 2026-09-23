@@ -12,6 +12,10 @@
         "effort": "xhigh"
       },
       {
+        "model": "gpt-6-sol",
+        "effort": "medium"
+      },
+      {
         "model": "claude-sonnet-5",
         "effort": "medium"
       }
@@ -22,7 +26,7 @@
         "effort": "high"
       },
       {
-        "model": "gpt-6-sol",
+        "model": "gpt-6-astra",
         "effort": "high"
       }
     ]
@@ -40,6 +44,10 @@
         "effort": "xhigh"
       },
       {
+        "model": "gpt-6-sol",
+        "effort": "medium"
+      },
+      {
         "model": "claude-sonnet-5",
         "effort": "medium"
       }
@@ -50,7 +58,7 @@
         "effort": "medium"
       },
       {
-        "model": "gpt-6-sol",
+        "model": "gpt-6-astra",
         "effort": "medium"
       }
     ]
@@ -60,16 +68,16 @@
     "review": 11,
     "author": [
       {
-        "model": "claude-sonnet-5",
+        "model": "claude-opus-5-5",
         "effort": "medium"
       },
       {
-        "model": "claude-sonnet-5",
+        "model": "claude-opus-5-5",
         "effort": "high"
       },
       {
-        "model": "gpt-6-luna",
-        "effort": "high"
+        "model": "gpt-6-astra",
+        "effort": "medium"
       }
     ],
     "reviewer": [
@@ -78,7 +86,7 @@
         "effort": "high"
       },
       {
-        "model": "claude-opus-5-5",
+        "model": "claude-sonnet-5",
         "effort": "high"
       }
     ]
@@ -88,16 +96,16 @@
     "review": 12,
     "author": [
       {
-        "model": "claude-sonnet-5",
+        "model": "claude-opus-5-5",
         "effort": "medium"
       },
       {
-        "model": "claude-sonnet-5",
+        "model": "claude-opus-5-5",
         "effort": "high"
       },
       {
-        "model": "gpt-6-luna",
-        "effort": "high"
+        "model": "gpt-6-astra",
+        "effort": "medium"
       }
     ],
     "reviewer": [
@@ -106,7 +114,7 @@
         "effort": "medium"
       },
       {
-        "model": "claude-opus-5-5",
+        "model": "claude-sonnet-5",
         "effort": "medium"
       }
     ]
@@ -344,10 +352,6 @@
         "effort": "high"
       },
       {
-        "model": "claude-opus-5-5",
-        "effort": "max"
-      },
-      {
         "model": "gpt-6-astra",
         "effort": "high"
       }
@@ -370,10 +374,6 @@
       {
         "model": "claude-opus-5-5",
         "effort": "high"
-      },
-      {
-        "model": "claude-opus-5-5",
-        "effort": "max"
       },
       {
         "model": "gpt-6-astra",
