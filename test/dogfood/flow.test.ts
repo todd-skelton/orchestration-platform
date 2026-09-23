@@ -53,6 +53,22 @@ import { evidenceDescriptor, writeEvidence } from "./fixtures/continuation.js";
 const base = "a".repeat(40),
   head = "b".repeat(40),
   pilotRevision = "c".repeat(40);
+// Synthetic retained seed used by adapter-lifecycle tests; real census capture
+// and its Git identities are exercised by refresh.test.ts.
+const conflictSeed = {
+  seed: base,
+  files: {
+    "scripts/repair.mjs": "prefix\n<<<<<<< HEAD\na\n=======\nb\n>>>>>>> main\nsuffix\n",
+  },
+  census: {
+    candidate: head,
+    main: pilotRevision,
+    seed: base,
+    k: ["scripts/repair.mjs"],
+    u: [],
+    blobs: { "scripts/repair.mjs": { candidate: head, main: pilotRevision, seed: base } },
+  },
+};
 const cleanup: string[] = [];
 
 it.each(["source", "repair", "gate", "conflict-boundary"])(
@@ -103,13 +119,7 @@ it.each(["source", "repair", "gate", "conflict-boundary"])(
                 f.pilot,
                 pilotRevision,
                 head,
-                {
-                  seed: base,
-                  files: {
-                    "scripts/repair.mjs":
-                      "prefix\n<<<<<<< HEAD\na\n=======\nb\n>>>>>>> main\nsuffix\n",
-                  },
-                },
+                conflictSeed,
                 async () => {
                   throw new Error("saved conflict seed must be reused");
                 },
@@ -306,13 +316,7 @@ it.each(["source", "repair", "gate", "conflict-boundary", "review-refresh"])(
                 f.pilot,
                 pilotRevision,
                 head,
-                {
-                  seed: base,
-                  files: {
-                    "scripts/repair.mjs":
-                      "prefix\n<<<<<<< HEAD\na\n=======\nb\n>>>>>>> main\nsuffix\n",
-                  },
-                },
+                conflictSeed,
                 async () => {
                   throw new Error("saved conflict seed must be reused");
                 },

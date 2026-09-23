@@ -79,7 +79,7 @@ function participant(
   };
 }
 
-type Shape = "conflict" | "clean" | "outside-path" | "unsupported";
+type Shape = "conflict" | "clean" | "outside-path" | "unsupported" | "overlap";
 
 // The retained bytes of the run `m1-iss146-147-20260914T2325`, in synthetic form: a
 // failed attempt 2 whose reviewed head met a conflict after resolution was consumed.
@@ -107,6 +107,8 @@ async function exhaustedFixture(shape: Shape = "conflict", spentRetry = false, a
   await writeFile(resolve(repository, ".gitignore"), "node_modules/\n");
   await writeFile(resolve(repository, "docs/loop.md"), "# The loop\n\nKeep it small.\n");
   await writeFile(resolve(repository, "other.txt"), "shared\n");
+  const overlap = "first\n" + "stable\n".repeat(10) + "last\n";
+  if (shape === "overlap") await writeFile(resolve(repository, "overlap.txt"), overlap);
   await git(["add", "."]);
   await git(["commit", "-m", "base"]);
   const base = await git(["rev-parse", "HEAD"]);
@@ -114,6 +116,8 @@ async function exhaustedFixture(shape: Shape = "conflict", spentRetry = false, a
   if (shape !== "clean")
     await writeFile(resolve(repository, "docs/loop.md"), "# The loop\n\nReviewed feature.\n");
   if (shape === "outside-path") await writeFile(resolve(repository, "other.txt"), "reviewed\n");
+  if (shape === "overlap")
+    await writeFile(resolve(repository, "overlap.txt"), overlap.replace("first", "reviewed"));
   await writeFile(resolve(repository, "feature.txt"), "reviewed feature\n");
   await git(["add", "."]);
   await git(["commit", "-m", "reviewed feature"]);
@@ -122,6 +126,8 @@ async function exhaustedFixture(shape: Shape = "conflict", spentRetry = false, a
   if (shape === "unsupported") await git(["rm", "-q", "docs/loop.md"]);
   else await writeFile(resolve(repository, "docs/loop.md"), "# The loop\n\nIntegration main.\n");
   if (shape === "outside-path") await writeFile(resolve(repository, "other.txt"), "main\n");
+  if (shape === "overlap")
+    await writeFile(resolve(repository, "overlap.txt"), overlap.replace("last", "main"));
   await git(["add", "."]);
   await git(["commit", "-m", "integration main"]);
   const main = await git(["rev-parse", "HEAD"]);
@@ -677,7 +683,9 @@ type Mode =
   | "gate-fail"
   | "hosted-fail"
   | "no-change"
-  | "lost-commit";
+  | "lost-commit"
+  | "overlap-inside"
+  | "overlap-outside";
 
 it.each<Mode>([
   "pass",
@@ -695,16 +703,21 @@ it.each<Mode>([
   "hosted-fail",
   "no-change",
   "lost-commit",
+  "overlap-inside",
+  "overlap-outside",
 ])("runs the exhausted reviewed integration through native delivery: %s", async (mode) => {
   const shape: Shape =
     mode === "clean"
       ? "clean"
-      : mode === "outside-path" || mode === "unsupported"
-        ? mode
-        : "conflict";
+      : mode.startsWith("overlap")
+        ? "overlap"
+        : mode === "outside-path" || mode === "unsupported"
+          ? mode
+          : "conflict";
   // The pass mode runs on a CRLF checkout, as the hosted Windows gate does for every mode.
   const autocrlf = mode === "pass";
   const f = await exhaustedFixture(shape, mode === "spent-retry", autocrlf);
+  if (mode === "overlap-inside") f.packet.allowedPaths.push("overlap.txt");
   const q = await f.compose();
   expect(await f.compose()).toEqual(q);
   const item = q.items[0]!;
@@ -748,7 +761,7 @@ it.each<Mode>([
         // A dead launch advances the ISS-158 ladder like any unsuccessful author launch.
         const rung = launches.filter((launch) => launch === "author").length === 2 ? 2 : 1;
         expect(config.author).toMatchObject({ ...SELF_ROUTING.author[rung], rung });
-        expect(prompt).toContain('Allowed author paths: ["docs/loop.md"]');
+        expect(prompt).toContain(`Allowed author paths: ${JSON.stringify(f.packet.allowedPaths)}`);
         expect(prompt).toContain("Resolve only Git's marked conflicting hunks");
         if (mode !== "no-change") {
           // Git's checkout line endings outside the hunks are immutable text, so the
@@ -763,6 +776,10 @@ it.each<Mode>([
         }
         if (mode === "escape")
           await writeFile(resolve(config.worktree, "feature.txt"), "escaped\n");
+        if (mode.startsWith("overlap")) {
+          expect(prompt).toContain("U is evidence, never edit authority");
+          await writeFile(resolve(config.worktree, "overlap.txt"), "preserve reviewed and main\n");
+        }
       } else {
         expect(prompt.toLowerCase()).toContain("independent delta");
         expect(prompt).toContain(f.reviewed);
@@ -990,6 +1007,7 @@ it.each<Mode>([
     // Captured before any worker: the current main and every unmerged file with its hunks.
     expect(Object.keys(saved.conflict.files)).toEqual(["docs/loop.md"]);
     expect(saved.conflict.files["docs/loop.md"]).toContain("<<<<<<<");
+    expect(saved.conflict.census.u).toEqual(mode.startsWith("overlap") ? ["overlap.txt"] : []);
     expect(
       await f.git(["rev-list", "--parents", "-n", "1", saved.conflict.seed], item.source.worktree),
     ).toBe(`${saved.conflict.seed} ${f.reviewed} ${f.main}`);
@@ -1005,6 +1023,8 @@ it.each<Mode>([
     "second-conflict": "continuation-failed",
     "gate-fail": "continuation-failed",
     "hosted-fail": "continuation-failed",
+    "overlap-inside": "continuation-failed",
+    "overlap-outside": "continuation-failed",
   };
   // Main moving after the resolution review is an observation stop; the next replay
   // refreshes onto that main, and a second conflict is exhausted without renewal.
@@ -1021,6 +1041,11 @@ it.each<Mode>([
     expect(launches).toEqual(["author"]);
   }
   if (workFailure[mode]) {
+    if (mode.startsWith("overlap"))
+      await expect(run()).rejects.toMatchObject({
+        reason: "continuation-failed",
+        diagnostics: expect.stringContaining("conflict-resolution-scope-escape"),
+      });
     if (mode === "hosted-fail") {
       // Publication reconciles its lost response, then the red check parks the item.
       let parked = false;
@@ -1039,7 +1064,7 @@ it.each<Mode>([
     expect(launches).toEqual(
       mode === "spent-retry"
         ? ["author"]
-        : ["author-fail", "no-change", "escape"].includes(mode)
+        : ["author-fail", "no-change", "escape", "overlap-inside", "overlap-outside"].includes(mode)
           ? ["author"]
           : ["author", "reviewer"],
     );

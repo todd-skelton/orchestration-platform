@@ -238,13 +238,13 @@ export async function refreshDelivery(
           author: {
             ...source.author,
             ...originalAuthor?.placement,
-            prompt: `Resolve only Git's marked conflicting hunks. Preserve both reviewed feature behavior and current-main changes. Do not modify text outside those hunks, add files, redesign the feature or fix unrelated defects. If preservation needs broader changes, return FAIL. This is the single bounded conflict resolution, not a fresh implementation. ${retained}`,
+            prompt: retained,
           },
           reviewer: {
             ...source.reviewer,
             ...originalReviewer?.placement,
             rung: originalReviewer?.rung,
-            prompt: `This is an independent DELTA review of conflict resolution. Check the resolved hunks and direct callers against both parents. Reject semantic scope expansion, dropped feature or current-main behavior, and missing execution evidence. Inherit the retained source review; do not restart a full source sweep or infer patch equivalence. ${retained}`,
+            prompt: retained,
           },
         },
         native,
@@ -255,8 +255,19 @@ export async function refreshDelivery(
         () => save(origin, "native-refresh", active),
       );
     } catch (error) {
-      if (error instanceof QueueBlocked && error.reason === "reviewer-failed")
-        throw new QueueBlocked("refresh-review-failed", error.diagnostics);
+      if (
+        error instanceof QueueBlocked &&
+        (error.reason === "reviewer-failed" || active.conflict.census)
+      )
+        throw new QueueBlocked(
+          error.reason === "reviewer-failed" ? "refresh-review-failed" : error.reason,
+          active.conflict.census
+            ? [error.diagnostics, `Full conflict census: ${resolve(origin, "native-refresh.json")}`]
+                .filter(Boolean)
+                .join("\n")
+            : error.diagnostics,
+          error.retries,
+        );
       throw error;
     }
     if (result.status === "observing-author" || result.status === "observing-reviewer")
