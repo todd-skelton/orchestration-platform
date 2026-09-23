@@ -282,6 +282,43 @@ and any work failure parks the issue as `continuation-failed` while unrelated wo
 advances. Replay resumes the same integration and its claim; a parked integration
 cannot be replayed into another author, attempt or publication.
 
+ISS-200 adds the optional `spentResolution` case to that same v1 packet for one
+unpublished integration whose conflict author failed at its retained seed. The
+original fields must still match the original lineage claim byte for byte. The
+case names `claim`, the later completed `stopMarker`, `failedAuthor`, `main`,
+`seed`, a fresh `authorityUrl` and exact `authorityBody`, and `resolutions` and
+`preservation` arrays of `{path, semantics}`. Resolutions enumerate captured K;
+preservation permits only the explicitly ruled subset of the seed-bound U census.
+Old allowed paths and ordinary U membership grant no new permission. K's fixed
+bytes and line endings remain immutable; unchanged U is permitted.
+
+Before setup, admission matches the failed integration and seed-bound terminal,
+source PASS, C/M/S, spent claim/resolution and completed stop, and refuses any
+publication or publication intent. Before its first reservation it captures the
+fresh GitHub comment's author (`todd-skelton`), ID, URL, body and UTC observation
+time; the body must equal the packet and contain the enumerated semantics. The
+host must interpret and authorize that ruling: text matching and URL syntax do
+not establish approval. One exclusive-create `spent-resolution.json` under the
+retained integration binds the packet, capture, inherited accounting and one
+`spent-resolution/` directory. Replay uses that reservation without another
+probe or allowance. Changed packets cannot spend it again. All old records,
+worktrees, partial work and the original claim remain unchanged.
+
+The new worktrees start at S. Native refresh saves a new ISS-199 census before
+author dispatch, then uses the existing resolver and independent DELTA lifecycle.
+No-op cannot accept S. The remaining shared mechanical retry and charged history
+carry forward, allowing at most three launches (two if the retry was spent),
+within the unchanged run ceiling. Later main must descend from M and is merged,
+never rebased over S; a clean refresh needs a new DELTA within that same bound.
+A further conflict or work failure parks as `continuation-failed`, with no source
+repair, gate correction, new attempt or chained recovery. Host uncertainty keeps
+its ordinary non-parking stop. Fresh final-head local and after-mirror gates,
+publication, hosted checks, landing and deployment remain required. Delivered or
+parked replay stays inert; external closure carries only participant history.
+This capability supplies no #457 ruling, planning re-entry, installation or
+preserved-run resume authority. Host installation still requires independent
+exact-head PASS, three-OS bootstrap green and absent supervisors.
+
 An exact remote/PR head with DIRTY or CONFLICTING status is a confirmed
 publication with a conflict, including when a publish response was lost or the
 PR already left draft state. Delivery retains its publication receipt and
