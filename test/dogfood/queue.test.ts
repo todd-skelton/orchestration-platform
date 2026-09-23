@@ -59,7 +59,7 @@ import {
   type SupervisedCycle,
   type SupervisionAdapter,
 } from "../../scripts/dogfood/supervision.js";
-import { SELF_ROUTING } from "../../scripts/dogfood/routing.mjs";
+import { SELF_ROUTING, type RoutingRow } from "../../scripts/dogfood/routing.mjs";
 import { sourceFailureFixture, repairFailureFixture, snapshot } from "./fixtures/source-failure.js";
 
 it("binds repair FAIL to its retained setup, source, review, author and complete history", async () => {
@@ -3383,11 +3383,10 @@ it("admits repository-wide source scope without a pre-authored repair path list"
 
 it("resolves ladders before setup and rejects the old fixed-seat config", async () => {
   const f = await loopFixture();
-  const row = {
-    ...SELF_ROUTING,
-    row: 7,
-    review: 11 as const,
-  };
+  const rows: RoutingRow[] = JSON.parse(
+    await readFile(new URL("../../adapters/chase-sets-routing.json", import.meta.url), "utf8"),
+  );
+  const row = rows.find((row) => row.row === 7 && row.review === 11)!;
   const policy: RepositoryAdapter = {
     ...repositoryPolicy,
     issueContext: async (input) => ({
@@ -3417,33 +3416,27 @@ it("resolves ladders before setup and rejects the old fixed-seat config", async 
     readFile(resolve(f.stateRoot, config.run, "iss-104-attempt-1/setup/config.json"), "utf8"),
   ).rejects.toMatchObject({ code: "ENOENT" });
   const queue = await queueConfigFromLoop(
-    { ...config, routingRows: [row] },
+    { ...config, routingRows: rows },
     f.repository,
     f.selected,
     policy,
   );
   expect(queue.items[0]?.source).toMatchObject({
     routing: { row: 7, review: 11 },
-    author: { ...row.author[0], ladder: row.author },
-    reviewer: { ...row.reviewer[0], ladder: row.reviewer },
+    author: { model: "gpt-6-astra", effort: "high", ladder: row.author },
+    reviewer: { model: "claude-opus-5-5", effort: "high", ladder: row.reviewer },
   });
   expect(queue.items[0]?.repair.author).toMatchObject({ ...row.author[0], ladder: row.author });
   const self = await queueConfigFromLoop(
-    { ...f.loop, routingRows: [row] },
+    { ...f.loop, repository: "todd-skelton/orchestration-platform", routingRows: rows },
     f.repository,
     f.selected,
-    {
-      ...policy,
-      issueContext: async (input) => ({
-        ...(await policy.issueContext(input)),
-        routing: { row: "self" },
-      }),
-    },
+    selfAdapter,
   );
   expect(self.items[0]?.source).toMatchObject({
     routing: { row: "self" },
-    author: { ...SELF_ROUTING.author[0], ladder: SELF_ROUTING.author },
-    reviewer: { ...SELF_ROUTING.reviewer[0], ladder: SELF_ROUTING.reviewer },
+    author: { model: "gpt-6-astra", effort: "high", ladder: SELF_ROUTING.author },
+    reviewer: { model: "claude-opus-5-5", effort: "high", ladder: SELF_ROUTING.reviewer },
   });
   const {
     author: _author,
@@ -3454,6 +3447,54 @@ it("resolves ladders before setup and rejects the old fixed-seat config", async 
   expect(() => validateLoopConfig({ ...f.loop, adapter: "chase-sets" })).toThrow(
     "routing-table-required",
   );
+});
+
+it("composes all shipped Chase pairs before setup and reconstructs the same selection", async () => {
+  const f = await loopFixture();
+  const rows: RoutingRow[] = JSON.parse(
+    await readFile(new URL("../../adapters/chase-sets-routing.json", import.meta.url), "utf8"),
+  );
+  const expected = [
+    [2, "gpt-6-luna", "high", "claude-opus-5-5"],
+    [3, "claude-sonnet-5", "medium", "gpt-6-sol"],
+    [4, "gpt-6-astra", "medium", "claude-opus-5-5"],
+    [7, "gpt-6-astra", "high", "claude-opus-5-5"],
+    [10, "gpt-6-sol", "high", "claude-opus-5-5"],
+    [14, "claude-opus-5-5", "medium", "gpt-6-sol"],
+    [15, "claude-opus-5-5", "high", "gpt-6-sol"],
+  ] as const;
+  for (const [row, author, effort, reviewer] of expected) {
+    for (const review of [11, 12] as const) {
+      const routing = { row, review };
+      const selected = f.selected;
+      const loop = {
+        ...f.loop,
+        run: `shipped-${row}-${review}`,
+        adapter: "chase-sets",
+        routingRows: rows,
+      };
+      const policy: RepositoryAdapter = {
+        ...repositoryPolicy,
+        issueContext: async (input) => ({
+          ...(await repositoryPolicy.issueContext(input)),
+          routing,
+        }),
+      };
+      const queue = await queueConfigFromLoop(loop, f.repository, selected, policy);
+      expect(queue.items[0]!.source).toMatchObject({
+        routing,
+        author: { model: author, effort, rung: 0 },
+        reviewer: { model: reviewer, effort: review === 11 ? "high" : "medium", rung: 0 },
+      });
+      const shipped = rows.find((entry) => entry.row === row && entry.review === review)!;
+      expect(queue.items[0]!.source.author.ladder).toEqual(shipped.author);
+      expect(queue.items[0]!.source.reviewer.ladder).toEqual(shipped.reviewer);
+      expect(await queueConfigFromLoop(loop, f.repository, selected, policy)).toEqual(queue);
+      await expect(
+        readFile(resolve(queue.items[0]!.setup.stateDirectory, "config.json")),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+    }
+  }
 });
 
 it("derives the complete internal queue from one compact loop config and selected issue", async () => {

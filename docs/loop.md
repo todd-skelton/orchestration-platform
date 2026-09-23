@@ -516,8 +516,8 @@ and `reviewer`, with ordered placement arrays:
     { "model": "claude-fable-5-1", "effort": "high" }
   ],
   "reviewer": [
-    { "model": "claude-opus-5", "effort": "high" },
-    { "model": "gpt-5.6-sol", "effort": "high" }
+    { "model": "claude-opus-5-5", "effort": "high" },
+    { "model": "gpt-6-sol", "effort": "high" }
   ]
 }
 ```
@@ -543,14 +543,34 @@ Empty ladders, repeated placements and the old fixed-seat shape are rejected;
 there is no live-config migration. Reviewer models must be disjoint from all
 author models. `routing-reviewer-not-independent` rejects overlap, and
 `invalid-routing-fallback` rejects repeated reviewer models. The self ladder
-is Astra/high, Astra/xhigh, Fable/high, with Opus/high then Sol/high review.
+is Astra/high, Astra/xhigh, Fable/high, with Opus 5.5/high then GPT-6 Sol/high review.
 Static `author` and `reviewer` config fields remain the self adapter's fallback
 only when its context has no routing row; Chase Sets requires `routingRows`.
+
+ISS-202 applies Todd's successor ruling to the existing native ladders:
+`gpt-5.6-luna` becomes `gpt-6-luna`, `gpt-5.6-sol` becomes `gpt-6-sol`, and
+`claude-opus-5` becomes `claude-opus-5-5`, preserving roles, efforts and order.
+Current ladder short labels Luna/Sol mean GPT-6 and Opus means Opus 5.5;
+historical text and records retain their original identities. Replacement
+transfers no predecessor benchmark, score, verdict or capability evidence,
+and native Opus row 14/15 roles grant no incumbent permission or new roles.
+Cutover is quiescent and for authorized fresh runs/paths only, after independent
+exact-head review and three-OS bootstrap green, with supervisors absent.
+Immediately before an authorized install the host captures native account_pool/CLI
+admission for each exact successor model/effort with UTC instant and result;
+catalogue presence and earlier probes do not establish admission or quality.
+This grants no probe, installation, start, unpark or #457 renewal authority.
+Old runs/configs, participant identities and all charges stay unchanged.
+Same-config replay retains its saved placement/rung; changed ladders retain
+`conflicting-run-configuration` before launch, without aliases, backfill or waiver.
+Preserved-run continuation needs separate disposition: no automatic resume,
+budget reset or exhausted-lineage re-entry. Generic operator strings remain
+open configuration and static configs are not rewritten.
 
 Each launch persists a zero-based rung index before dispatch, then retains it
 with the worker attempt and participant placement. Resume uses the recorded
 rung. Learning notes include it; older records without a rung remain history.
-`docs/model-selection.md` describes the shipped ladders and benchmark basis.
+`docs/model-selection.md` describes the shipped ladders and historical benchmark basis.
 Workers still use the existing Codex launcher and account_pool provider.
 
 `planning/roadmap.json` registers milestones and issues. Each issue has a
