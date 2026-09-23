@@ -7,6 +7,7 @@ import {
   readFile,
   readdir,
   realpath,
+  rename,
   rm,
   writeFile,
 } from "node:fs/promises";
@@ -375,7 +376,7 @@ async function exhaustedFixture(shape: Shape = "conflict", spentRetry = false, a
       if (!retained.has(path))
         expect(
           path.startsWith(`${resolve(attemptDirectory, "integration")}${sep}`) ||
-            /cycle-4-/.test(path.slice(runState.length)),
+            Number(/cycle-(\d+)-/.exec(path.slice(runState.length))?.[1]) >= 4,
         ).toBe(true);
     expect(await readdir(refreshDirectory)).toEqual([]);
     expect(await git(["rev-parse", "HEAD"], preserved)).toBe(reviewed);
@@ -417,6 +418,383 @@ async function exhaustedFixture(shape: Shape = "conflict", spentRetry = false, a
     put,
   };
 }
+
+async function spentFixture(spentRetry = false, autocrlf = false) {
+  const f = await exhaustedFixture("overlap", spentRetry, autocrlf);
+  const old = await f.compose(); // Original ISS-167 claim remains byte-identical.
+  const item = old.items[0]!;
+  await f.git(["worktree", "add", "-b", item.setup.sourceBranch, item.source.worktree, f.reviewed]);
+  await f
+    .git(
+      ["-c", "merge.conflictStyle=merge", "merge", "--no-commit", "--no-ff", f.main],
+      item.source.worktree,
+    )
+    .catch(() => {});
+  const files = {
+    "docs/loop.md": await readFile(resolve(item.source.worktree, "docs/loop.md"), "utf8"),
+  };
+  await f.git(["add", "--all"], item.source.worktree);
+  await f.git(["commit", "-m", "synthetic retained conflict seed"], item.source.worktree);
+  const seed = await f.git(["rev-parse", "HEAD"], item.source.worktree);
+  const failedDirectory = resolve(item.source.stateDirectory, `refresh-${f.main}`);
+  await mkdir(failedDirectory, { recursive: true });
+  const failedAuthor = { ...participant(8, "ISS-104:2", "refresh", "author", "failed"), rung: 1 };
+  const later = [...f.later, failedAuthor];
+  const attempt = JSON.parse(await readFile(resolve(f.attemptDirectory, "attempt.json"), "utf8"));
+  await f.put(old.stateDirectory, "attempt", {
+    ...attempt,
+    base: f.reviewed,
+    history: later,
+    authorFailures: { count: 2, ids: [f.history[2]!.id, failedAuthor.id] },
+  });
+  for (const p of later) await f.put(old.stateDirectory, `participant-${p.ordinal}-terminal`, p);
+  await f.put(item.source.stateDirectory, "native-refresh", {
+    main: f.main,
+    previousHead: f.reviewed,
+    previousReview: f.reviewId,
+    previousDirectory: f.sourceDirectory,
+    directory: failedDirectory,
+    flowRetried: spentRetry,
+    retries: spentRetry ? 1 : 0,
+    resolutionUsed: true,
+    conflict: { files, seed },
+  });
+  await f.put(failedDirectory, "config", {
+    config: { ...item.source, base: seed, mainBase: f.main, stateDirectory: failedDirectory },
+  });
+  await f.put(failedDirectory, "author-attempt", {
+    id: failedAuthor.id,
+    pid: 8,
+    launchedAt: 8,
+    trace: resolve(failedDirectory, "author.jsonl"),
+    placement: SELF_ROUTING.author[1],
+    rung: 1,
+    retries: spentRetry ? 1 : 0,
+  });
+  await f.put(failedDirectory, "author-terminal", {
+    id: failedAuthor.id,
+    head: seed,
+    status: "failed",
+    summary: "Need unmarked preservation.",
+  });
+  await writeFile(resolve(failedDirectory, "author.jsonl"), "synthetic failed author execution\n");
+  // Preserve dirty partial work; the next workspace must start from S instead.
+  await writeFile(resolve(item.source.worktree, "overlap.txt"), "failed partial work\n");
+  const stopMarker = `loop-stop:${RUN}:4:1`;
+  const selection = { cycle: 4, key: KEY, number: NUMBER, base: f.main };
+  await f.put(f.runState, "cycle-4-selected", selection);
+  await f.put(f.runState, "cycle-4-stop-1", {
+    selection,
+    stop: 1,
+    reason: "continuation-failed",
+    attempts: 2,
+    history: later,
+    marker: stopMarker,
+    body: "Synthetic failed conflict author.",
+  });
+  await f.put(f.runState, "cycle-4-stop-1-complete", { selection, stop: 1, history: later });
+  const claim = resolve(
+    f.loop.stateRoot,
+    `integration-continuation-${createHash("sha256")
+      .update(JSON.stringify({ repository: f.loop.repository, issue: KEY }))
+      .digest("hex")}.json`,
+  );
+  const packet: IntegrationContinuation = {
+    ...f.packet,
+    spentResolution: {
+      claim,
+      stopMarker,
+      failedAuthor: failedAuthor.id,
+      main: f.main,
+      seed,
+      authorityUrl: "https://github.com/fixture/authority/issues/1#issuecomment-2",
+      authorityBody:
+        "Synthetic grant. docs/loop.md: Retain reviewed feature and main in K. overlap.txt: Preserve both endpoint edits in U.",
+      resolutions: [{ path: "docs/loop.md", semantics: "Retain reviewed feature and main in K." }],
+      preservation: [{ path: "overlap.txt", semantics: "Preserve both endpoint edits in U." }],
+    },
+  };
+  let observations = 0;
+  const authority = async () => {
+    observations++;
+    return {
+      id: "2",
+      url: packet.spentResolution!.authorityUrl,
+      author: "todd-skelton",
+      body: packet.spentResolution!.authorityBody,
+      capturedAt: "2026-09-23T04:00:00.000Z",
+    };
+  };
+  const retained = await snapshot(old.stateDirectory);
+  const oldClaim = await readFile(claim, "utf8");
+  const compose = (
+    config: LoopConfig = { ...f.loop, integrationContinuation: packet },
+    prior = later,
+    observe = authority,
+  ) =>
+    queueConfigFromLoop(
+      config,
+      f.repository,
+      { key: KEY, number: NUMBER, base: f.main },
+      f.policy,
+      prior,
+      undefined,
+      observe,
+    );
+  return {
+    ...f,
+    packet,
+    later,
+    compose,
+    seed,
+    failedDirectory,
+    old,
+    observations: () => observations,
+    unchanged: async () => {
+      await f.unchanged();
+      for (const [path, bytes] of retained) expect(await readFile(path, "utf8")).toBe(bytes);
+      expect(await readFile(claim, "utf8")).toBe(oldClaim);
+      expect(await f.git(["rev-parse", "HEAD"], item.source.worktree)).toBe(seed);
+      expect(await readFile(resolve(item.source.worktree, "overlap.txt"), "utf8")).toBe(
+        "failed partial work\n",
+      );
+    },
+  };
+}
+
+it.each([
+  "absent-authority",
+  "foreign-authority",
+  "changed-body",
+  "wrong-claim",
+  "missing-claim",
+  "wrong-author",
+  "wrong-seed",
+  "wrong-main",
+  "wrong-stop",
+  "missing-stop-receipt",
+  "wrong-review",
+  "nonfailed",
+  "in-flight",
+  "source-nonpass",
+  "publication",
+  "publication-intent",
+  "wrong-run",
+  "changed-original-ruling",
+  "missing-config",
+  "wrong-captured-k",
+])("spent admission refuses one changed input before reservation: %s", async (fault) => {
+  const f = await spentFixture();
+  const packet = structuredClone(f.packet);
+  let observe = async () => ({
+    id: "2",
+    url: packet.spentResolution!.authorityUrl,
+    author: "todd-skelton",
+    body: packet.spentResolution!.authorityBody,
+    capturedAt: "2026-09-23T04:00:00.000Z",
+  });
+  const restores: (() => Promise<void>)[] = [];
+  const change = async (directory: string, name: string, update: (value: any) => any) => {
+    const path = resolve(directory, `${name}.json`);
+    const bytes = await readFile(path, "utf8").catch(() => undefined);
+    restores.push(async () => {
+      if (bytes === undefined) await rm(path);
+      else await writeFile(path, bytes);
+    });
+    const value = update(bytes === undefined ? undefined : JSON.parse(bytes));
+    if (value === undefined) await rm(path);
+    else await f.put(directory, name, value);
+  };
+  switch (fault) {
+    case "absent-authority":
+      observe = async () => {
+        throw new Error("unavailable");
+      };
+      break;
+    case "foreign-authority": {
+      const original = observe;
+      observe = async () => ({ ...(await original()), author: "someone-else" });
+      break;
+    }
+    case "changed-body": {
+      const original = observe;
+      observe = async () => ({ ...(await original()), body: "not the ruling" });
+      break;
+    }
+    case "wrong-claim":
+      packet.spentResolution!.claim += "-other";
+      break;
+    case "missing-claim": {
+      const path = packet.spentResolution!.claim;
+      const bytes = await readFile(path, "utf8");
+      await rm(path);
+      restores.push(() => writeFile(path, bytes));
+      break;
+    }
+    case "wrong-author":
+      packet.spentResolution!.failedAuthor = randomUUID();
+      break;
+    case "wrong-seed":
+      packet.spentResolution!.seed = f.reviewed;
+      break;
+    case "wrong-main":
+      packet.spentResolution!.main = f.base;
+      break;
+    case "wrong-stop":
+      packet.spentResolution!.stopMarker = `loop-stop:${RUN}:5:1`;
+      break;
+    case "missing-stop-receipt":
+      await change(f.runState, "cycle-4-stop-1-complete", () => undefined);
+      break;
+    case "wrong-review":
+      packet.reviewId = randomUUID();
+      break;
+    case "nonfailed":
+      await change(f.failedDirectory, "author-terminal", (v) => ({ ...v, status: "passed" }));
+      break;
+    case "in-flight":
+      await change(f.failedDirectory, "author-terminal", () => undefined);
+      break;
+    case "source-nonpass":
+      await change(f.sourceDirectory, "author-terminal", (v) => ({ ...v, status: "failed" }));
+      break;
+    case "publication":
+    case "publication-intent":
+      await change(f.failedDirectory, fault, () => ({ head: f.seed }));
+      break;
+    case "wrong-run":
+      packet.run = "foreign-run";
+      break;
+    case "changed-original-ruling":
+      packet.authorityUrl += "1";
+      break;
+    case "missing-config":
+      await change(f.failedDirectory, "config", () => undefined);
+      break;
+    case "wrong-captured-k":
+      packet.spentResolution!.resolutions[0]!.path = "other.txt";
+      break;
+  }
+  await expect(
+    f.compose({ ...f.loop, integrationContinuation: packet }, f.later, observe),
+  ).rejects.toThrow();
+  const reservation = resolve(f.old.stateDirectory, "spent-resolution.json");
+  await expect(readFile(reservation)).rejects.toMatchObject({ code: "ENOENT" });
+  for (const restore of restores) await restore();
+  // A matched positive control differs only in the input under test.
+  const q = await f.compose();
+  expect(q.items[0]!.base).toBe(f.seed);
+  expect(q.items[0]!.source.authorFailures).toMatchObject({ count: 2 });
+  expect(q.initialHistory).toEqual(f.later);
+  const reserved = JSON.parse(await readFile(reservation, "utf8"));
+  expect(reserved.authority).toMatchObject({
+    author: "todd-skelton",
+    body: f.packet.spentResolution!.authorityBody,
+  });
+  expect(await f.compose()).toEqual(q);
+  expect(f.observations()).toBe(1);
+  await f.unchanged();
+});
+
+it("resumes the reservation before setup without reprobe or another spend", async () => {
+  const f = await spentFixture(true);
+  const q = await f.compose();
+  const item = q.items[0]!;
+  expect(item.integrationContinuation!.spent!.launchLimit).toBe(2);
+  expect(item.source.inheritedWorkerRetry).toBe(true);
+  expect(item.source.author.rung).toBe(2);
+  await rm(resolve(f.old.stateDirectory, "spent-resolution"), { recursive: true });
+  expect(await f.compose()).toEqual(q);
+  for (const field of ["authorityUrl", "authorityBody", "stopMarker"] as const) {
+    const packet = structuredClone(f.packet);
+    packet.spentResolution![field] += "1";
+    await expect(f.compose({ ...f.loop, integrationContinuation: packet })).rejects.toThrow();
+  }
+  expect(f.observations()).toBe(1);
+  await f.unchanged();
+});
+
+it("carries later completed cycles even when composition is called without supervisor history", async () => {
+  const f = await spentFixture();
+  const later = [
+    ...f.later,
+    participant(9, "ISS-107:1", "source", "author", "passed"),
+    participant(10, "ISS-107:1", "source", "reviewer", "passed"),
+  ];
+  await f.put(f.runState, "cycle-5-complete", {
+    selection: { cycle: 5, key: "ISS-107", number: 364, base: f.main },
+    history: later,
+  });
+  const q = await f.compose({ ...f.loop, integrationContinuation: f.packet }, []);
+  expect(q.initialHistory).toEqual(later);
+  expect(q.nativeLaunchCeiling).toBe(f.loop.nativeLaunchCeiling);
+  expect(await f.compose()).toEqual(q);
+  await f.unchanged();
+});
+
+it("resumes saved spent selection, reconciles a lost stop response, and advances unrelated work", async () => {
+  const f = await spentFixture();
+  const loop = { ...f.loop, integrationContinuation: f.packet };
+  let ready = true;
+  const comments: string[] = [];
+  let lost = false;
+  let removeReady = 0;
+  const host: SupervisionAdapter = {
+    currentMain: async () => f.main,
+    issue: async (_config, number) => ({
+      state: "OPEN",
+      key: number === NUMBER ? KEY : "ISS-107",
+      labels: ready ? ["ready"] : [],
+      comments,
+    }),
+    removeReady: async () => {
+      ready = false;
+      removeReady++;
+    },
+    close: async () => {
+      throw new Error("closing is forbidden");
+    },
+    comment: async (_config, _number, body) => {
+      comments.push(body);
+      if (!lost) {
+        lost = true;
+        throw new Error("lost stop response");
+      }
+    },
+  };
+  const policy = {
+    ...f.policy,
+    park: async () => {
+      if (ready) await host.removeReady(loop, NUMBER);
+      return "explicit planning unpark";
+    },
+    selectCandidates: () =>
+      ready ? [{ key: KEY, number: NUMBER }] : [{ key: "ISS-107", number: 364 }],
+  };
+  const cycle = await nextCycle(loop, f.repository, host, policy);
+  expect(cycle!.selection.cycle).toBe(5);
+  expect(cycle!.initialHistory).toEqual(f.later);
+  await persistCycle(loop, cycle!);
+  expect(await nextCycle(loop, f.repository, host, policy)).toEqual(cycle);
+  const q = await f.compose();
+  await expect(stopCycle(loop, cycle!, "continuation-failed", 2, host, policy)).rejects.toThrow(
+    "lost stop response",
+  );
+  await reconcilePendingStop(loop, cycle!, host, policy);
+  expect(comments).toHaveLength(1);
+  expect(removeReady).toBe(1);
+  const next = await nextCycle(loop, f.repository, host, policy);
+  expect(next!.selection).toMatchObject({ cycle: 6, key: "ISS-107" });
+  const other = await queueConfigFromLoop(
+    loop,
+    f.repository,
+    { key: next!.selection.key, number: next!.selection.number, base: next!.selection.base },
+    policy,
+    next!.initialHistory,
+  );
+  expect(other.items[0]!.integrationContinuation).toBeUndefined();
+  expect(await f.compose()).toEqual(q);
+});
 
 it("composes one integration item from the retained reviewed attempt and claims it once", async () => {
   const f = await exhaustedFixture();
@@ -641,32 +1019,43 @@ it("re-enters the parked issue only through explicit unpark, skipping completed 
   await f.unchanged();
 });
 
-it("carries the integration's launches into an externally closed cycle completion", async () => {
-  const f = await exhaustedFixture();
-  const loop = { ...f.loop, integrationContinuation: f.packet };
-  const q = await f.compose();
-  const launched = [
-    ...f.later,
-    participant(8, "ISS-104:2", "refresh", "author", "passed"),
-    participant(9, "ISS-104:2", "refresh", "reviewer", "passed"),
-  ];
-  for (const p of launched) await f.put(q.stateDirectory, `participant-${p.ordinal}-terminal`, p);
-  const selection = { cycle: 4, key: KEY, number: NUMBER, base: f.main };
-  await f.put(f.runState, "cycle-4-selected", selection);
-  const host: SupervisionAdapter = {
-    currentMain: async () => f.main,
-    issue: async () => ({ state: "CLOSED", key: KEY, labels: [], comments: [] }),
-    removeReady: async () => {},
-    close: async () => {},
-    comment: async () => {},
-  };
-  expect(await nextCycle(loop, f.repository, host, f.policy)).toBeUndefined();
-  expect(JSON.parse(await readFile(resolve(f.runState, "cycle-4-complete.json"), "utf8"))).toEqual({
-    selection,
-    history: launched,
-  });
-  await f.unchanged();
-});
+it.each(["ordinary", "spent", "removed"])(
+  "carries integration launches into external closure: %s",
+  async (mode) => {
+    const spent = mode !== "ordinary";
+    const f = spent ? await spentFixture() : await exhaustedFixture();
+    const loop = mode === "removed" ? f.loop : { ...f.loop, integrationContinuation: f.packet };
+    const q = await f.compose();
+    const launched = [
+      ...f.later,
+      participant(f.later.length + 1, "ISS-104:2", "refresh", "author", "passed"),
+      participant(f.later.length + 2, "ISS-104:2", "refresh", "reviewer", "passed"),
+    ];
+    for (const p of launched) await f.put(q.stateDirectory, `participant-${p.ordinal}-terminal`, p);
+    const cycle = spent ? 5 : 4;
+    const selection = { cycle, key: KEY, number: NUMBER, base: f.main };
+    await f.put(f.runState, `cycle-${cycle}-selected`, selection);
+    const host: SupervisionAdapter = {
+      currentMain: async () => f.main,
+      issue: async () => ({ state: "CLOSED", key: KEY, labels: [], comments: [] }),
+      removeReady: async () => {},
+      close: async () => {},
+      comment: async () => {},
+    };
+    expect(await nextCycle(loop, f.repository, host, f.policy)).toBeUndefined();
+    expect(
+      JSON.parse(await readFile(resolve(f.runState, `cycle-${cycle}-complete.json`), "utf8")),
+    ).toEqual({
+      selection,
+      history: launched,
+    });
+    expect(await nextCycle(loop, f.repository, host, f.policy)).toBeUndefined();
+    await expect(readFile(resolve(q.stateDirectory, "attempt.json"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    await f.unchanged();
+  },
+);
 
 type Mode =
   | "pass"
@@ -685,9 +1074,33 @@ type Mode =
   | "no-change"
   | "lost-commit"
   | "overlap-inside"
-  | "overlap-outside";
+  | "overlap-outside"
+  | "unruled-u"
+  | "unchanged-u"
+  | "outside-hunk"
+  | "outside-u"
+  | "retry-moved-main"
+  | "spent-moved-main"
+  | "capture-failure"
+  | "review-stale"
+  | "after-mirror-fail"
+  | "host-gate-fail"
+  | "binary-u"
+  | "delete-u"
+  | "mode-u"
+  | "rename-u"
+  | "added-path"
+  | "lost-setup"
+  | "lost-launch"
+  | "lost-terminal"
+  | "gate-interruption"
+  | "crlf-dead-retry"
+  | "dead-retry-fail"
+  | "dead-retry-review-fail"
+  | "review-interruption"
+  | "gates-moved-main";
 
-it.each<Mode>([
+const integrationModes: Mode[] = [
   "pass",
   "clean",
   "dead-retry",
@@ -705,7 +1118,44 @@ it.each<Mode>([
   "lost-commit",
   "overlap-inside",
   "overlap-outside",
-])("runs the exhausted reviewed integration through native delivery: %s", async (mode) => {
+];
+it.each([
+  ...integrationModes.map((mode) => ({ mode, spent: false })),
+  ...integrationModes
+    .filter(
+      (mode) =>
+        !["clean", "outside-path", "unsupported", "overlap-inside", "overlap-outside"].includes(
+          mode,
+        ),
+    )
+    .concat([
+      "unruled-u",
+      "unchanged-u",
+      "outside-hunk",
+      "outside-u",
+      "retry-moved-main",
+      "spent-moved-main",
+      "capture-failure",
+      "review-stale",
+      "after-mirror-fail",
+      "host-gate-fail",
+      "binary-u",
+      "delete-u",
+      "mode-u",
+      "rename-u",
+      "added-path",
+      "lost-setup",
+      "lost-launch",
+      "lost-terminal",
+      "gate-interruption",
+      "crlf-dead-retry",
+      "dead-retry-fail",
+      "dead-retry-review-fail",
+      "review-interruption",
+      "gates-moved-main",
+    ])
+    .map((mode) => ({ mode, spent: true })),
+])("runs native integration delivery: $mode, spent=$spent", async ({ mode, spent }) => {
   const shape: Shape =
     mode === "clean"
       ? "clean"
@@ -715,8 +1165,15 @@ it.each<Mode>([
           ? mode
           : "conflict";
   // The pass mode runs on a CRLF checkout, as the hosted Windows gate does for every mode.
-  const autocrlf = mode === "pass";
-  const f = await exhaustedFixture(shape, mode === "spent-retry", autocrlf);
+  const autocrlf = mode === "pass" || mode === "crlf-dead-retry";
+  const f = spent
+    ? await spentFixture(mode === "spent-retry" || mode === "spent-moved-main", autocrlf)
+    : await exhaustedFixture(shape, mode === "spent-retry", autocrlf);
+  if (mode === "unruled-u") f.packet.spentResolution!.preservation = [];
+  if (mode === "outside-u") {
+    f.packet.spentResolution!.preservation[0]!.path = "feature.txt";
+    f.packet.spentResolution!.authorityBody += " feature.txt";
+  }
   if (mode === "overlap-inside") f.packet.allowedPaths.push("overlap.txt");
   const q = await f.compose();
   expect(await f.compose()).toEqual(q);
@@ -724,8 +1181,10 @@ it.each<Mode>([
   const launches: string[] = [];
   const effects: string[] = [];
   let observing = true;
+  let reviewerWaiting = mode === "review-interruption";
   let died = false;
   let lost = false;
+  let captureFailed = false;
   const setup = gitSetupAdapter({
     gitExecutable: f.gitExecutable,
     async install(_launcher, _args, cwd) {
@@ -734,9 +1193,23 @@ it.each<Mode>([
       return "succeeded";
     },
   });
+  const createWorktree = setup.createWorktree;
+  const worktreeCreations: string[] = [];
+  setup.createWorktree = async (config, role) => {
+    worktreeCreations.push(role);
+    await createWorktree(config, role);
+    if (mode === "lost-setup" && role === "source" && !lost) {
+      lost = true;
+      throw new Error("synthetic lost setup response");
+    }
+  };
   const native: Adapter = {
     async preflight() {},
     async git(tree, args) {
+      if (mode === "capture-failure" && args[0] === "ls-tree" && !captureFailed) {
+        captureFailed = true;
+        throw new Error("synthetic census acquisition failure");
+      }
       const result = await f.git(args, tree);
       // The candidate commit's response is lost once; the seed commit is not.
       if (
@@ -755,14 +1228,17 @@ it.each<Mode>([
       expect(config.stateDirectory.startsWith(item.source.stateDirectory)).toBe(true);
       expect(config.worktree).toBe(item.source.worktree);
       expect(config.pilotRevision).toBe(item.source.pilotRevision);
-      expect(prompt).toContain(f.packet.authorityUrl);
+      expect(prompt).toContain(f.packet.spentResolution?.authorityUrl ?? f.packet.authorityUrl);
       expect(prompt).toContain(f.sourceDirectory);
       if (role === "author") {
         // A dead launch advances the ISS-158 ladder like any unsuccessful author launch.
-        const rung = launches.filter((launch) => launch === "author").length === 2 ? 2 : 1;
+        const rung = spent || launches.filter((launch) => launch === "author").length === 2 ? 2 : 1;
         expect(config.author).toMatchObject({ ...SELF_ROUTING.author[rung], rung });
-        expect(prompt).toContain(`Allowed author paths: ${JSON.stringify(f.packet.allowedPaths)}`);
-        expect(prompt).toContain("Resolve only Git's marked conflicting hunks");
+        if (mode !== "unruled-u")
+          expect(prompt).toContain(
+            `Allowed author paths: ${JSON.stringify(item.source.correctionPaths)}`,
+          );
+        expect(prompt).toContain("Resolve only Git's marked conflict");
         if (mode !== "no-change") {
           // Git's checkout line endings outside the hunks are immutable text, so the
           // resolution keeps them; a core.autocrlf=true checkout has CRLF.
@@ -776,6 +1252,29 @@ it.each<Mode>([
         }
         if (mode === "escape")
           await writeFile(resolve(config.worktree, "feature.txt"), "escaped\n");
+        if (mode === "outside-hunk")
+          await writeFile(
+            resolve(config.worktree, "docs/loop.md"),
+            "# Changed outside\n\nReviewed feature and integration main.\n",
+          );
+        if (spent && mode !== "unchanged-u") {
+          expect(prompt).toContain("Seed-bound conflict census");
+          await writeFile(resolve(config.worktree, "overlap.txt"), "preserve reviewed and main\n");
+        }
+        if (mode === "binary-u")
+          await writeFile(resolve(config.worktree, "overlap.txt"), "binary\0data");
+        if (mode === "delete-u") await rm(resolve(config.worktree, "overlap.txt"));
+        if (mode === "mode-u") {
+          await f.git(["config", "core.filemode", "false"], config.worktree);
+          await f.git(["update-index", "--chmod=+x", "overlap.txt"], config.worktree);
+        }
+        if (mode === "rename-u")
+          await rename(
+            resolve(config.worktree, "overlap.txt"),
+            resolve(config.worktree, "renamed.txt"),
+          );
+        if (mode === "added-path")
+          await writeFile(resolve(config.worktree, "added.txt"), "unrelated\n");
         if (mode.startsWith("overlap")) {
           expect(prompt).toContain("U is evidence, never edit authority");
           await writeFile(resolve(config.worktree, "overlap.txt"), "preserve reviewed and main\n");
@@ -787,24 +1286,41 @@ it.each<Mode>([
       }
       const trace = resolve(config.stateDirectory, `${role}-${randomUUID()}.jsonl`);
       await writeFile(trace, "synthetic worker execution\n");
+      if (mode === "lost-launch") throw new Error("synthetic lost launch response");
       return { id: randomUUID(), pid: launches.length, trace, launchedAt: 1 };
     },
     async observe(role, config, attempt) {
       if (observing) return { status: "running", id: attempt.id };
+      if (role === "reviewer" && reviewerWaiting) return { status: "running", id: attempt.id };
+      if (mode === "lost-terminal" && role === "author" && !lost) {
+        lost = true;
+        throw new Error("synthetic interrupted terminal observation");
+      }
       if (role === "author") {
-        if ((mode === "dead-retry" || mode === "spent-retry") && !died) {
+        if (
+          [
+            "dead-retry",
+            "spent-retry",
+            "retry-moved-main",
+            "crlf-dead-retry",
+            "dead-retry-fail",
+            "dead-retry-review-fail",
+          ].includes(mode) &&
+          !died
+        ) {
           died = true;
           return { status: "dead", id: attempt.id, summary: "process vanished" };
         }
         return {
-          status: mode === "author-fail" ? "failed" : "passed",
+          status: ["author-fail", "dead-retry-fail"].includes(mode) ? "failed" : "passed",
           id: attempt.id,
           head: config.base,
           summary: mode === "author-fail" ? "needs broader changes" : "",
         };
       }
-      const head = await f.git(["rev-parse", "HEAD"], config.worktree);
-      const fail = mode === "review-fail";
+      const head =
+        mode === "review-stale" ? f.reviewed : await f.git(["rev-parse", "HEAD"], config.worktree);
+      const fail = mode === "review-fail" || mode === "dead-retry-review-fail";
       return {
         status: fail ? "failed" : "passed",
         id: attempt.id,
@@ -831,7 +1347,18 @@ it.each<Mode>([
     (await f.git(["status", "--porcelain"], config.worktree)) === "";
   delivery.runGate = async (config, name, head) => {
     effects.push(`gate:${name}:${head}`);
-    if (mode === "gate-fail" && name === "test")
+    if (
+      ((mode === "gate-interruption" && name === "test") ||
+        (mode === "gates-moved-main" && name === "board")) &&
+      !lost
+    ) {
+      lost = true;
+      throw new Error("synthetic interrupted gate");
+    }
+    if (
+      (["gate-fail", "host-gate-fail"].includes(mode) && name === "test") ||
+      (mode === "after-mirror-fail" && name === "board")
+    )
       return {
         status: "failed",
         output: "attributed assertion",
@@ -846,7 +1373,7 @@ it.each<Mode>([
     return "passed";
   };
   delivery.attributeGate = async (config, _name, _evidence, main) => ({
-    cause: "candidate",
+    cause: mode === "host-gate-fail" ? "host" : "candidate",
     main,
     log: resolve(config.stateDirectory, "base-control.log"),
   });
@@ -911,8 +1438,8 @@ it.each<Mode>([
     cleaned = true;
     effects.push("cleanup");
   };
-  const adapter = () => {
-    const bounded = repositoryQueueAdapter(q, f.repository, {
+  const adapter = (current = q) => {
+    const bounded = repositoryQueueAdapter(current, f.repository, {
       native,
       setup,
       delivery,
@@ -927,7 +1454,10 @@ it.each<Mode>([
       deliveryPolicy: {
         async plan(config) {
           return {
-            gates: { beforeMirror: ["typecheck", "format:check", "test"], afterMirror: [] },
+            gates: {
+              beforeMirror: ["typecheck", "format:check", "test"],
+              afterMirror: spent ? ["board"] : [],
+            },
             drafts: [
               { key: KEY, issue: NUMBER, title: "fixture", body: "fixture", attributes: {} },
             ],
@@ -957,12 +1487,41 @@ it.each<Mode>([
       },
     };
   };
-  const run = () => queueStep(q, adapter());
+  const run = (current = q) => queueStep(current, adapter(current));
   const integrationAttempt = () =>
     readFile(resolve(q.stateDirectory, "attempt.json"), "utf8").then(JSON.parse);
   const refresh = () =>
     readFile(resolve(item.source.stateDirectory, "native-refresh.json"), "utf8").then(JSON.parse);
-  const zeroLaunch = mode === "outside-path" || mode === "unsupported";
+  const terminalReselection = async () => {
+    const path = resolve(q.stateDirectory, "attempt.json");
+    const before = await readFile(path, "utf8");
+    const terminal = JSON.parse(before);
+    const later = [
+      ...terminal.history,
+      participant(terminal.history.length + 1, "ISS-107:1", "source", "author", "passed"),
+      participant(terminal.history.length + 2, "ISS-107:1", "source", "reviewer", "passed"),
+    ];
+    await f.put(f.runState, "cycle-5-complete", {
+      selection: { cycle: 5, key: "ISS-107", number: 364, base: f.main },
+      history: later,
+    });
+    await f.advanceMain("main.txt", "later unrelated main\n");
+    const resumed = await f.compose({ ...f.loop, integrationContinuation: f.packet }, later);
+    expect(resumed.initialHistory).toEqual(later);
+    const commands = [...effects];
+    const workers = [...launches];
+    if (terminal.phase === "complete")
+      await expect(run(resumed)).resolves.toMatchObject({
+        status: "complete",
+        participants: later.length,
+      });
+    else await expect(run(resumed)).rejects.toThrow("continuation-failed");
+    expect(await adapter(resumed).history()).toEqual(later);
+    expect(await readFile(path, "utf8")).toBe(before);
+    expect(effects).toEqual(commands);
+    expect(launches).toEqual(workers);
+  };
+  const zeroLaunch = mode === "outside-path" || mode === "unsupported" || mode === "outside-u";
   if (zeroLaunch) {
     for (let replay = 0; replay < 2; replay++)
       await expect(run()).rejects.toThrow("continuation-failed");
@@ -975,26 +1534,46 @@ it.each<Mode>([
     }
     expect(await integrationAttempt()).toMatchObject({
       phase: "failed",
-      head: f.reviewed,
+      head: item.base,
       reviewId: f.reviewId,
       history: f.later,
     });
     await f.unchanged();
     return;
   }
+  if (mode === "capture-failure") {
+    await expect(run()).rejects.toThrow("synthetic census acquisition failure");
+    expect(launches).toEqual([]);
+    expect((await refresh()).conflict.census).toBeUndefined();
+  }
+  if (mode === "lost-launch") {
+    await expect(run()).rejects.toThrow("synthetic lost launch response");
+    const partial = await readFile(resolve(item.source.worktree, "docs/loop.md"), "utf8");
+    for (let replay = 0; replay < 2; replay++)
+      await expect(run()).rejects.toThrow("author-launch-identity-unknown-reconcile");
+    expect(launches).toEqual(["author"]);
+    expect(await readFile(resolve(item.source.worktree, "docs/loop.md"), "utf8")).toBe(partial);
+    expect((await integrationAttempt()).phase).toBe("delivery");
+    await f.unchanged();
+    return;
+  }
   // Setup, then the first worker launch, then a running observation on replay.
   for (let replay = 0; replay < 2; replay++)
-    await expect(run()).resolves.toMatchObject({
+    await expect(run(await f.compose())).resolves.toMatchObject({
       status: mode === "clean" ? "observing-reviewer" : "observing-author",
     });
   expect(launches).toEqual([mode === "clean" ? "reviewer" : "author"]);
+  if (mode === "lost-setup") {
+    expect(lost).toBe(true);
+    expect(worktreeCreations).toEqual(["pilot", "source", "review"]);
+  }
   expect(await integrationAttempt()).toMatchObject({
     phase: "delivery",
     reviewId: f.reviewId,
     acceptedStage: "source",
     stateDirectory: item.source.stateDirectory,
     candidateAttempt: 2,
-    authorFailures: { count: 1 },
+    authorFailures: { count: spent ? 2 : 1 },
   });
   const saved = await refresh();
   expect(saved).toMatchObject({
@@ -1007,13 +1586,22 @@ it.each<Mode>([
     // Captured before any worker: the current main and every unmerged file with its hunks.
     expect(Object.keys(saved.conflict.files)).toEqual(["docs/loop.md"]);
     expect(saved.conflict.files["docs/loop.md"]).toContain("<<<<<<<");
-    expect(saved.conflict.census.u).toEqual(mode.startsWith("overlap") ? ["overlap.txt"] : []);
+    expect(saved.conflict.census.u).toEqual(
+      spent || mode.startsWith("overlap") ? ["overlap.txt"] : [],
+    );
     expect(
       await f.git(["rev-list", "--parents", "-n", "1", saved.conflict.seed], item.source.worktree),
     ).toBe(`${saved.conflict.seed} ${f.reviewed} ${f.main}`);
   }
   expect(await f.git(["rev-parse", "HEAD"], f.repository)).toBe(f.main);
   observing = false;
+  if (mode === "review-interruption") {
+    for (let replay = 0; replay < 2; replay++)
+      await expect(run(await f.compose())).resolves.toMatchObject({ status: "observing-reviewer" });
+    expect(launches).toEqual(["author", "reviewer"]);
+    expect(effects).toEqual([]);
+    reviewerWaiting = false;
+  }
   const workFailure: Record<string, string | undefined> = {
     "spent-retry": "continuation-failed",
     "author-fail": "continuation-failed",
@@ -1025,20 +1613,57 @@ it.each<Mode>([
     "hosted-fail": "continuation-failed",
     "overlap-inside": "continuation-failed",
     "overlap-outside": "continuation-failed",
+    "unruled-u": "continuation-failed",
+    "outside-hunk": "continuation-failed",
+    "retry-moved-main": "continuation-failed",
+    "spent-moved-main": "continuation-failed",
+    "review-stale": "continuation-failed",
+    "after-mirror-fail": "continuation-failed",
+    "binary-u": "continuation-failed",
+    "delete-u": "continuation-failed",
+    "mode-u": "continuation-failed",
+    "rename-u": "continuation-failed",
+    "added-path": "continuation-failed",
+    "dead-retry-fail": "continuation-failed",
+    "dead-retry-review-fail": "continuation-failed",
   };
   // Main moving after the resolution review is an observation stop; the next replay
   // refreshes onto that main, and a second conflict is exhausted without renewal.
-  if (mode === "second-conflict" || mode === "moved-main") {
+  if (["second-conflict", "moved-main", "retry-moved-main", "spent-moved-main"].includes(mode)) {
     await f.advanceMain(
       mode === "second-conflict" ? "docs/loop.md" : "main.txt",
       "# The loop\n\nMain moved again.\n",
     );
     await expect(run()).rejects.toThrow("current-main-moved");
-    expect(launches).toEqual(["author", "reviewer"]);
+    expect(launches).toEqual(
+      mode === "retry-moved-main" ? ["author", "author", "reviewer"] : ["author", "reviewer"],
+    );
   }
   if (mode === "lost-commit") {
     await expect(run()).rejects.toThrow("lost commit response");
     expect(launches).toEqual(["author"]);
+  }
+  if (mode === "lost-terminal") {
+    await expect(run()).rejects.toThrow("synthetic interrupted terminal observation");
+    expect(launches).toEqual(["author"]);
+  }
+  if (["gate-interruption", "gates-moved-main"].includes(mode)) {
+    await expect(run()).rejects.toThrow("delivery-state-unknown");
+    expect(launches).toEqual(["author", "reviewer"]);
+    expect(effects).not.toContain("publish");
+    if (mode === "gates-moved-main") {
+      expect(effects.filter((e) => e.startsWith("gate:"))).toHaveLength(4);
+      await f.advanceMain("main.txt", "main moved after the local gates\n");
+    }
+  }
+  if (mode === "host-gate-fail") {
+    for (let replay = 0; replay < 2; replay++)
+      await expect(run()).rejects.toThrow("gate-host-failed:test");
+    expect((await integrationAttempt()).phase).toBe("delivery");
+    expect(launches).toEqual(["author", "reviewer"]);
+    expect(effects).not.toContain("publish");
+    await f.unchanged();
+    return;
   }
   if (workFailure[mode]) {
     if (mode.startsWith("overlap"))
@@ -1062,17 +1687,41 @@ it.each<Mode>([
     for (let replay = 0; replay < 2; replay++)
       await expect(run()).rejects.toThrow(workFailure[mode]);
     expect(launches).toEqual(
-      mode === "spent-retry"
-        ? ["author"]
-        : ["author-fail", "no-change", "escape", "overlap-inside", "overlap-outside"].includes(mode)
-          ? ["author"]
-          : ["author", "reviewer"],
+      ["retry-moved-main", "dead-retry-review-fail"].includes(mode)
+        ? ["author", "author", "reviewer"]
+        : mode === "dead-retry-fail"
+          ? ["author", "author"]
+          : mode === "review-stale"
+            ? ["author", "reviewer", "reviewer"]
+            : mode === "spent-retry"
+              ? ["author"]
+              : [
+                    "author-fail",
+                    "no-change",
+                    "escape",
+                    "overlap-inside",
+                    "overlap-outside",
+                    "unruled-u",
+                    "outside-hunk",
+                    "binary-u",
+                    "delete-u",
+                    "mode-u",
+                    "rename-u",
+                    "added-path",
+                  ].includes(mode)
+                ? ["author"]
+                : ["author", "reviewer"],
     );
     expect(effects.filter((e) => ["publish", "merge", "deployment"].includes(e))).toEqual(
       mode === "hosted-fail" ? ["publish"] : [],
     );
     const failed = await integrationAttempt();
     expect(failed).toMatchObject({ phase: "failed", candidateAttempt: 2, acceptedStage: null });
+    if (["dead-retry-fail", "dead-retry-review-fail"].includes(mode)) {
+      expect(failed.retries).toBe(1);
+      expect(failed.authorFailures.count).toBe(4);
+      expect(new Set(failed.authorFailures.ids).size).toBe(4);
+    }
     expect(failed.history.length).toBe(f.later.length + launches.length);
     expect(failed.history.slice(0, f.later.length)).toEqual(f.later);
     expect(
@@ -1088,7 +1737,7 @@ it.each<Mode>([
       expect(twice.head).toBeUndefined();
       expect(twice.conflict).toBeUndefined();
     }
-    if (mode === "gate-fail") {
+    if (mode === "gate-fail" || mode === "after-mirror-fail") {
       const stop = JSON.parse(
         await readFile(resolve(item.source.stateDirectory, "gate-stop.json"), "utf8"),
       );
@@ -1097,6 +1746,7 @@ it.each<Mode>([
     // The parked integration cannot be replayed into another author or attempt.
     expect(await f.compose()).toEqual(q);
     await expect(f.compose(f.loop)).rejects.toThrow("integration-continuation-required");
+    if (spent && ["author-fail", "dead-retry-fail"].includes(mode)) await terminalReselection();
     await f.unchanged();
     return;
   }
@@ -1122,13 +1772,19 @@ it.each<Mode>([
     effects
       .filter((e) => e.startsWith("gate:") && e.endsWith(publishedHead))
       .map((e) => e.split(":").slice(1, -1).join(":")),
-  ).toEqual(["typecheck", "format:check", "test"]);
+  ).toEqual([
+    "typecheck",
+    "format:check",
+    "test",
+    ...(mode === "gate-interruption" ? ["test"] : []),
+    ...(spent ? ["board"] : []),
+  ]);
   expect(launches).toEqual(
     mode === "clean"
       ? ["reviewer"]
-      : mode === "dead-retry"
+      : ["dead-retry", "crlf-dead-retry"].includes(mode)
         ? ["author", "author", "reviewer"]
-        : mode === "moved-main"
+        : ["moved-main", "gates-moved-main"].includes(mode)
           ? ["author", "reviewer", "reviewer"]
           : ["author", "reviewer"],
   );
@@ -1148,5 +1804,6 @@ it.each<Mode>([
       "# The loop\n\nReviewed feature and integration main.",
     );
   expect(await f.compose()).toEqual(q);
+  if (spent && mode === "pass") await terminalReselection();
   await f.unchanged();
 });

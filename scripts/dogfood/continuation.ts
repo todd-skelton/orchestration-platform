@@ -1,4 +1,6 @@
 import { createHash } from "node:crypto";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
 import { mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import { isAbsolute, resolve, win32 } from "node:path";
 // @ts-expect-error Node 24 executes this private TypeScript composition directly.
@@ -182,6 +184,37 @@ export interface IntegrationContinuation {
   reviewId: string;
   authorityUrl: string;
   allowedPaths: string[];
+  spentResolution?: {
+    claim: string;
+    stopMarker: string;
+    failedAuthor: string;
+    main: string;
+    seed: string;
+    authorityUrl: string;
+    authorityBody: string;
+    resolutions: { path: string; semantics: string }[];
+    preservation: { path: string; semantics: string }[];
+  };
+}
+
+// The host interprets the ruling; URL syntax alone supplies no authority. Capture the
+// actual comment at admission, before reserving anything, and retain it on replay.
+export async function observeIntegrationAuthority(url: string) {
+  const match = /^https:\/\/github\.com\/([^/]+\/[^/]+)\/issues\/\d+#issuecomment-(\d+)$/.exec(
+    url,
+  )!;
+  const { stdout } = await promisify(execFile)("gh", [
+    "api",
+    `repos/${match[1]}/issues/comments/${match[2]}`,
+  ]);
+  const comment = JSON.parse(stdout);
+  return {
+    id: String(comment.id),
+    url: comment.html_url,
+    author: comment.user?.login,
+    body: comment.body,
+    capturedAt: new Date().toISOString(),
+  };
 }
 export function validateIntegrationContinuation(
   value: unknown,
@@ -190,7 +223,7 @@ export function validateIntegrationContinuation(
   requireThat(
     exact(
       value,
-      "schemaVersion repository issueKey issueUrl run attemptDirectory absoluteAttempt stopMarker candidateHead reviewId authorityUrl allowedPaths",
+      `schemaVersion repository issueKey issueUrl run attemptDirectory absoluteAttempt stopMarker candidateHead reviewId authorityUrl allowedPaths${value && typeof value === "object" && Object.hasOwn(value, "spentResolution") ? " spentResolution" : ""}`,
     ),
     reason,
   );
@@ -220,6 +253,49 @@ export function validateIntegrationContinuation(
   );
   try {
     validateCorrectionPaths(value.allowedPaths);
+    if (value.spentResolution !== undefined) {
+      const spent = value.spentResolution;
+      requireThat(
+        exact(
+          spent,
+          "claim stopMarker failedAuthor main seed authorityUrl authorityBody resolutions preservation",
+        ),
+        reason,
+      );
+      requireThat(
+        absolute(spent.claim) &&
+          sha(spent.main) &&
+          sha(spent.seed) &&
+          typeof spent.failedAuthor === "string" &&
+          /^[A-Za-z0-9._:-]{1,128}$/.test(spent.failedAuthor) &&
+          typeof spent.stopMarker === "string" &&
+          /^loop-stop:[\w.-]{1,64}:[1-9]\d*:[1-9]\d*$/.test(spent.stopMarker) &&
+          spent.stopMarker.split(":")[1] === value.run &&
+          spent.stopMarker !== value.stopMarker &&
+          typeof spent.authorityUrl === "string" &&
+          /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/issues\/[1-9]\d*#issuecomment-[1-9]\d*$/.test(
+            spent.authorityUrl,
+          ) &&
+          spent.authorityUrl !== value.authorityUrl &&
+          text(spent.authorityBody),
+        reason,
+      );
+      for (const rules of [spent.resolutions, spent.preservation]) {
+        requireThat(
+          Array.isArray(rules) &&
+            rules.every((rule) => exact(rule, "path semantics") && text(rule.semantics)),
+          reason,
+        );
+        if (rules.length) validateCorrectionPaths(rules.map((rule) => rule.path));
+      }
+      requireThat(
+        spent.resolutions.length > 0 &&
+          !spent.preservation.some((rule: { path: string }) =>
+            spent.resolutions.some((k: { path: string }) => k.path === rule.path),
+          ),
+        reason,
+      );
+    }
   } catch {
     throw new QueueBlocked(reason);
   }

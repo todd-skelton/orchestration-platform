@@ -530,6 +530,15 @@ export async function nextCycle(
         // ISS-167: the integration's launches live beneath its retained attempt.
         if (config.integrationContinuation?.issueKey === selected.key)
           slugs.push(`${basename(config.integrationContinuation.attemptDirectory)}/integration`);
+        // A removed grant cannot refund launches when external closure supersedes
+        // admission. Discover the new lifecycle from its existing reservation only.
+        for (const slug of [...slugs]) {
+          const integration = `${slug}/integration`;
+          if (
+            (await optionalRecord(resolve(directory, integration), "spent-resolution")) !== ABSENT
+          )
+            slugs.push(integration, `${integration}/spent-resolution`);
+        }
         for (const slug of slugs) {
           const history = await readQueueHistory({
             stateDirectory: resolve(directory, slug),
