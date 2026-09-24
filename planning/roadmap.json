@@ -722,6 +722,12 @@
       "file": "planning/drafts/ISS-205.md",
       "milestone": "M1",
       "blockedBy": []
+    },
+    {
+      "key": "ISS-206",
+      "file": "planning/drafts/ISS-206.md",
+      "milestone": "M1",
+      "blockedBy": []
     }
   ]
 }
