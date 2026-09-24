@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, open, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, open, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
@@ -30,7 +30,8 @@ const mergeCommit = "c".repeat(40);
 const revision = "d".repeat(40);
 
 async function fixture(localBranch = true, retained: "source" | "refresh" | "recovery" = "source") {
-  const root = await mkdtemp(resolve(tmpdir(), "retained-post-merge-"));
+  // macOS temp paths can be aliases; delivery requires canonical workspace paths.
+  const root = await realpath(await mkdtemp(resolve(tmpdir(), "retained-post-merge-")));
   roots.push(root);
   const run = "synthetic-iss184";
   const stateRoot = resolve(root, "runtime");
