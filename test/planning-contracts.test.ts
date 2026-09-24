@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { copyFile, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { copyFile, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
@@ -106,7 +106,8 @@ describe("planning contract", () => {
     expect(() => validatePlanningSnapshot(snapshot)).toThrow(diagnostic);
 
     // Run the actual CLI against an otherwise valid, isolated planning tree.
-    const root = await mkdtemp(resolve(tmpdir(), "planning-criteria-"));
+    // Match Node's resolved entry path even when macOS tmpdir() uses a /var alias.
+    const root = await realpath(await mkdtemp(resolve(tmpdir(), "planning-criteria-")));
     try {
       await mkdir(resolve(root, "planning/drafts"), { recursive: true });
       await mkdir(resolve(root, "scripts/planning"), { recursive: true });
