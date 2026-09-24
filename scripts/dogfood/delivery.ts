@@ -864,11 +864,11 @@ export async function hostedFailureEvidence(
   const failed = checks.filter((check) => ["fail", "cancel"].includes(check.bucket));
   demand(failed.length > 0, "hosted-failure-evidence-unavailable");
   const logs: string[] = [];
-  const runs = new Set<string>();
+  const fetched = new Set<string>();
   for (const check of failed) {
-    const run = check.link.split("/job/")[0]!;
-    if (runs.has(run)) continue;
-    runs.add(run);
+    const target = check.bucket === "cancel" ? check.link : check.link.split("/job/")[0]!;
+    if (fetched.has(target)) continue;
+    fetched.add(target);
     demand(adapter.failedCheckLog, `hosted-check-log-unavailable:${check.name}`);
     const log = await adapter.failedCheckLog(config, check, publication);
     if (log === null) return null;
