@@ -52,7 +52,11 @@ vi.mock("node:child_process", async (original) => {
   return { ...actual, execFile: injected };
 });
 
-async function deferredReads(batch: "identity" | "validation" | "worktree", aliasRoot = false) {
+async function deferredReads(
+  batch: "identity" | "validation" | "worktree",
+  aliasRoot = false,
+  sameCheckout = false,
+) {
   let root = await mkdtemp(resolve(tmpdir(), "setup-deferred-"));
   roots.push(root);
   if (aliasRoot) {
@@ -79,10 +83,19 @@ async function deferredReads(batch: "identity" | "validation" | "worktree", alia
     baseBranch: "main",
     sourceBranch: "fixture/source",
   };
+  if (sameCheckout) {
+    config.controllerRoot = config.repositoryRoot;
+    config.controllerRevision = config.pilotRevision;
+  }
   await Promise.all(
-    [config.controllerRoot, config.repositoryRoot, config.stateDirectory, config.pilotWorktree].map(
-      (path) => mkdir(path),
-    ),
+    [
+      ...new Set([
+        config.controllerRoot,
+        config.repositoryRoot,
+        config.stateDirectory,
+        config.pilotWorktree,
+      ]),
+    ].map((path) => mkdir(path)),
   );
   const controllerRoot = await realpath(config.controllerRoot);
   const calls: string[][] = [];
@@ -122,7 +135,18 @@ async function deferredReads(batch: "identity" | "validation" | "worktree", alia
         finish: (value = stdout) => child.resolve({ stdout: value, stderr: "" }),
         fail: child.reject,
       });
-      if (children.length === (batch === "identity" ? 7 : batch === "validation" ? 4 : 3))
+      if (
+        children.length ===
+        (batch === "identity"
+          ? sameCheckout
+            ? 5
+            : 7
+          : batch === "validation"
+            ? sameCheckout
+              ? 3
+              : 4
+            : 3)
+      )
         started.resolve();
       try {
         return await child.promise;
@@ -295,6 +319,63 @@ it.each(["HEAD", "--show-current", "--porcelain"])(
   },
 );
 
+it.each(["--show-toplevel", "HEAD", "--porcelain"])(
+  "synthetic shared-checkout %s failure drains every owned sibling",
+  async (argument) => {
+    const validation = argument === "--porcelain";
+    const f = await deferredReads(validation ? "validation" : "identity", false, true);
+    try {
+      await f.waitForReads();
+      expect(f.pending()).toBe(validation ? 3 : 5);
+      const failed = f.children.filter((child) => child.args.includes(argument));
+      expect(failed).toHaveLength(1);
+      failed[0]!.fail(new Error("synthetic unavailable shared read"));
+      await drainedReactions();
+      expect(f.settled()).toBe(false);
+      expect(f.pending()).toBe(validation ? 2 : 4);
+      f.children.find((child) => child !== failed[0])!.fail(new Error("late sibling rejection"));
+      await drainedReactions();
+      expect(f.settled()).toBe(false);
+      await f.finish();
+      expect(await f.outcome).toMatchObject({ reason: "setup-state-unverified" });
+      expect(f.pending()).toBe(0);
+      expect(f.calls).toHaveLength(validation ? 10 : 7);
+      expect(await readdir(f.config.stateDirectory)).toEqual([]);
+    } finally {
+      await f.finish();
+    }
+  },
+);
+
+it.each(["dirty", "invalid"] as const)(
+  "synthetic shared-checkout validation preserves first %s rejection",
+  async (first) => {
+    const f = await deferredReads("validation", false, true);
+    try {
+      await f.waitForReads();
+      const dirty = f.children.find((child) => child.args[0] === "status")!;
+      const invalid = f.children.find((child) => child.args.includes(f.config.sourceBranch))!;
+      if (first === "dirty") dirty.finish(" M tracked.txt");
+      else invalid.fail(new Error("synthetic first invalid branch"));
+      await drainedReactions();
+      expect(f.settled()).toBe(false);
+      if (first === "dirty") invalid.fail(new Error("synthetic late invalid branch"));
+      else dirty.finish("?? untracked.txt");
+      await drainedReactions();
+      expect(f.pending()).toBe(1);
+      expect(f.settled()).toBe(false);
+      await f.finish();
+      expect(await f.outcome).toMatchObject({
+        reason: first === "dirty" ? "dirty-setup-repository" : "setup-state-unverified",
+      });
+      expect(f.pending()).toBe(0);
+      expect(f.calls).toHaveLength(10);
+    } finally {
+      await f.finish();
+    }
+  },
+);
+
 async function git(cwd: string, args: string[]) {
   return (
     await run("git", args, {
@@ -433,6 +514,344 @@ it("prepares three real portable Git worktrees and resumes without duplicate set
   ).rejects.toMatchObject({ reason: "dependency-state-drift:pilot" });
   expect(current.installs()).toBe(3);
 }, 30_000);
+
+// Synthetic Git replies with real canonical directories; no provider or Git
+// execution is claimed by these injected negative controls.
+async function executorControl(layout: "same" | "alias" | "distinct" | "linked") {
+  const root = await mkdtemp(resolve(tmpdir(), "synthetic-executor-"));
+  roots.push(root);
+  const repository = resolve(root, "repository");
+  const controller = layout === "same" ? repository : resolve(root, "controller");
+  await mkdir(repository);
+  if (layout === "alias") await symlink(repository, controller, "junction");
+  else if (controller !== repository) await mkdir(controller);
+  const state = resolve(root, "state");
+  await mkdir(state);
+  await mkdir(resolve(repository, ".git"));
+  const same = layout === "same" || layout === "alias";
+  if (!same && layout !== "linked") await mkdir(resolve(controller, ".git"));
+  const config: SetupConfig = {
+    controller: "synthetic-executor",
+    run: "synthetic-iss205",
+    issue: "ISS-205",
+    repository: "synthetic/repository",
+    controllerRoot: controller,
+    repositoryRoot: repository,
+    stateDirectory: state,
+    pilotWorktree: resolve(root, "pilot"),
+    sourceWorktree: resolve(root, "source"),
+    reviewWorktree: resolve(root, "review"),
+    controllerRevision: same ? "a".repeat(40) : "b".repeat(40),
+    pilotRevision: "a".repeat(40),
+    base: "c".repeat(40),
+    baseBranch: "main",
+    sourceBranch: "synthetic/iss205",
+  };
+  const canonicalController = await realpath(controller);
+  const canonicalRepository = await realpath(repository);
+  const heads = new Map([
+    [canonicalRepository, config.pilotRevision],
+    [canonicalController, config.controllerRevision],
+  ]);
+  const calls: { args: string[]; cwd: string }[] = [];
+  let override: ((args: string[], cwd: string) => string | undefined) | undefined;
+  controlledGit.execute = async (args, cwd) => {
+    calls.push({ args, cwd });
+    const changed = override?.(args, cwd);
+    let stdout = changed;
+    if (stdout === undefined) {
+      if (args.includes("--git-common-dir")) stdout = resolve(repository, ".git");
+      else if (args[0] === "worktree")
+        stdout =
+          `worktree ${repository}\0HEAD ${heads.get(canonicalRepository)}\0branch refs/heads/main\0\0` +
+          (layout === "linked"
+            ? `worktree ${controller}\0HEAD ${heads.get(canonicalController)}\0\0`
+            : "");
+      else if (args.includes("--show-toplevel")) stdout = cwd;
+      else if (args.includes("HEAD")) stdout = heads.get(cwd)!;
+      else if (args.includes("--verify")) stdout = args[2]!.split("^")[0]!;
+      else if (args[0] === "branch") stdout = "main";
+      else if (args[0] === "status" || args[0] === "check-ref-format") stdout = "";
+      else throw new Error(`unexpected synthetic Git: ${args.join(" ")}`);
+    }
+    return { stdout, stderr: "" };
+  };
+  const adapter = gitSetupAdapter({ gitExecutable: "deferred-setup-git" });
+  // Synthetic downstream effects permit a real setupStep saved-plan replay.
+  // Only assertExecutor performs Git reads in this fixture.
+  const present = new Set<string>();
+  const dependencies = new Set<string>();
+  const setup = {
+    ...adapter,
+    async observeWorktree(_config: SetupConfig, role: "pilot" | "source" | "review") {
+      return present.has(role)
+        ? {
+            state: "confirmed" as const,
+            head: role === "pilot" ? config.pilotRevision : config.base,
+            branch: role === "source" ? config.sourceBranch : null,
+          }
+        : { state: "absent" as const };
+    },
+    async createWorktree(_config: SetupConfig, role: string) {
+      present.add(role);
+    },
+    async observeDependencies(_config: SetupConfig, role: string) {
+      return dependencies.has(role) ? ("present" as const) : ("absent" as const);
+    },
+    async installDependencies(_config: SetupConfig, role: string) {
+      dependencies.add(role);
+      return "succeeded" as const;
+    },
+  };
+  return {
+    config,
+    adapter,
+    setup,
+    calls,
+    same,
+    heads,
+    controller: canonicalController,
+    repository: canonicalRepository,
+    override(value?: typeof override) {
+      override = value;
+    },
+  };
+}
+
+it.each(["same", "alias", "distinct", "linked"] as const)(
+  "synthetic %s checkout observes both identities on fresh setup and matched replay",
+  async (layout) => {
+    const f = await executorControl(layout);
+    for (const replay of [false, true]) {
+      const before = await retainedFiles(f.config.stateDirectory);
+      f.calls.length = 0;
+      expect(await setupStep(f.config, f.setup, f.config.controllerRoot)).toMatchObject({
+        status: "ready",
+      });
+      expect(f.calls).toHaveLength(f.same ? 10 : 13);
+      for (const argument of ["--show-toplevel", "HEAD", "--porcelain"]) {
+        const reads = f.calls.filter(({ args }) =>
+          argument === "--porcelain" ? args[0] === "status" : args.includes(argument),
+        );
+        expect(reads.map(({ cwd }) => cwd)).toEqual(
+          f.same ? [f.controller] : [f.controller, f.repository],
+        );
+      }
+      if (replay) expect(await retainedFiles(f.config.stateDirectory)).toEqual(before);
+    }
+  },
+);
+
+const executorFaults = [
+  "controller configured revision",
+  "controller HEAD",
+  "repository HEAD",
+  "controller top",
+  "repository top",
+  "repository branch",
+  "pilot object",
+  "base object",
+  "unavailable pilot object",
+  "unavailable base object",
+  "base branch format",
+  "source branch format",
+  ...(["controller", "repository"] as const).flatMap((identity) =>
+    ["tracked", "untracked", "unavailable top", "unavailable HEAD", "unavailable status"].map(
+      (fault) => `${identity} ${fault}`,
+    ),
+  ),
+];
+
+it.each(executorFaults)("synthetic independent executor refusal: %s", async (fault) => {
+  for (const layout of ["same", "distinct", "linked"] as const) {
+    for (const replay of [false, true]) {
+      const f = await executorControl(layout);
+      if (replay) await setupStep(f.config, f.setup, f.config.controllerRoot);
+      const before = await retainedFiles(f.config.stateDirectory);
+      const identity = fault.startsWith("controller") ? f.controller : f.repository;
+      const unavailable = fault.includes("unavailable");
+      const branchFormat = fault.endsWith("branch format");
+      const dirty = fault.endsWith("tracked");
+      if (fault === "controller configured revision") f.config.controllerRevision = "d".repeat(40);
+      f.override((args, cwd) => {
+        if (
+          branchFormat &&
+          args[0] === "check-ref-format" &&
+          args[2] === (fault.startsWith("base") ? f.config.baseBranch : f.config.sourceBranch)
+        )
+          throw new Error("synthetic branch-format rejection");
+        if (fault.endsWith("pilot object") && args.includes(`${f.config.pilotRevision}^{commit}`)) {
+          if (unavailable) throw new Error("synthetic unavailable pilot object");
+          return "d".repeat(40);
+        }
+        if (fault.endsWith("base object") && args.includes(`${f.config.base}^{commit}`)) {
+          if (unavailable) throw new Error("synthetic unavailable base object");
+          return "d".repeat(40);
+        }
+        if (fault === "repository branch" && args[0] === "branch") return "other";
+        if (cwd !== identity) return;
+        const target = fault.endsWith("top")
+          ? "--show-toplevel"
+          : fault.endsWith("HEAD")
+            ? "HEAD"
+            : "--porcelain";
+        if (target === "--porcelain" ? args[0] !== "status" : !args.includes(target)) return;
+        if (unavailable) throw new Error("synthetic unavailable observation");
+        if (dirty) return fault.endsWith("untracked") ? "?? untracked.txt" : " M tracked.txt";
+        if (fault.endsWith("top")) return f.config.stateDirectory;
+        if (fault.endsWith("HEAD")) return "d".repeat(40);
+      });
+      f.calls.length = 0;
+      const context = `${layout}, replay=${replay}, ${fault}`;
+      await expect(
+        setupStep(f.config, f.setup, f.config.controllerRoot),
+        context,
+      ).rejects.toMatchObject({
+        reason:
+          unavailable || branchFormat
+            ? "setup-state-unverified"
+            : dirty
+              ? "dirty-setup-repository"
+              : "setup-head-drift",
+      });
+      // Passing identity reads precede every dirty/format control. For every
+      // fault the whole intended batch runs; no earlier guard masks it.
+      expect(f.calls, context).toHaveLength(
+        dirty || branchFormat || fault.endsWith("status") ? (f.same ? 10 : 13) : f.same ? 7 : 9,
+      );
+      expect(await retainedFiles(f.config.stateDirectory), context).toEqual(before);
+    }
+  }
+});
+
+it.each(["controller", "repository"] as const)(
+  "real separate-repository %s tracked dirt is independently refused on fresh and saved setup",
+  async (identity) => {
+    for (const replay of [false, true]) {
+      const f = await fixture();
+      const controller = resolve(f.root, "independent controller repository");
+      await git(f.root, ["clone", "--quiet", f.repository, controller]);
+      await git(controller, ["checkout", "--detach", f.config.controllerRevision]);
+      f.config.controllerRoot = controller;
+      expect(await git(controller, ["rev-parse", "--git-common-dir"])).toBe(".git");
+      if (replay) await setupStep(f.config, f.adapter, controller);
+      else await f.adapter.assertExecutor(f.config, controller);
+      await writeFile(
+        resolve(identity === "controller" ? controller : f.repository, "fixture.txt"),
+        "synthetic tracked dirt\n",
+      );
+      const before = await retainedFiles(f.config.stateDirectory);
+      await expect(setupStep(f.config, f.adapter, controller)).rejects.toMatchObject({
+        reason: "dirty-setup-repository",
+      });
+      expect(await retainedFiles(f.config.stateDirectory)).toEqual(before);
+      expect(f.installs()).toBe(replay ? 3 : 0);
+    }
+  },
+);
+
+it.each(["controller", "repository", "executing"] as const)(
+  "synthetic unavailable %s canonical path cannot authorize setup",
+  async (identity) => {
+    const f = await executorControl("distinct");
+    const missing = resolve(f.config.stateDirectory, "missing");
+    if (identity === "controller") f.config.controllerRoot = missing;
+    if (identity === "repository") f.config.repositoryRoot = missing;
+    await expect(
+      f.adapter.assertExecutor(
+        f.config,
+        identity === "executing" ? missing : f.config.controllerRoot,
+      ),
+    ).rejects.toMatchObject({
+      reason: "setup-state-unverified",
+    });
+    expect(f.calls).toEqual([]);
+    expect(await readdir(f.config.stateDirectory)).toEqual([]);
+  },
+);
+
+it("synthetic executing checkout mismatch refuses before any Git observation", async () => {
+  const f = await executorControl("distinct");
+  await expect(setupStep(f.config, f.setup, f.repository)).rejects.toMatchObject({
+    reason: "controller-path-mismatch",
+  });
+  expect(f.calls).toEqual([]);
+  expect(await readdir(f.config.stateDirectory)).toEqual([]);
+});
+
+it.each(["registry HEAD", "registry branch", "checkout HEAD", "checkout branch"])(
+  "synthetic %s divergence cannot replace an independent real checkout observation",
+  async (fault) => {
+    const f = await fixture();
+    await setupStep(f.config, f.adapter, f.controller);
+    const source = f.config.sourceWorktree;
+    const expectedRow = `worktree ${source}\0HEAD ${f.config.base}\0branch refs/heads/${f.config.sourceBranch}\0\0`;
+    if (fault === "checkout HEAD")
+      await git(source, ["reset", "--hard", f.config.controllerRevision]);
+    if (fault === "checkout branch") await git(source, ["checkout", "-b", "synthetic/other"]);
+    const observations: string[][] = [];
+    controlledGit.execute = async (args, cwd) => {
+      observations.push(args);
+      let stdout = await git(cwd, args);
+      if (args[0] === "worktree") {
+        // Synthetic census describes the expected source while the real checkout
+        // can independently disagree, or vice versa.
+        stdout = expectedRow;
+        if (fault === "registry HEAD")
+          stdout = stdout.replace(f.config.base, f.config.controllerRevision);
+        if (fault === "registry branch")
+          stdout = stdout.replace(f.config.sourceBranch, "synthetic/other");
+      }
+      return { stdout, stderr: "" };
+    };
+    const before = await retainedFiles(f.config.stateDirectory);
+    const adapter = gitSetupAdapter({ gitExecutable: "deferred-setup-git" });
+    expect(await adapter.observeWorktree(f.config, "source", true)).toEqual({ state: "collision" });
+    for (const arg of ["HEAD", "--show-current", "--porcelain"])
+      expect(
+        observations.filter((args) =>
+          arg === "--porcelain" ? args[0] === "status" : args.includes(arg),
+        ),
+      ).toHaveLength(1);
+    expect(await retainedFiles(f.config.stateDirectory)).toEqual(before);
+  },
+);
+
+it.each(["create", "install"] as const)(
+  "real checkout dirt after %s remains visible at the transition boundary",
+  async (transition) => {
+    const f = await fixture();
+    const dirtyPilot = async (config: SetupConfig, role: string) => {
+      if (role === "pilot")
+        await writeFile(
+          resolve(config.pilotWorktree, "fixture.txt"),
+          "synthetic transition drift\n",
+        );
+    };
+    if (transition === "create") {
+      const original = f.adapter.createWorktree;
+      vi.spyOn(f.adapter, "createWorktree").mockImplementation(async (config, role) => {
+        await original(config, role);
+        await dirtyPilot(config, role);
+      });
+    } else {
+      const original = f.adapter.installDependencies;
+      vi.spyOn(f.adapter, "installDependencies").mockImplementation(async (config, role) => {
+        const result = await original(config, role);
+        await dirtyPilot(config, role);
+        return result;
+      });
+    }
+    await expect(setupStep(f.config, f.adapter, f.controller)).rejects.toMatchObject({
+      reason: transition === "create" ? "worktree-collision:pilot" : "worktree-state-drift:pilot",
+    });
+    expect(f.installs()).toBe(transition === "create" ? 0 : 1);
+    const files = await readdir(f.config.stateDirectory);
+    expect(files).not.toContain(
+      transition === "create" ? "worktree-pilot.json" : "dependency-pilot.json",
+    );
+  },
+);
 
 async function upgradeRepository(current: Awaited<ReturnType<typeof fixture>>) {
   await git(current.repository, [
