@@ -4,11 +4,13 @@ import { delimiter, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   currentCandidateAttempt,
+  DeliveryBlocked,
   hasStartedDelivery,
   queueConfigFromLoop,
   QueueBlocked,
   queueStep,
   repositoryQueueAdapter,
+  retainedPostMergeDelivery,
   validateLoopExecutor,
   validateLoopConfig,
 } from "./queue.ts";
@@ -380,11 +382,11 @@ function blocked(error, lifecycleReason) {
   process.exitCode = 1;
 }
 
-async function stop(error) {
+async function stop(error, retainedAttempts) {
   const reason = error instanceof QueueBlocked ? error.reason : "queue-internal-error";
   const diagnostics = error instanceof QueueBlocked ? error.diagnostics : undefined;
   if (!active || !loop) return { reason };
-  const attempts = config ? await currentCandidateAttempt(config) : 0;
+  const attempts = retainedAttempts ?? (config ? await currentCandidateAttempt(config) : 0);
   try {
     const history = queueAdapter ? await queueAdapter.history() : active.initialHistory;
     const scope = await stopCycle(
@@ -419,6 +421,7 @@ async function main() {
     process.env.PATH = `${dirname(loop.gitExecutable)}${delimiter}${process.env.PATH ?? ""}`;
     supervisor = repositorySupervisionAdapter();
     for (;;) {
+      let retained;
       try {
         if (!active) {
           active = await nextCycle(loop, executingRoot, supervisor, repositoryAdapter);
@@ -442,6 +445,21 @@ async function main() {
             validatedExecutor = undefined;
             continue;
           }
+        }
+        retained = await retainedPostMergeDelivery(loop, active.selection);
+        if (retained) {
+          active = { ...active, initialHistory: retained.history };
+          try {
+            await repositoryAdapter.afterMerge(retained);
+          } catch (error) {
+            if (error instanceof DeliveryBlocked)
+              throw new QueueBlocked(error.reason, error.diagnostics);
+            throw error;
+          }
+          await completeCycle(loop, active, retained.history, supervisor);
+          active = undefined;
+          validatedExecutor = undefined;
+          continue;
         }
         config = await queueConfigFromLoop(
           loop,
@@ -485,7 +503,7 @@ async function main() {
         queueAdapter = undefined;
         validatedExecutor = undefined;
       } catch (error) {
-        const outcome = await stop(error);
+        const outcome = await stop(error, retained?.attempts);
         if (outcome.scope === "item" && !loop.acceptedReplan && !active?.prerequisite) {
           active = undefined;
           config = undefined;
