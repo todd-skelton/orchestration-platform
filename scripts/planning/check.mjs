@@ -46,6 +46,22 @@ export function parseFrontmatter(source, file) {
   return result;
 }
 
+export function extractAcceptanceCriteria(draft) {
+  const section = /\n## Done when[ \t]*\r?\n([\s\S]*?)(?=\n## |$)/.exec(draft)?.[1];
+  if (!section) return [];
+  const items = [];
+  let current;
+  for (const line of section.split(/\r?\n/)) {
+    const item = /^(?:\s*[-*+]|\d+\.)\s+(.+)$/.exec(line);
+    if (item) {
+      if (current) items.push(current);
+      current = item[1].trim();
+    } else if (current && /^\s+\S/.test(line)) current += `\n${line.trim()}`;
+  }
+  if (current) items.push(current);
+  return items;
+}
+
 function sameArray(left, right) {
   return left.length === right.length && left.every((value, index) => value === right[index]);
 }
@@ -139,6 +155,11 @@ export function validatePlanningSnapshot(snapshot) {
     }
     if (frontmatter.labels !== undefined && !Array.isArray(frontmatter.labels)) {
       fail(`${issue.key} frontmatter labels must be an array`);
+    }
+    if (extractAcceptanceCriteria(snapshot.issueDrafts[issue.key]).length === 0) {
+      fail(
+        `${issue.file} requires ## Done when with supported list items (-, *, + or top-level N.)`,
+      );
     }
   }
   validateAcyclic(roadmap.issues);

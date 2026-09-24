@@ -3367,7 +3367,7 @@ it("keeps repository identities and mirror rules in the explicit private policy 
   const root = await mkdtemp(resolve(tmpdir(), "delivery-policy-"));
   roots.push(root);
   const current = config(root);
-  const issue = `---\nkey: ISS-074\ntitle: "Deliver"\nlabels: ["type:slice"]\nmilestone: "Minimum orchestration kernel"\nblocked_by: []\n---\n\n## Why\n\nFixture.\n`;
+  const issue = `---\nkey: ISS-074\ntitle: "Deliver"\nlabels: ["type:slice"]\nmilestone: "Minimum orchestration kernel"\nblocked_by: []\n---\n\n## Why\n\nFixture.\n\n## Done when\n\n- Preserve behavior.\n`;
   const planning = {
     roadmap: {
       schemaVersion: "orchestration-roadmap/v1",
@@ -3546,7 +3546,7 @@ it("uses the later-cycle merge base for repaired candidate line counts", async (
     test: { added: 5, deleted: 2 },
   });
 
-  const issue = `---\nkey: ISS-074\ntitle: "Deliver"\nlabels: ["type:slice"]\nmilestone: "Minimum orchestration kernel"\nblocked_by: []\n---\n\n## Why\n\nFixture.\n`;
+  const issue = `---\nkey: ISS-074\ntitle: "Deliver"\nlabels: ["type:slice"]\nmilestone: "Minimum orchestration kernel"\nblocked_by: []\n---\n\n## Why\n\nFixture.\n\n## Done when\n\n- Preserve behavior.\n`;
   const planning = {
     roadmap: {
       schemaVersion: "orchestration-roadmap/v1",
