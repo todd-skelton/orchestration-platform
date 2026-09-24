@@ -1450,14 +1450,19 @@ export function githubDeliveryAdapter(
           return run.status === "completed";
         };
         if (!(await verify())) return null;
-        const log = await commands.gh(config, [
-          "run",
-          "view",
-          String(selection.run),
-          "--attempt",
-          String(selection.attempt),
-          "--log-failed",
-        ]);
+        const log = await commands.gh(
+          config,
+          check.bucket === "cancel"
+            ? ["run", "view", "--job", String(selection.job), "--log"]
+            : [
+                "run",
+                "view",
+                String(selection.run),
+                "--attempt",
+                String(selection.attempt),
+                "--log-failed",
+              ],
+        );
         if (!(await verify())) throw new Error("workflow changed while fetching logs");
         return log;
       } catch (error) {

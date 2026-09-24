@@ -259,26 +259,54 @@ async function aggregateFixture(
     workflowStatuses: [] as string[],
     driftAfterWorkflow: false,
     log: "PR Required failed",
+    jobLogs: {} as Record<number, string>,
     logError: false,
     afterLog: () => {},
   };
   const requests: string[][] = [];
   let publicationHead = head;
+  const jobId = (check: CheckEvidence) => Number(check.link.split("/").at(-1));
+  const conclusion = (check: CheckEvidence) =>
+    ({
+      pass: "success",
+      pending: null,
+      fail: "failure",
+      cancel: "cancelled",
+      skipping: "skipped",
+    })[check.bucket];
+  const jobLog = (check: CheckEvidence) => evidence.jobLogs[jobId(check)] ?? evidence.log;
   const provider = githubDeliveryAdapter(
     {
       async gh(_config, args) {
         requests.push(args);
-        expect(args).toEqual([
-          "run",
-          "view",
-          "123",
-          "--attempt",
-          String(evidence.runs[0]!.run_attempt),
-          "--log-failed",
-        ]);
+        let log: string;
+        if (args.includes("--job")) {
+          const check = evidence.checks.find((check) => String(jobId(check)) === args[3]);
+          expect(check?.bucket).toBe("cancel");
+          expect(args).toEqual(["run", "view", "--job", String(jobId(check!)), "--log"]);
+          log = jobLog(check!);
+        } else {
+          expect(args).toEqual([
+            "run",
+            "view",
+            "123",
+            "--attempt",
+            String(evidence.runs[0]!.run_attempt),
+            "--log-failed",
+          ]);
+          // gh's IsFailureState excludes cancelled jobs, even after a job timeout.
+          log = evidence.checks
+            .filter((check) =>
+              ["failure", "timed_out", "startup_failure", "action_required"].includes(
+                conclusion(check) ?? "",
+              ),
+            )
+            .map(jobLog)
+            .join("\n");
+        }
         if (evidence.logError) throw new Error("log unavailable");
         evidence.afterLog();
-        return evidence.log;
+        return log;
       },
       async ghJson(_config, args) {
         requests.push(args);
@@ -294,13 +322,7 @@ async function aggregateFixture(
                   name: check.name,
                   html_url: check.link,
                   status: check.bucket === "pending" ? "in_progress" : "completed",
-                  conclusion: {
-                    pass: "success",
-                    pending: null,
-                    fail: "failure",
-                    cancel: "cancelled",
-                    skipping: "skipped",
-                  }[check.bucket],
+                  conclusion: conclusion(check),
                 })),
               },
             ];
@@ -938,7 +960,10 @@ it.each(["fail", "cancel", "skipping"] as const)(
       expect(log).toContain(f.evidence.checks[0]!.link);
     }
     expect(f.requests.filter((args) => args.includes("--log-failed"))).toHaveLength(
-      bucket === "skipping" ? 0 : 1,
+      bucket === "fail" ? 1 : 0,
+    );
+    expect(f.requests.filter((args) => args.includes("--job"))).toHaveLength(
+      bucket === "cancel" ? 1 : 0,
     );
     expect(f.calls).not.toContain("merge");
     expect(f.calls.filter((call) => call === "publish")).toHaveLength(1);
@@ -1353,6 +1378,39 @@ it.each([
   expect(f.calls).not.toContain("merge");
 });
 
+it.each(["pass", "fail"] as const)(
+  "SYNTHETIC retains Windows cancellation logs alongside macOS %s",
+  async (macos) => {
+    const required = ["ubuntu", "macos", "windows"].map((os) => `Node 24 / ${os}-latest`);
+    const f = await aggregateFixture(undefined, required);
+    f.evidence.runs[0]!.status = "completed";
+    f.evidence.checks = [
+      f.check(required[0]!, "pass", 454),
+      f.check(required[1]!, macos, 455),
+      f.check(required[2]!, "cancel", 456),
+    ];
+    f.evidence.jobLogs = {
+      454: "SYNTHETIC Ubuntu verification passed",
+      455: "SYNTHETIC macOS assertion failed",
+      456: "SYNTHETIC Windows tsc started\nThe operation was canceled.",
+    };
+    await expect(deliveryStep(f.config, f.adapter, f.policy)).resolves.toMatchObject({
+      status: "failed",
+    });
+    const saved = await readFile(resolve(f.config.stateDirectory, "hosted-failure.log"), "utf8");
+    expect(saved).toContain(f.evidence.jobLogs[456]);
+    expect(saved.includes(f.evidence.jobLogs[455]!)).toBe(macos === "fail");
+    expect(saved).not.toContain(f.evidence.jobLogs[454]);
+    expect(f.requests.filter((args) => args.includes("--log-failed"))).toHaveLength(
+      macos === "fail" ? 1 : 0,
+    );
+    expect(f.requests.filter((args) => args.includes("--job"))).toEqual([
+      ["run", "view", "--job", "456", "--log"],
+    ]);
+    expect(f.calls).not.toContain("merge");
+  },
+);
+
 it.each(["fail", "cancel"] as const)(
   "captures complete attributable %s logs once, and resumes without mutation",
   async (bucket) => {
@@ -1384,12 +1442,27 @@ it.each(["fail", "cancel"] as const)(
         { actions: { run: 123, attempt: 1, job: 456 } },
       ],
     });
-    expect(f.requests.filter((args) => args.includes("--log-failed"))).toHaveLength(1);
+    expect(f.requests.filter((args) => args.includes("--log-failed"))).toHaveLength(
+      bucket === "fail" ? 1 : 0,
+    );
+    expect(f.requests.filter((args) => args.includes("--job"))).toEqual(
+      bucket === "cancel"
+        ? [
+            ["run", "view", "--job", "455", "--log"],
+            ["run", "view", "--job", "456", "--log"],
+          ]
+        : [],
+    );
     await expect(deliveryStep(f.config, f.adapter, f.policy)).resolves.toMatchObject({
       status: "failed",
     });
     expect(await readFile(path, "utf8")).toBe(saved);
-    expect(f.requests.filter((args) => args.includes("--log-failed"))).toHaveLength(1);
+    expect(f.requests.filter((args) => args.includes("--log-failed"))).toHaveLength(
+      bucket === "fail" ? 1 : 0,
+    );
+    expect(f.requests.filter((args) => args.includes("--job"))).toHaveLength(
+      bucket === "cancel" ? 2 : 0,
+    );
     expect(f.calls.filter((call) => call === "publish")).toHaveLength(1);
     expect(f.calls).not.toContain("merge");
   },
@@ -1404,37 +1477,44 @@ it.each(["fail", "cancel"] as const)(
       status: "observing-hosted-checks",
     });
     expect(f.requests.filter((args) => args.includes("--log-failed"))).toHaveLength(0);
+    expect(f.requests.filter((args) => args.includes("--job"))).toHaveLength(0);
     f.evidence.runs[0]!.status = "completed";
     await expect(deliveryStep(f.config, f.adapter, f.policy)).resolves.toMatchObject({
       status: "failed",
     });
-    expect(f.requests.filter((args) => args.includes("--log-failed"))).toHaveLength(1);
+    expect(f.requests.filter((args) => args.includes("--log-failed"))).toHaveLength(
+      bucket === "fail" ? 1 : 0,
+    );
+    expect(f.requests.filter((args) => args.includes("--job"))).toHaveLength(
+      bucket === "cancel" ? 1 : 0,
+    );
     expect(f.calls.filter((call) => call === "publish")).toHaveLength(1);
     expect(f.calls).not.toContain("merge");
   },
 );
 
-it.each(["empty log", "log error", "attempt changed"])(
-  "blocks unavailable or inconsistent failure diagnostics: %s",
-  async (mode) => {
-    const f = await aggregateFixture();
-    f.evidence.runs[0]!.status = "completed";
-    f.evidence.checks = [f.check("PR Required", "fail")];
-    if (mode === "empty log") f.evidence.log = " \n";
-    if (mode === "log error") f.evidence.logError = true;
-    if (mode === "attempt changed")
-      f.evidence.afterLog = () => {
-        f.evidence.runs[0]!.run_attempt++;
-      };
-    await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toThrow(
-      "hosted-check-log-unavailable:PR Required",
-    );
-    await expect(
-      readFile(resolve(f.config.stateDirectory, "hosted-failure.log")),
-    ).rejects.toMatchObject({ code: "ENOENT" });
-    expect(f.calls).not.toContain("merge");
-  },
-);
+it.each(
+  (["fail", "cancel"] as const).flatMap((bucket) =>
+    ["empty log", "log error", "attempt changed"].map((mode) => ({ bucket, mode })),
+  ),
+)("blocks unavailable or inconsistent $bucket diagnostics: $mode", async ({ bucket, mode }) => {
+  const f = await aggregateFixture();
+  f.evidence.runs[0]!.status = "completed";
+  f.evidence.checks = [f.check("PR Required", bucket)];
+  if (mode === "empty log") f.evidence.log = " \n";
+  if (mode === "log error") f.evidence.logError = true;
+  if (mode === "attempt changed")
+    f.evidence.afterLog = () => {
+      f.evidence.runs[0]!.run_attempt++;
+    };
+  await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toThrow(
+    "hosted-check-log-unavailable:PR Required",
+  );
+  await expect(
+    readFile(resolve(f.config.stateDirectory, "hosted-failure.log")),
+  ).rejects.toMatchObject({ code: "ENOENT" });
+  expect(f.calls).not.toContain("merge");
+});
 
 it("refuses legacy failure evidence for an unfinished decision without changing its bytes", async () => {
   const f = await aggregateFixture();

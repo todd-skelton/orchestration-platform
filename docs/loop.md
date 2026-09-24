@@ -390,8 +390,12 @@ delivery reuses its receipts without another worker, publication or merge.
 Legacy untyped failures supply no correction eligibility.
 
 Complete failed-run logs live in the delivery runtime's `hosted-failure.log`,
-with exact candidate, publication and failed check/run URLs. Each run is fetched
-once even when several jobs fail. Corrective author and reviewer launches get
+with exact candidate, publication and failed check/run URLs. Failed logs are fetched
+once per run even when several jobs fail; cancelled logs are fetched separately
+once per job because GitHub's `--log-failed` omits them (ISS-206). Both wait for
+the completed run and revalidate attribution after acquisition. Bootstrap's
+`smoke` matrix jobs have a 100-minute job limit; expiry is failure evidence,
+never green. Corrective author and reviewer launches get
 the absolute evidence path rather than raw logs in prompts or terminal reports.
 They inspect underlying diagnostics independently; this supplies neither a
 verdict nor a waiver, and all ordinary delivery gates remain mandatory (ISS-141).
