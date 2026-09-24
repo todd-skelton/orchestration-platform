@@ -702,8 +702,10 @@ each item as one acceptance criterion; a section without supported list items
 stops with `selected-issue-criteria-missing`, never a whole-body fallback.
 ISS-153 fixes the ordered form recorded in ISS-152's pre-dispatch stop.
 
-`pnpm planning:check` proves drafts and roadmap agree and the graph is
-acyclic. `pnpm planning:board-check` proves every open registered issue on
+`pnpm planning:check` proves drafts and roadmap agree, the graph is acyclic,
+and every registered draft has `## Done when` with items consumable by the
+self adapter's shared criteria extractor, regardless of readiness or milestone (ISS-208).
+`pnpm planning:board-check` proves every open registered issue on
 GitHub carries the marker, the draft link and the verbatim draft, has the
 right milestone, and sits on the delivery project once. Closed issues are
 history and are not compared. The GitHub issue body is:

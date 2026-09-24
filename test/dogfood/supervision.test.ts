@@ -730,6 +730,10 @@ blocked_by: [${blockedBy.join(", ")}]
 ## Why
 
 Because.
+
+## Done when
+
+- Preserve behavior.
 `;
 }
 

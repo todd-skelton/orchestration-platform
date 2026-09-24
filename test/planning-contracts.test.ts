@@ -1,4 +1,10 @@
+import { execFile } from "node:child_process";
+import { copyFile, mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
+import { promisify } from "node:util";
 import { describe, expect, test } from "vitest";
+import { iss206Draft } from "./fixtures/iss206.js";
 import {
   loadPlanningSnapshot,
   parseFrontmatter,
@@ -20,6 +26,10 @@ function draft(key: string, milestone: string, blockedBy: string[] = []): string
     "## Why",
     "",
     "Because.",
+    "",
+    "## Done when",
+    "",
+    "- Preserve behavior.",
     "",
   ].join("\n");
 }
@@ -84,23 +94,91 @@ describe("planning contract", () => {
     expect(parsed.title).toBe("x");
   });
 
+  test("rejects PR #647's ISS-206 Acceptance heading; only Done when repairs it", async () => {
+    const snapshot = synthetic();
+    snapshot.roadmap.milestones = [{ key: "M1", title: "Unattended self-improvement" }];
+    snapshot.roadmap.issues = [
+      { key: "ISS-206", file: "planning/drafts/ISS-206.md", milestone: "M1", blockedBy: [] },
+    ];
+    snapshot.issueDrafts = { "ISS-206": iss206Draft };
+    const diagnostic =
+      "PLANNING_CONTRACT_MISMATCH: planning/drafts/ISS-206.md requires ## Done when with supported list items (-, *, + or top-level N.)";
+    expect(() => validatePlanningSnapshot(snapshot)).toThrow(diagnostic);
+
+    // Run the actual CLI against an otherwise valid, isolated planning tree.
+    // Match Node's resolved entry path even when macOS tmpdir() uses a /var alias.
+    const root = await realpath(await mkdtemp(resolve(tmpdir(), "planning-criteria-")));
+    try {
+      await mkdir(resolve(root, "planning/drafts"), { recursive: true });
+      await mkdir(resolve(root, "scripts/planning"), { recursive: true });
+      const checker = resolve(root, "scripts/planning/check.mjs");
+      await copyFile(resolve(import.meta.dirname, "../scripts/planning/check.mjs"), checker);
+      await writeFile(resolve(root, "planning/roadmap.json"), JSON.stringify(snapshot.roadmap));
+      const path = resolve(root, "planning/drafts/ISS-206.md");
+      await writeFile(path, iss206Draft);
+      const execute = () => promisify(execFile)(process.execPath, [checker], { cwd: root });
+      await expect(execute()).rejects.toMatchObject({
+        code: 1,
+        stderr: expect.stringContaining(diagnostic),
+      });
+
+      snapshot.issueDrafts["ISS-206"] = iss206Draft.replace("## Acceptance", "## Done when");
+      expect(() => validatePlanningSnapshot(snapshot)).not.toThrow();
+      await writeFile(path, snapshot.issueDrafts["ISS-206"]);
+      await expect(execute()).resolves.toMatchObject({ stderr: "" });
+    } finally {
+      await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+    }
+  });
+
   test.each([
-    ["schema", (s: PlanningSnapshot) => void (s.roadmap.schemaVersion = "other")],
-    ["repository", (s: PlanningSnapshot) => void (s.roadmap.repository = "other/repo")],
-    ["project url", (s: PlanningSnapshot) => void (s.roadmap.project.url = "http://insecure")],
-    ["missing draft", (s: PlanningSnapshot) => void delete s.issueDrafts["ISS-102"]],
+    ["missing heading", "## Why\n\n- Not acceptance"],
+    ["empty section", "## Done when\n\n"],
+    ["prose only", "## Done when\n\nNot a list."],
+    ["unsupported list", "## Done when\n\n1) Not supported"],
+  ])("rejects %s in an unready later-milestone sibling", (_name, section) => {
+    const snapshot = synthetic();
+    snapshot.issueDrafts["ISS-102"] = snapshot.issueDrafts["ISS-102"]!.replace(
+      "## Done when\n\n- Preserve behavior.\n",
+      `${section}\n\n## Out of scope\n\n- Not acceptance either.\n`,
+    );
+    expect(() => validatePlanningSnapshot(snapshot)).toThrow(
+      "PLANNING_CONTRACT_MISMATCH: planning/drafts/ISS-102.md requires ## Done when with supported list items",
+    );
+  });
+
+  test.each([
+    ["unknown roadmap schema", (s: PlanningSnapshot) => void (s.roadmap.schemaVersion = "other")],
     [
-      "extra draft",
+      "roadmap repository mismatch",
+      (s: PlanningSnapshot) => void (s.roadmap.repository = "other/repo"),
+    ],
+    [
+      "roadmap delivery project registration is malformed",
+      (s: PlanningSnapshot) => void (s.roadmap.project.url = "http://insecure"),
+    ],
+    [
+      "registered issue drafts and filesystem issue drafts differ",
+      (s: PlanningSnapshot) => void delete s.issueDrafts["ISS-102"],
+    ],
+    [
+      "registered issue drafts and filesystem issue drafts differ",
       (s: PlanningSnapshot) => void (s.issueDrafts["ISS-103"] = draft("ISS-103", "First")),
     ],
-    ["wrong file path", (s: PlanningSnapshot) => void (issue(s, "ISS-100").file = "x.md")],
-    ["unknown milestone", (s: PlanningSnapshot) => void (issue(s, "ISS-100").milestone = "M9")],
     [
-      "duplicate milestone title",
+      "ISS-100 file must be planning/drafts/ISS-100.md",
+      (s: PlanningSnapshot) => void (issue(s, "ISS-100").file = "x.md"),
+    ],
+    [
+      "ISS-100 has unknown milestone M9",
+      (s: PlanningSnapshot) => void (issue(s, "ISS-100").milestone = "M9"),
+    ],
+    [
+      "duplicate milestone title First",
       (s: PlanningSnapshot) => void (s.roadmap.milestones[1].title = "First"),
     ],
     [
-      "frontmatter key mismatch",
+      "ISS-100 frontmatter key mismatch",
       (s: PlanningSnapshot) =>
         void (s.issueDrafts["ISS-100"] = s.issueDrafts["ISS-100"]!.replace(
           "key: ISS-100",
@@ -108,7 +186,7 @@ describe("planning contract", () => {
         )),
     ],
     [
-      "frontmatter milestone mismatch",
+      "ISS-100 frontmatter milestone mismatch",
       (s: PlanningSnapshot) =>
         void (s.issueDrafts["ISS-100"] = s.issueDrafts["ISS-100"]!.replace(
           'milestone: "First"',
@@ -116,40 +194,45 @@ describe("planning contract", () => {
         )),
     ],
     [
-      "missing title",
+      "ISS-100 frontmatter title missing",
       (s: PlanningSnapshot) =>
         void (s.issueDrafts["ISS-100"] = s.issueDrafts["ISS-100"]!.replace(/title: .*\n/, "")),
     ],
-    ["edge mismatch", (s: PlanningSnapshot) => void (issue(s, "ISS-101").blockedBy = [])],
     [
-      "unknown dependency",
+      "ISS-101 blocked-by edges mismatch",
+      (s: PlanningSnapshot) => void (issue(s, "ISS-101").blockedBy = []),
+    ],
+    [
+      "ISS-101 has unknown dependency ISS-999",
       (s: PlanningSnapshot) => {
         issue(s, "ISS-101").blockedBy = ["ISS-999"];
         s.issueDrafts["ISS-101"] = draft("ISS-101", "First", ["ISS-999"]);
       },
     ],
     [
-      "self dependency",
+      "ISS-101 blockedBy must list distinct other issue keys",
       (s: PlanningSnapshot) => {
         issue(s, "ISS-101").blockedBy = ["ISS-101"];
         s.issueDrafts["ISS-101"] = draft("ISS-101", "First", ["ISS-101"]);
       },
     ],
     [
-      "cycle",
+      "dependency cycle includes ISS-100",
       (s: PlanningSnapshot) => {
         issue(s, "ISS-100").blockedBy = ["ISS-102"];
         s.issueDrafts["ISS-100"] = draft("ISS-100", "First", ["ISS-102"]);
       },
     ],
     [
-      "duplicate issue key",
+      "duplicate issue key ISS-100",
       (s: PlanningSnapshot) => void s.roadmap.issues.push({ ...issue(s, "ISS-100") }),
     ],
-  ])("refuses %s", (_name, mutate) => {
+  ])("refuses %s", (diagnostic, mutate) => {
     const snapshot = synthetic();
     mutate(snapshot);
-    expect(() => validatePlanningSnapshot(snapshot)).toThrow(/PLANNING_CONTRACT_MISMATCH/);
+    expect(() => validatePlanningSnapshot(snapshot)).toThrow(
+      `PLANNING_CONTRACT_MISMATCH: ${diagnostic}`,
+    );
   });
 
   test("allows transitively implied direct edges", () => {
