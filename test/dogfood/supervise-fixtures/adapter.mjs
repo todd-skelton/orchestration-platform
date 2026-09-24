@@ -1,6 +1,7 @@
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
 import { delimiter, dirname, resolve } from "node:path";
 import { QueueBlocked } from "../../../scripts/dogfood/queue.ts";
+import { DeliveryBlocked } from "../../../scripts/dogfood/delivery.mjs";
 // ISS-165: the supervisor composes the real native adapter; only queue,
 // supervision and repository effects are synthetic here.
 export { codexAdapter } from "../../../scripts/dogfood/dispatch-adapter.ts";
@@ -11,10 +12,11 @@ let sourceObserved = false;
 export {
   currentCandidateAttempt,
   hasStartedDelivery,
+  retainedPostMergeDelivery,
   queueStep,
   validateLoopConfig,
 } from "../../../scripts/dogfood/queue.ts";
-export { QueueBlocked };
+export { QueueBlocked, DeliveryBlocked };
 export {
   completeCycle,
   persistCycle,
@@ -85,7 +87,14 @@ export async function loadRepositoryAdapter() {
       return "add the `ready` label after acting on the note";
     },
     mergeMethod: () => ({ method: "squash" }),
-    afterMerge: () => {},
+    afterMerge: async ({ delivery }) => {
+      await call(`post-merge:${delivery.mergeCommit}`);
+      const controls = await readJson(
+        resolve(process.env.SUPERVISE_FIXTURE_STATE, "command-controls.json"),
+        {},
+      );
+      if (controls.postMergeStop) throw new DeliveryBlocked(controls.postMergeStop);
+    },
   };
 }
 

@@ -1,0 +1,20 @@
+{
+  "id": 35252785218,
+  "name": "Platform Deploy",
+  "path": ".github/workflows/platform-production.yml",
+  "workflow_id": 274293633,
+  "head_sha": "8a423dc955640fbd7f5075c8ea7de196a21da524",
+  "head_branch": "main",
+  "event": "workflow_dispatch",
+  "run_attempt": 1,
+  "status": "completed",
+  "conclusion": "success",
+  "created_at": "2026-09-17T17:26:50Z",
+  "updated_at": "2026-09-17T17:29:28Z",
+  "repository": {
+    "full_name": "chase-sets/chase-sets"
+  },
+  "head_repository": {
+    "full_name": "chase-sets/chase-sets"
+  }
+}
