@@ -440,6 +440,22 @@ migration is required (ISS-143).
 
 ### Saved-cycle recovery
 
+ISS-184 completes Chase Sets post-merge observation when the exact owning
+Platform Deploy run succeeds with a successful release-scope step whose raw
+job log reports `deploy="false"`, and staging, image build and production are
+consistently skipped. Its supervisor log identifies the scope, cumulative paths
+and skipped jobs as a deployment leg unexercised, separately from the latest
+executed staging image verification's commit, digest and timestamp. Missing or
+ambiguous accounting remains unresolved; historical Actions evidence is not a
+fresh provider-health observation. Required deployment still needs successful
+immutable-image verification, with the existing 45-minute/30-second polling.
+Saved native merge/cleanup obligations precede external-closure completion and
+fresh issue composition. Existing delivery records validate the retained head
+before the repository hook runs, even after worker worktrees have been removed.
+Only ordinary missing cycle completion is written; no worker, publication,
+merge, cleanup, eligibility waiver or historical record rewrite is involved.
+This grants no executor installation or preserved-run restart authority.
+
 ISS-187 permits one self prerequisite detour declared by `prerequisite` on the
 existing 64-launch/four-attempt run: `blockedCycle`, `blockedKey`, `blockedNumber`,
 completed run-scoped `stop`, prerequisite `key`/`number`, and `authorityUrl`.

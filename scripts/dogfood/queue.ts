@@ -35,7 +35,7 @@ import { correctGate, QueueBlocked, step } from "./flow.ts";
 import type { Adapter, Attempt, Config as SourceConfig, Role } from "./flow.js";
 // @ts-expect-error Node 24 executes this private TypeScript composition directly.
 import { currentMain, rebaseOnto, refreshDelivery } from "./refresh.ts";
-export { QueueBlocked };
+export { QueueBlocked, DeliveryBlocked };
 import {
   reviewedRepairAdapter,
   sourceReviewerReportPrompt,
@@ -1899,6 +1899,151 @@ export async function currentCandidateAttempt(config: QueueConfig) {
 export async function hasStartedDelivery(config: QueueConfig) {
   const attempt = await optionalRecord(config.stateDirectory, "attempt");
   return attempt !== ABSENT && ["delivery", "complete"].includes(attempt.phase);
+}
+
+// ISS-184: a merged, cleaned native delivery still owes its repository hook.
+// Read retained records directly: eligibility and deleted worktrees are no longer
+// inputs to this phase. deliveryStep owns validation of the completed receipts.
+export async function retainedPostMergeDelivery(config: LoopConfig, selected: SelectedLoopIssue) {
+  // The self adapter has no post-merge observation to resume.
+  if (config.adapter === "self") return undefined;
+  const runDirectory = resolve(config.stateRoot, config.run);
+  const directories = Array.from({ length: config.attemptCeiling }, (_, index) =>
+    resolve(runDirectory, `${selected.key.toLowerCase()}-attempt-${index + 1}`),
+  );
+  if (config.acceptedReplan?.issueKey === selected.key)
+    directories.push(resolve(runDirectory, continuationSlug(config.acceptedReplan)));
+  if (config.integrationContinuation?.issueKey === selected.key) {
+    const integration = resolve(config.integrationContinuation.attemptDirectory, "integration");
+    directories.push(integration, resolve(integration, "spent-resolution"));
+  }
+  for (const directory of directories.reverse()) {
+    const attempt = await optionalRecord(directory, "attempt");
+    if (attempt === ABSENT || !["delivery", "complete"].includes(attempt.phase)) continue;
+    if (!attempt.stateDirectory) continue;
+    let origin = attempt.stateDirectory as string;
+    let retainedConfig: DeliveryConfig | undefined;
+    let refresh: PublicationRefresh | undefined;
+    let retries = attempt.retries;
+    // Follow the existing lifecycle pointers, never discover arbitrary receipt files.
+    for (;;) {
+      const correction = await optionalRecord(origin, "gate-correction");
+      const recovery = await optionalRecord(origin, "gate-stop-continuation");
+      if (recovery !== ABSENT) {
+        retainedConfig = recovery.delivery;
+        retries = Math.max(retries, recovery.delivery.retries);
+        origin = resolve(origin, "gate-stop-continuation");
+      } else if (correction !== ABSENT) {
+        const result = await optionalRecord(origin, "gate-correction-result");
+        if (result === ABSENT) break;
+        retainedConfig = correction.delivery;
+        retries = result.retries;
+        origin = correction.directory;
+      } else {
+        const active = await optionalRecord(origin, "native-refresh");
+        if (active === ABSENT || !active.head) break;
+        retries = Math.max(retries, active.retries);
+        refresh = active.publicationRefresh ?? refresh;
+        origin = active.directory;
+      }
+    }
+    const merge = await optionalRecord(origin, "merge");
+    const cleanup = await optionalRecord(origin, "cleanup");
+    if (merge === ABSENT && cleanup === ABSENT) continue;
+    demand(merge !== ABSENT && cleanup !== ABSENT, "incomplete-retained-post-merge");
+    demand(
+      ["source", "repair"].includes(attempt.acceptedStage) &&
+        attempt.stateDirectory === resolve(directory, attempt.acceptedStage),
+      "malformed-retained-post-merge-attempt",
+    );
+    const issue = `https://github.com/${config.repository}/issues/${selected.number}`;
+    demand(
+      attempt.run === config.run &&
+        attempt.issue === issue &&
+        attempt.item.startsWith(`${selected.key}:`) &&
+        attempt.acceptedStage !== null,
+      "retained-post-merge-identity-mismatch",
+    );
+    const source = await json(origin, "delivery-source");
+    demand(
+      origin !== attempt.stateDirectory ||
+        (source.head === attempt.head && source.reviewId === attempt.reviewId),
+      "retained-post-merge-identity-mismatch",
+    );
+    demand(
+      (await optionalRecord(origin, "delivery-config")) !== ABSENT,
+      "incomplete-retained-post-merge",
+    );
+    const plan = (await json(origin, "delivery-plan")).plan;
+    const setup = await json(resolve(directory, "setup"), "setup-plan");
+    demand(
+      setup.run === config.run &&
+        setup.issue === issue &&
+        setup.repository === config.repository &&
+        source.run === config.run &&
+        source.issue === issue &&
+        source.repository === config.repository,
+      "retained-post-merge-identity-mismatch",
+    );
+    const publication =
+      config.acceptedReplan?.issueKey === selected.key
+        ? config.acceptedReplan.publication
+        : undefined;
+    const delivery: DeliveryConfig = {
+      controller: source.controller,
+      run: source.run,
+      issue: source.issue,
+      repository: source.repository,
+      controllerRoot: setup.controllerRoot,
+      repositoryRoot: setup.repositoryRoot,
+      controllerRevision: source.controllerRevision,
+      worktree: source.worktree,
+      reviewWorktree: source.reviewWorktree,
+      stateDirectory: origin,
+      candidateHead: source.head,
+      retries,
+      ...(setup.sourceBranch !== plan.publication.sourceBranch && !publication
+        ? { localBranch: setup.sourceBranch }
+        : {}),
+      ...(publication
+        ? {
+            refresh: {
+              number: publication.number,
+              url: publication.url,
+              head: publication.head,
+              localBranch: setup.sourceBranch,
+            },
+          }
+        : {}),
+      requiredChecks: source.requiredChecks,
+      policy: {
+        key: selected.key,
+        number: selected.number,
+        title: plan.publication.title,
+        sourceBranch: plan.publication.sourceBranch,
+      },
+      ...retainedConfig,
+    };
+    Object.assign(delivery, { stateDirectory: origin, candidateHead: source.head, retries });
+    if (refresh) delivery.refresh = refresh;
+    // The completed path is read-only and does not call any adapter mutation or
+    // worktree operation. The saved fingerprint also checks reconstructed policy.
+    const result = await deliveryStep(
+      delivery,
+      githubDeliveryAdapter(undefined, config.gitExecutable),
+      {} as DeliveryPolicyAdapter,
+    );
+    demand(result.status === "complete", "incomplete-retained-post-merge");
+    let history = await readQueueHistory({
+      stateDirectory: directory,
+      nativeLaunchCeiling: config.nativeLaunchCeiling,
+      initialHistory: [],
+    });
+    validateHistory(attempt.history, config.nativeLaunchCeiling);
+    if (attempt.history.length > history.length) history = attempt.history;
+    return { config: delivery, delivery: result, history, attempts: attempt.candidateAttempt };
+  }
+  return undefined;
 }
 
 // ISS-161: observe a completed source author without entering its saved worktree.

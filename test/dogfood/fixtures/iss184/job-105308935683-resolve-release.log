@@ -1,0 +1,39 @@
+﻿2026-09-17T17:26:54.9229164Z Current runner version: '2.337.0'
+2026-09-17T17:27:09.5342360Z ##[group]Run set -euo pipefail
+2026-09-17T17:27:09.5342721Z [36;1mset -euo pipefail[0m
+2026-09-17T17:27:09.5343052Z [36;1mnode ./scripts/release-deployment-scope.mjs \[0m
+2026-09-17T17:27:09.5343443Z [36;1m  --event-name "workflow_dispatch" \[0m
+2026-09-17T17:27:09.5343882Z [36;1m  --release-commit "8a423dc955640fbd7f5075c8ea7de196a21da524" \[0m
+2026-09-17T17:27:09.5344303Z [36;1m  --force-deploy "false" \[0m
+2026-09-17T17:27:09.5344710Z [36;1m  --changed-files-out "${RUNNER_TEMP}/release-changed-files.json" \[0m
+2026-09-17T17:27:09.5345411Z [36;1m  --github-output "$GITHUB_OUTPUT"[0m
+2026-09-17T17:27:09.5389843Z ##[endgroup]
+2026-09-17T17:27:10.0135859Z From https://github.com/chase-sets/chase-sets
+2026-09-17T17:27:10.0136501Z  * branch                production -> FETCH_HEAD
+2026-09-17T17:27:10.0450017Z {
+2026-09-17T17:27:10.0451439Z   "changed_files_json": "[\"scripts/check-design-system-export-coverage.mjs\",\"scripts/check-design-system-export-coverage.test.mjs\",\"scripts/managed-postgres-authority-guard.mjs\",\"scripts/managed-postgres-authority-guard.test.mjs\",\"scripts/public-web-route-smoke-workflows.test.mjs\"]",
+2026-09-17T17:27:10.0452856Z   "affected_workspaces": "",
+2026-09-17T17:27:10.0453381Z   "affected_workspaces_json": "[]",
+2026-09-17T17:27:10.0453922Z   "directly_affected_workspaces_json": "[]",
+2026-09-17T17:27:10.0454257Z   "docs_only": "false",
+2026-09-17T17:27:10.0454578Z   "local_checks": "true",
+2026-09-17T17:27:10.0454845Z   "unit_tests": "false",
+2026-09-17T17:27:10.0455345Z   "db_tests": "false",
+2026-09-17T17:27:10.0455597Z   "e2e_tests": "false",
+2026-09-17T17:27:10.0455840Z   "e2e_suites": "",
+2026-09-17T17:27:10.0456091Z   "e2e_suites_json": "[]",
+2026-09-17T17:27:10.0456417Z   "e2e_suite_batches_json": "[]",
+2026-09-17T17:27:10.0456737Z   "integration_risk_required": "false",
+2026-09-17T17:27:10.0457234Z   "integration_risk_reason": "No integration-risk change detected",
+2026-09-17T17:27:10.0457664Z   "build": "false",
+2026-09-17T17:27:10.0457932Z   "docker_image": "false",
+2026-09-17T17:27:10.0458220Z   "terraform": "false",
+2026-09-17T17:27:10.0458518Z   "workflow_lint": "false",
+2026-09-17T17:27:10.0458806Z   "deploy": "false",
+2026-09-17T17:27:10.0459082Z   "cluster_preview": "false",
+2026-09-17T17:27:10.0459421Z   "compose_smoke": "false",
+2026-09-17T17:27:10.0459752Z   "exposure_posture_changed": "false",
+2026-09-17T17:27:10.0460138Z   "exposure_posture_categories": "",
+2026-09-17T17:27:10.0460529Z   "exposure_posture_categories_json": "[]"
+2026-09-17T17:27:10.0460858Z }
+2026-09-17T17:27:10.0541351Z ##[group]Run set -euo pipefail

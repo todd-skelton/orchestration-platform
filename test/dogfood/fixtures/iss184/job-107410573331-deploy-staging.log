@@ -1,0 +1,27 @@
+﻿2026-09-23T22:32:42.5589929Z Current runner version: '2.337.0'
+2026-09-23T22:33:30.8992644Z ##[group]Run set -euo pipefail
+2026-09-23T22:33:30.8993083Z [36;1mset -euo pipefail[0m
+2026-09-23T22:33:30.8993475Z [36;1mdoctl registry login --expiry-seconds 3600[0m
+2026-09-23T22:33:30.8994029Z [36;1mif ! docker buildx imagetools inspect "$ACTIVE_RELEASE_IMAGE" >/dev/null; then[0m
+2026-09-23T22:33:30.8994694Z [36;1m  echo "Active release image ${ACTIVE_RELEASE_IMAGE} no longer exists." >&2[0m
+2026-09-23T22:33:30.8995182Z [36;1m  exit 1[0m
+2026-09-23T22:33:30.8995462Z [36;1mfi[0m
+2026-09-23T22:33:30.8996010Z [36;1mobserved_digest="$(docker buildx imagetools inspect "$ACTIVE_RELEASE_IMAGE" --format '{{.Manifest.Digest}}')"[0m
+2026-09-23T22:33:30.8996736Z [36;1mif [ "$observed_digest" != "$ACTIVE_RELEASE_IMAGE_DIGEST" ]; then[0m
+2026-09-23T22:33:30.8997443Z [36;1m  echo "Active release image digest changed from ${ACTIVE_RELEASE_IMAGE_DIGEST} to ${observed_digest}." >&2[0m
+2026-09-23T22:33:30.8998028Z [36;1m  exit 1[0m
+2026-09-23T22:33:30.8998306Z [36;1mfi[0m
+2026-09-23T22:33:30.8998595Z [36;1m{[0m
+2026-09-23T22:33:30.8999210Z [36;1m  echo "image=${ACTIVE_RELEASE_IMAGE}"[0m
+2026-09-23T22:33:30.8999706Z [36;1m  echo "digest=${ACTIVE_RELEASE_IMAGE_DIGEST}"[0m
+2026-09-23T22:33:30.9000125Z [36;1m} >> "$GITHUB_OUTPUT"[0m
+2026-09-23T22:33:30.9000646Z [36;1mecho "TF_VAR_platform_image_digest=${ACTIVE_RELEASE_IMAGE_DIGEST}" >> "$GITHUB_ENV"[0m
+2026-09-23T22:33:30.9001400Z [36;1mecho "Verified immutable active release ${ACTIVE_RELEASE_IMAGE}@${ACTIVE_RELEASE_IMAGE_DIGEST}."[0m
+2026-09-23T22:33:30.9071202Z ##[endgroup]
+2026-09-23T22:33:30.9506137Z Logging Docker in to registry.digitalocean.com
+2026-09-23T22:33:33.3380581Z Verified immutable active release registry.digitalocean.com/chase-sets/chase-sets-platform:018aa861ae8809749cea1e44df6ca1c1e7ebe402@sha256:98449f54f521ecb7d00247c5531d5685910700e055ca0c5236ff9b039d3c4302.
+2026-09-23T22:33:33.3414206Z ##[group]Run ../../../scripts/terraform-init-with-retry.sh \
+
+artifacts/release-health/staging-representative-commerce-state
+artifacts/release-health/guest-buy-now-freshness-probe.json
+artifacts/release-health/account-buy-now-freshness-probe.json

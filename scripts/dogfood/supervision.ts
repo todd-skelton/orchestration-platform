@@ -11,6 +11,7 @@ const {
   continuationSlug,
   QueueBlocked,
   readQueueHistory,
+  retainedPostMergeDelivery,
   retainedSourceFailure,
   prerequisiteSourceFailure,
   validateHistory,
@@ -511,6 +512,10 @@ export async function nextCycle(
       // ISS-144: external closure supersedes workspace recovery and pending stops.
       const observed = await adapter.issue(config, selected.number);
       assertIssue(selected, observed);
+      // Native merge/cleanup is not external closure: its repository hook may
+      // still be pending, even when both worker worktrees have been removed.
+      if (await retainedPostMergeDelivery(config, selected))
+        return { selection: selected, initialHistory };
       if (observed.state === "CLOSED") {
         const slugs = Array.from(
           { length: config.attemptCeiling },

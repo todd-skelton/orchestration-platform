@@ -1,0 +1,203 @@
+{
+  "total_count": 15,
+  "jobs": [
+    {
+      "id": 104964346241,
+      "run_id": 35146653520,
+      "run_attempt": 1,
+      "head_sha": "27b8602b2c007d9ead3ee87de86e3008c8d746d5",
+      "name": "Resolve Release",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-16T20:27:30Z",
+      "completed_at": "2026-09-16T20:28:27Z",
+      "steps": [
+        {
+          "name": "Resolve deployment scope",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 7,
+          "started_at": "2026-09-16T20:27:48Z",
+          "completed_at": "2026-09-16T20:27:48Z"
+        }
+      ]
+    },
+    {
+      "id": 104964347621,
+      "run_id": 35146653520,
+      "run_attempt": 1,
+      "head_sha": "27b8602b2c007d9ead3ee87de86e3008c8d746d5",
+      "name": "App Platform Decommission Live Plans",
+      "status": "completed",
+      "conclusion": "skipped",
+      "started_at": "2026-09-16T20:27:28Z",
+      "completed_at": "2026-09-16T20:27:28Z",
+      "steps": []
+    },
+    {
+      "id": 104964675807,
+      "run_id": 35146653520,
+      "run_attempt": 1,
+      "head_sha": "27b8602b2c007d9ead3ee87de86e3008c8d746d5",
+      "name": "Preflight Deployment Contract (production)",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-16T20:28:30Z",
+      "completed_at": "2026-09-16T20:28:42Z",
+      "steps": []
+    },
+    {
+      "id": 104964675917,
+      "run_id": 35146653520,
+      "run_attempt": 1,
+      "head_sha": "27b8602b2c007d9ead3ee87de86e3008c8d746d5",
+      "name": "Preflight Deployment Contract (staging)",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-16T20:28:30Z",
+      "completed_at": "2026-09-16T20:28:39Z",
+      "steps": []
+    },
+    {
+      "id": 104964677342,
+      "run_id": 35146653520,
+      "run_attempt": 1,
+      "head_sha": "27b8602b2c007d9ead3ee87de86e3008c8d746d5",
+      "name": "Reconcile Managed Postgres CA (staging)",
+      "status": "completed",
+      "conclusion": "skipped",
+      "started_at": "2026-09-16T20:28:27Z",
+      "completed_at": "2026-09-16T20:28:27Z",
+      "steps": []
+    },
+    {
+      "id": 104964678501,
+      "run_id": 35146653520,
+      "run_attempt": 1,
+      "head_sha": "27b8602b2c007d9ead3ee87de86e3008c8d746d5",
+      "name": "Reconcile Managed Postgres CA (production)",
+      "status": "completed",
+      "conclusion": "skipped",
+      "started_at": "2026-09-16T20:28:27Z",
+      "completed_at": "2026-09-16T20:28:27Z",
+      "steps": []
+    },
+    {
+      "id": 104964761877,
+      "run_id": 35146653520,
+      "run_attempt": 1,
+      "head_sha": "27b8602b2c007d9ead3ee87de86e3008c8d746d5",
+      "name": "Build Release Image",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-16T20:28:46Z",
+      "completed_at": "2026-09-16T20:31:55Z",
+      "steps": []
+    },
+    {
+      "id": 104965862128,
+      "run_id": 35146653520,
+      "run_attempt": 1,
+      "head_sha": "27b8602b2c007d9ead3ee87de86e3008c8d746d5",
+      "name": "Deploy Staging",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-16T20:31:59Z",
+      "completed_at": "2026-09-16T20:40:05Z",
+      "steps": [
+        {
+          "name": "Verify immutable active release image",
+          "status": "completed",
+          "conclusion": "success",
+          "number": 20,
+          "started_at": "2026-09-16T20:32:37Z",
+          "completed_at": "2026-09-16T20:32:39Z"
+        }
+      ]
+    },
+    {
+      "id": 104968601161,
+      "run_id": 35146653520,
+      "run_attempt": 1,
+      "head_sha": "27b8602b2c007d9ead3ee87de86e3008c8d746d5",
+      "name": "Deploy Production",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-16T20:40:09Z",
+      "completed_at": "2026-09-16T20:51:06Z",
+      "steps": []
+    },
+    {
+      "id": 104968601361,
+      "run_id": 35146653520,
+      "run_attempt": 1,
+      "head_sha": "27b8602b2c007d9ead3ee87de86e3008c8d746d5",
+      "name": "Notify Staging Advisory Dispatch Failure",
+      "status": "completed",
+      "conclusion": "skipped",
+      "started_at": "2026-09-16T20:40:06Z",
+      "completed_at": "2026-09-16T20:40:05Z",
+      "steps": []
+    },
+    {
+      "id": 104972224540,
+      "run_id": 35146653520,
+      "run_attempt": 1,
+      "head_sha": "27b8602b2c007d9ead3ee87de86e3008c8d746d5",
+      "name": "Close Resolved Production Deploy Incidents",
+      "status": "completed",
+      "conclusion": "success",
+      "started_at": "2026-09-16T20:51:09Z",
+      "completed_at": "2026-09-16T20:51:13Z",
+      "steps": []
+    },
+    {
+      "id": 104972225292,
+      "run_id": 35146653520,
+      "run_attempt": 1,
+      "head_sha": "27b8602b2c007d9ead3ee87de86e3008c8d746d5",
+      "name": "Notify Production Rollback Incident",
+      "status": "completed",
+      "conclusion": "skipped",
+      "started_at": "2026-09-16T20:51:07Z",
+      "completed_at": "2026-09-16T20:51:07Z",
+      "steps": []
+    },
+    {
+      "id": 104972225821,
+      "run_id": 35146653520,
+      "run_attempt": 1,
+      "head_sha": "27b8602b2c007d9ead3ee87de86e3008c8d746d5",
+      "name": "Dispatch Ephemeral Verification",
+      "status": "completed",
+      "conclusion": "skipped",
+      "started_at": "2026-09-16T20:51:07Z",
+      "completed_at": "2026-09-16T20:51:07Z",
+      "steps": []
+    },
+    {
+      "id": 104972226065,
+      "run_id": 35146653520,
+      "run_attempt": 1,
+      "head_sha": "27b8602b2c007d9ead3ee87de86e3008c8d746d5",
+      "name": "Record Staging Release Health",
+      "status": "completed",
+      "conclusion": "skipped",
+      "started_at": "2026-09-16T20:51:07Z",
+      "completed_at": "2026-09-16T20:51:07Z",
+      "steps": []
+    },
+    {
+      "id": 104972226333,
+      "run_id": 35146653520,
+      "run_attempt": 1,
+      "head_sha": "27b8602b2c007d9ead3ee87de86e3008c8d746d5",
+      "name": "Notify Production Deploy Incident",
+      "status": "completed",
+      "conclusion": "skipped",
+      "started_at": "2026-09-16T20:51:07Z",
+      "completed_at": "2026-09-16T20:51:07Z",
+      "steps": []
+    }
+  ]
+}
