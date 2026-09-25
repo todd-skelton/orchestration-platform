@@ -52,6 +52,7 @@ import { SELF_ROUTING } from "../../scripts/dogfood/routing.mjs";
 import { MAX_TERMINAL_SUMMARY_LENGTH } from "../../scripts/dogfood/terminal-summary.mjs";
 import { sourceFailureFixture, historicalStops, snapshot } from "./fixtures/source-failure.js";
 import { prerequisiteFixture, prerequisiteProof } from "./fixtures/prerequisite.js";
+import { startCaseTiming, type CaseTiming } from "./fixtures/iss212-timing.js";
 import {
   type QueueConfig,
   type QueueAdapter,
@@ -60,6 +61,7 @@ import {
 } from "../../scripts/dogfood/queue.js";
 
 const roots: string[] = [];
+let timing: CaseTiming | undefined;
 
 it("ISS-187 retains a saved run's source failure through native absolute-2 entry and replay", async () => {
   const f = await prerequisiteFixture();
@@ -100,10 +102,13 @@ it("ISS-187 retains a saved run's source failure through native absolute-2 entry
 it.each(["source2", "probe", "source4", "ceiling"])(
   "ISS-187 uses native accounting and terminal hold: %s",
   async (scenario) => {
-    const f = await prerequisiteFixture();
+    if (scenario === "source4") timing = await startCaseTiming("source4");
+    const f = await prerequisiteFixture(timing);
     roots.push(f.root);
+    timing?.phase("proof");
     const old = await snapshot(f.runState);
     const trees = await snapshot(f.loop.worktreeRoot);
+    timing?.phase("queue");
     const next = (await f.advance())!;
     await persistCycle(f.loop, next);
     await startCycle(f.loop, next, f.host);
@@ -197,6 +202,7 @@ it.each(["source2", "probe", "source4", "ceiling"])(
         f.history[5]!.id,
         `${q.config.items[0]!.source.stateDirectory}:probe:1`,
       ]);
+    timing?.phase("proof");
     const after = await snapshot(f.runState);
     for (const [path, bytes] of old) {
       if (path !== resolve(f.current.config.stateDirectory, "attempt.json"))
@@ -214,19 +220,23 @@ it.each(["source2", "probe", "source4", "ceiling"])(
       rebasedMainBase: projected.rebasedMainBase,
     });
     for (const [path, bytes] of trees) expect(await readFile(path, "utf8"), path).toBe(bytes);
+    timing?.phase("queue");
     await expect(f.advance()).rejects.toMatchObject({ reason: "prerequisite-held" });
     const authorityUrl = f.loop.prerequisite!.authorityUrl;
     delete f.loop.prerequisite;
     await expect(f.advance()).rejects.toMatchObject({ reason: "prerequisite-held" });
     f.loop.blockedCycleResume = { cycle: 5, authorityUrl };
     await expect(f.advance()).rejects.toMatchObject({ reason: "prerequisite-held" });
+    timing?.phase("proof");
     expect(await snapshot(f.runState)).toEqual(after);
+    timing?.phase("queue");
     f.loop.blockedCycleResume.authorityUrl =
       "https://github.com/fixture/repository/issues/1#issuecomment-2";
     expect(await f.advance()).toMatchObject({
       selection: f.blocked.selection,
       initialHistory: charged,
     });
+    timing?.phase("proof");
     expect(await snapshot(f.runState)).toEqual(after);
     await prerequisiteProof(f, old, trees, scenario);
   },
@@ -454,6 +464,8 @@ async function fixture(history: QueueParticipant[] = []) {
 }
 
 afterEach(async () => {
+  timing?.phase("cleanup");
+  timing = undefined;
   vi.restoreAllMocks();
   await Promise.all(
     roots

@@ -11,6 +11,7 @@ import {
   type SupervisedCycle,
 } from "../../../scripts/dogfood/supervision.js";
 import { sourceFailureFixture, snapshot } from "./source-failure.js";
+import type { PhaseTiming } from "./iss212-timing.js";
 
 // Private synthetic reconstruction of the ISS-187 incident, read on 2026-09-17:
 // ISS-180 attempt/config/terminal SHA256 f6ecb1b2 / bf75832e / ee440beb.
@@ -18,14 +19,14 @@ import { sourceFailureFixture, snapshot } from "./source-failure.js";
 // The host artifact m1-182-pilot-stop-2337.md describes 652 retained rows + two
 // stop rows, not 654 immutable blocked-issue files. Fixture manifests cover the
 // entire synthetic run and separately cover worktrees/traces.
-export async function prerequisiteFixture() {
+export async function prerequisiteFixture(timing?: PhaseTiming) {
   const partials = [
     "docs/loop.md",
     "scripts/dogfood/queue.ts",
     "test/dogfood/queue-adapter.test.ts",
     "test/dogfood/queue.test.ts",
   ];
-  const f = await sourceFailureFixture(5, partials);
+  const f = await sourceFailureFixture(5, partials, timing);
   // Match the retained role/stage/outcome sequence, including the refresh
   // reviewer and dead launch; identities and usage are synthetic fixture data.
   for (const [index, participant] of f.current.config.initialHistory.entries()) {
@@ -107,10 +108,12 @@ export async function prerequisiteFixture() {
   await startCycle(f.loop, blocked, f.host);
   await queueStep(blockedQueue.config, blockedQueue.adapter);
   await stopCycle(f.loop, blocked, "malformed-worker-verdict", 1, f.host, f.policy);
+  timing?.phase("setup");
   const remote = resolve(f.root, "remote.git");
   await f.git(f.repository, ["clone", "--bare", f.repository, remote]);
   await f.git(f.repository, ["remote", "add", "origin", remote]);
   await f.upgrade();
+  timing?.phase("queue");
   const replay = await f.compose(blocked);
   // ISS-187's historical stop predates ISS-180. Reconstruct the old composition
   // explicitly; ordinary composition now keeps the saved pilot at its old head.
