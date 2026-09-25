@@ -1,6 +1,6 @@
 import { execFile, spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
@@ -305,34 +305,41 @@ it("kills each named partition guard bypass with unrelated inputs held valid", a
   }
 });
 
-it("derives new-file remainder and exclusions from real Vitest discovery, excluding queue substring siblings", async () => {
-  const directory = await temporary();
-  const config = (await readFile(resolve(root, "vitest.config.ts"), "utf8"))
-    .replace(
-      'import { defineConfig } from "vitest/config";',
-      "const defineConfig = (value) => value;",
-    )
-    .replace(
-      'include: ["test/**/*.test.ts"],',
-      'include: ["test/**/*.test.ts"], exclude: ["**/excluded.test.ts"],',
-    );
-  await writeFile(resolve(directory, "vitest.config.mjs"), config);
-  for (const file of [...full, "test/excluded.test.ts", "outside.test.ts"]) {
-    await mkdir(dirname(resolve(directory, file)), { recursive: true });
-    await writeFile(resolve(directory, file), "// discovery fixture\n");
-  }
-  const files = await discover([], directory);
-  expect(files.sort()).toEqual([...full].sort());
-  const selections = partition(files);
-  validatePartition(files, selections);
-  expect(selections.remainder).toContain("test/new.test.ts");
-  const exactQueue = await discover(selections.queue, directory);
-  expect(exactQueue).toEqual(["test/dogfood/queue.test.ts"]);
-  validateSelection(selections.queue, exactQueue);
-  const broadQueue = await discover(["queue"], directory);
-  expect(broadQueue.sort()).toEqual(full.filter((file) => file.includes("queue")).sort());
-  expect(() => validateSelection(selections.queue, broadQueue)).toThrow("exact shard selection");
-});
+it.each([false, true])(
+  "derives new-file remainder and exclusions from real Vitest discovery, excluding queue substring siblings (directory alias: %s)",
+  async (alias) => {
+    const parent = await temporary();
+    const target = resolve(parent, "target");
+    await mkdir(target);
+    const directory = alias ? resolve(parent, "alias") : target;
+    if (alias) await symlink(target, directory, process.platform === "win32" ? "junction" : "dir");
+    const config = (await readFile(resolve(root, "vitest.config.ts"), "utf8"))
+      .replace(
+        'import { defineConfig } from "vitest/config";',
+        "const defineConfig = (value) => value;",
+      )
+      .replace(
+        'include: ["test/**/*.test.ts"],',
+        'include: ["test/**/*.test.ts"], exclude: ["**/excluded.test.ts"],',
+      );
+    await writeFile(resolve(directory, "vitest.config.mjs"), config);
+    for (const file of [...full, "test/excluded.test.ts", "outside.test.ts"]) {
+      await mkdir(dirname(resolve(directory, file)), { recursive: true });
+      await writeFile(resolve(directory, file), "// discovery fixture\n");
+    }
+    const files = await discover([], directory);
+    expect(files.sort()).toEqual([...full].sort());
+    const selections = partition(files);
+    validatePartition(files, selections);
+    expect(selections.remainder).toContain("test/new.test.ts");
+    const exactQueue = await discover(selections.queue, directory);
+    expect(exactQueue).toEqual(["test/dogfood/queue.test.ts"]);
+    validateSelection(selections.queue, exactQueue);
+    const broadQueue = await discover(["queue"], directory);
+    expect(broadQueue.sort()).toEqual(full.filter((file) => file.includes("queue")).sort());
+    expect(() => validateSelection(selections.queue, broadQueue)).toThrow("exact shard selection");
+  },
+);
 
 // Explicitly synthetic Actions identities throughout these composition controls.
 function aggregateFixture(key?: string, outcome = "success", token = "synthetic-token") {

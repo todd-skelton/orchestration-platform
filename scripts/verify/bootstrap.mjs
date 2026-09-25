@@ -1,4 +1,5 @@
 import { execFile, spawn } from "node:child_process";
+import { realpath } from "node:fs/promises";
 import { dirname, relative, resolve } from "node:path";
 import { promisify } from "node:util";
 import { fileURLToPath } from "node:url";
@@ -70,6 +71,8 @@ export function run(executable, args, { cwd = repositoryRoot } = {}) {
 
 export async function discover(filters = [], cwd = repositoryRoot) {
   // The same globTestSpecifications operation used by `vitest list --filesOnly`.
+  // Vite resolves directory aliases; relativize against that same physical root.
+  cwd = await realpath(cwd);
   const { createVitest } = await import("vitest/node");
   const vitest = await createVitest("test", { root: cwd, watch: false });
   try {
