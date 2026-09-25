@@ -61,6 +61,9 @@ import {
 } from "../../scripts/dogfood/supervision.js";
 import { SELF_ROUTING, type RoutingRow } from "../../scripts/dogfood/routing.mjs";
 import { sourceFailureFixture, repairFailureFixture, snapshot } from "./fixtures/source-failure.js";
+import { startCaseTiming, type CaseTiming } from "./fixtures/iss212-timing.js";
+
+let timing: CaseTiming | undefined;
 
 it("binds repair FAIL to its retained setup, source, review, author and complete history", async () => {
   const f = await repairFailureFixture();
@@ -323,8 +326,8 @@ it("binds repair FAIL to its retained setup, source, review, author and complete
   expect(await snapshot(directory)).toEqual(original);
 });
 
-async function unparkedRepairFailure(intervening = false) {
-  const f = await repairFailureFixture();
+async function unparkedRepairFailure(intervening = false, capture?: CaseTiming) {
+  const f = await repairFailureFixture(capture);
   roots.push(f.root);
   await f.fail();
   expect(await f.stop()).toBe("item");
@@ -346,9 +349,12 @@ async function unparkedRepairFailure(intervening = false) {
 }
 
 it("unparks only attempt 4 with current guidance, full diff, history and fresh review", async () => {
-  const { f, next } = await unparkedRepairFailure(true);
+  timing = await startCaseTiming("unpark");
+  const { f, next } = await unparkedRepairFailure(true, timing);
+  timing?.phase("proof");
   const prior = await snapshot(f.runState);
   const trees = await snapshot(f.loop.worktreeRoot);
+  timing?.phase("queue");
   const path = resolve(f.current.config.stateDirectory, "attempt.json");
   const old = JSON.parse(prior.get(path)!);
   expect(old).toMatchObject({ phase: "repair", candidateAttempt: 3, retries: 1 });
@@ -453,6 +459,7 @@ it("unparks only attempt 4 with current guidance, full diff, history and fresh r
     status: "complete",
   });
   expect(launches).toEqual(["author", "reviewer"]);
+  timing?.phase("proof");
   for (const [file, bytes] of prior)
     if (file !== path) expect(await readFile(file, "utf8"), file).toBe(bytes);
   for (const [file, bytes] of trees) expect(await readFile(file, "utf8"), file).toBe(bytes);
@@ -1717,6 +1724,8 @@ async function loopFixture(
 }
 
 afterEach(async () => {
+  timing?.phase("cleanup");
+  timing = undefined;
   await Promise.all(
     roots
       .splice(0)

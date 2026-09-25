@@ -31,13 +31,19 @@ import {
 import type { RepositoryAdapter } from "../../../scripts/dogfood/repository-adapter.js";
 import type { Adapter } from "../../../scripts/dogfood/flow.js";
 import { SELF_ROUTING } from "../../../scripts/dogfood/routing.mjs";
+import type { PhaseTiming } from "./iss212-timing.js";
 
 const execute = promisify(execFile);
 // ISS-196: the ISS-171 idiom; one executable lookup per worker, not per fixture entry.
 let fixtureGit: Promise<string> | undefined;
 
 // All issue identities, workers and delivery results in this fixture are synthetic.
-export async function sourceFailureFixture(priorWorkers = 0, files: string[] = []) {
+export async function sourceFailureFixture(
+  priorWorkers = 0,
+  files: string[] = [],
+  timing?: PhaseTiming,
+) {
+  timing?.phase("setup");
   const root = await realpath(await mkdtemp(resolve(tmpdir(), "source-fail-native-")));
   const repository = resolve(root, "repository");
   await mkdir(repository);
@@ -71,6 +77,7 @@ export async function sourceFailureFixture(priorWorkers = 0, files: string[] = [
   ]);
   const base = /^\[main \(root-commit\) ([0-9a-f]{40})\] /.exec(committed)?.[1];
   if (!base) throw new Error(`fixture commit summary did not name its head: ${committed}`);
+  timing?.phase("queue");
   const loop: LoopConfig = {
     schemaVersion: "dogfood-loop/v1",
     run: "synthetic-source-fail",
@@ -359,13 +366,15 @@ export async function historicalStops(
 
 // A real native source rejection (including its malformed-review retry) then
 // native repair FAIL in directory 2, candidate 3. No incident files are inputs.
-export async function repairFailureFixture() {
-  const f = await sourceFailureFixture(1);
+export async function repairFailureFixture(timing?: PhaseTiming) {
+  const f = await sourceFailureFixture(1, [], timing);
   await f.fail();
   await f.stop();
+  timing?.phase("setup");
   const remote = resolve(f.root, "remote.git");
   await f.git(f.repository, ["clone", "--bare", f.repository, remote]);
   await f.git(f.repository, ["remote", "add", "origin", remote]);
+  timing?.phase("queue");
   f.rows[0]!.ready = true;
   const cycle = (await f.advance())!;
   await persistCycle(f.loop, cycle);
