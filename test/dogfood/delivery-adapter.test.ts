@@ -317,6 +317,78 @@ it("SYNTHETIC stable completion still refuses a missing terminal required job", 
   f.assertCalls(4);
 });
 
+// ISS-210: the ordinary observer validates ALL effective jobs before selecting
+// required contexts. Non-required Windows shards must not escape that contract.
+it.each([
+  "success",
+  "id",
+  "run_id",
+  "head_sha",
+  "run_attempt",
+  "html_url",
+  "failure",
+  "cancelled",
+  "skipped",
+  "pending",
+])(
+  "SYNTHETIC sharded failed-only rerun preserves non-required job validation: %s",
+  async (field) => {
+    const f = statusObservation("completed", "completed");
+    f.state.before[0]!.run_attempt = f.state.after[0]!.run_attempt = 2;
+    for (const job of f.state.jobs) job.run_attempt = 2;
+    const extra = ["refresh", "queue", "remainder"].map((name, index) => ({
+      ...f.state.jobs[0]!,
+      id: 800 + index,
+      run_attempt: index === 1 ? 2 : 1,
+      name: `Windows tests / ${name}`,
+      html_url: `https://github.com/fixture/repository/actions/runs/123/job/${800 + index}`,
+    }));
+    f.state.jobs.push(...extra);
+    const job = extra[0]!;
+    if (field === "id") job.id = 0;
+    if (field === "run_id") job.run_id++;
+    if (field === "head_sha") job.head_sha = "f".repeat(40);
+    if (field === "run_attempt") job.run_attempt = 3;
+    if (field === "html_url") job.html_url += "/foreign";
+    if (["failure", "cancelled", "skipped"].includes(field)) job.conclusion = field;
+    if (field === "pending") {
+      job.conclusion = null;
+      job.status = "in_progress";
+    }
+    if (field === "success") {
+      const observed = await f.adapter.checks(f.current, f.publication);
+      expect(observed.checks.map((check) => check.name)).toEqual(f.current.requiredChecks);
+      expect(
+        observed.checks.every((check) => check.bucket === "pass" && check.actions?.attempt === 2),
+      ).toBe(true);
+      f.assertCalls(5);
+    } else {
+      await expect(f.adapter.checks(f.current, f.publication)).rejects.toMatchObject({
+        reason: "hosted-observation-unavailable",
+      });
+      f.assertCalls(3);
+    }
+  },
+);
+
+it.each(["missing", "cancelled"])(
+  "SYNTHETIC early-cancelled Windows aggregate stays non-green: %s",
+  async (state) => {
+    const f = statusObservation("completed", "completed");
+    const windows = f.state.jobs.find((job) => job.name === "Node 24 / windows-latest")!;
+    if (state === "missing") {
+      f.state.jobs = f.state.jobs.filter((job) => job !== windows);
+      await expect(f.adapter.checks(f.current, f.publication)).rejects.toMatchObject({
+        reason: "hosted-observation-unavailable",
+      });
+    } else {
+      windows.conclusion = "cancelled";
+      const observed = await f.adapter.checks(f.current, f.publication);
+      expect(observed.checks.find((check) => check.name === windows.name)?.bucket).toBe("cancel");
+    }
+  },
+);
+
 const gateFaults = vi.hoisted(() => ({ cleanup: false }));
 const workspaceGit = vi.hoisted(() => vi.fn<(args: string[], cwd: string) => string>());
 const workspaceCommands = vi.hoisted(() => ({

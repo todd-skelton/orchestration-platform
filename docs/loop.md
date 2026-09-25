@@ -1046,6 +1046,14 @@ Vitest runs files serially with one worker to bound competing real-Git fixtures;
 every test and the existing test/hook timeouts remain in place for local and
 hosted bootstrap gates (ISS-160).
 
+ISS-210 partitions hosted Windows bootstrap across three standard runners:
+refresh, queue, and the remainder from Vitest's canonical discovery. Each keeps
+all four gates and serial tests; local defaults, Ubuntu and macOS stay full.
+The unchanged required Windows name aggregates all three successes and embeds
+cancelled-shard logs (or fails with `shard-log-unavailable`). No observer or
+required-check contract changes. Landed-head latency and cost qualification
+remain host-owned; the partition alone establishes neither target nor savings.
+
 A delayed synthetic helper reproduces auth failure before HTTP; separating the
 real probe from logical error replay reaches HTTP with the malformed payload
 and retains the same `[10]` wait. The fixture checks helper invocation before
