@@ -7,6 +7,10 @@ import { promisify } from "node:util";
 import { afterEach, expect, it } from "vitest";
 import { githubDeliveryAdapter } from "../../scripts/dogfood/delivery-adapter.mjs";
 import {
+  aggregate as windowsAggregate,
+  shards as windowsShards,
+} from "../../scripts/verify/windows-aggregate.mjs";
+import {
   queueStep,
   queueUsage,
   type QueueConfig,
@@ -1407,6 +1411,82 @@ it.each(["pass", "fail"] as const)(
     expect(f.requests.filter((args) => args.includes("--job"))).toEqual([
       ["run", "view", "--job", "456", "--log"],
     ]);
+    expect(f.calls).not.toContain("merge");
+  },
+);
+
+it.each(["failure", "cancelled", "timed_out"] as const)(
+  "ISS-210 SYNTHETIC existing failed-run consumer retains the underlying %s shard diagnostic",
+  async (outcome) => {
+    const required = ["ubuntu", "windows", "macos"].map((os) => `Node 24 / ${os}-latest`);
+    const f = await aggregateFixture(undefined, required);
+    f.evidence.runs[0]!.status = "completed";
+    f.evidence.checks = [
+      f.check(required[0]!, "pass", 454),
+      f.check(required[1]!, "fail", 455),
+      f.check(required[2]!, "pass", 456),
+    ];
+    const names = Object.entries(windowsShards);
+    const jobs = names.map(([key, name], index) => {
+      f.evidence.checks.push(
+        f.check(
+          name,
+          index === 0 ? (outcome === "failure" ? "fail" : "cancel") : "pass",
+          800 + index,
+        ),
+      );
+      return {
+        id: 800 + index,
+        run_id: 123,
+        run_attempt: 1,
+        head_sha: head,
+        name,
+        html_url: `https://github.com/${f.config.repository}/actions/runs/123/job/${800 + index}`,
+        status: "completed",
+        conclusion: index === 0 ? outcome : "success",
+      };
+    });
+    const diagnostic = `SYNTHETIC ${outcome}: refresh child progress\ncomplete file/test diagnostic\n${"unabridged output\n".repeat(100)}`;
+    const aggregateLog: string[] = [];
+    expect(
+      await windowsAggregate({
+        env: {
+          GITHUB_REPOSITORY: f.config.repository,
+          GITHUB_RUN_ID: "123",
+          GITHUB_RUN_ATTEMPT: "1",
+          BOOTSTRAP_HEAD: head,
+          GH_TOKEN: "synthetic-token",
+          WINDOWS_NEEDS: JSON.stringify(
+            Object.fromEntries(
+              names.map(([key], index) => [key, { result: index === 0 ? outcome : "success" }]),
+            ),
+          ),
+        },
+        request: async (url) =>
+          String(url).includes("/jobs?")
+            ? Response.json({ total_count: jobs.length, jobs })
+            : new Response(diagnostic),
+        log: (line) => {
+          aggregateLog.push(line);
+        },
+        pause: async () => {},
+      }),
+    ).toBe(1);
+    f.evidence.jobLogs[455] = aggregateLog.join("\n");
+    f.evidence.jobLogs[800] = diagnostic;
+    await expect(deliveryStep(f.config, f.adapter, f.policy)).resolves.toMatchObject({
+      status: "failed",
+    });
+    const saved = await readFile(resolve(f.config.stateDirectory, "hosted-failure.log"), "utf8");
+    expect(saved).toContain(diagnostic);
+    expect(saved).toContain("Windows tests / refresh: conclusion=");
+    expect(saved).toContain(jobs[0]!.html_url);
+    expect(f.requests.filter((args) => args.includes("--log-failed"))).toEqual([
+      ["run", "view", "123", "--attempt", "1", "--log-failed"],
+    ]);
+    // Only the required aggregate is selected; cancellation reaches this consumer
+    // through its embedded body, never an invented non-required log fetch.
+    expect(f.requests.filter((args) => args.includes("--job"))).toEqual([]);
     expect(f.calls).not.toContain("merge");
   },
 );
