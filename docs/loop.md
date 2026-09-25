@@ -752,6 +752,69 @@ after an operator's read-only census finds zero unfinished or re-enterable
 pre-cutover self cycles, legacy or marked; completed history stays readable.
 This is not a time-based sunset and authorizes no census here.
 
+### Zero-attempt recovery from a stale pinned self brief
+
+ISS-209 documents the [ISS-206 recovery receipt](https://github.com/todd-skelton/orchestration-platform/issues/368#issuecomment-5818298416):
+on 2026-09-24, resuming `m1-iss206-20260924T1545` through
+`scripts/executor/start-loop.ps1` still refused `selected-issue-criteria-missing`
+after heading-only PR #649 landed and the executor was upgraded. Its saved
+`planningRevision` remained `886c30818e24ba7a58b837c7bffce78de79d24a3`, before
+the fix at `e6b68871ab6153fdb124e2b0a29fc1e1f6d65e38`. The host reported zero
+attempts and launches and preserved that run. Fresh run
+`m1-iss206-20260924T1642` then refused a board-body mismatch until the host
+synced #648's `## Acceptance` heading to the landed `## Done when` draft.
+That was a host body sync, not an automatic ISS-178 delivery mirror.
+
+The boundary is whether selection was saved. Before any saved selection,
+repairing current-main planning and full-board agreement permits the ordinary,
+host-authorized same-run retry through `scripts/executor/start-loop.ps1`.
+With a persisted pinned selection, resume through that same entrypoint keeps
+its brief and base: neither a later draft fix nor an executor upgrade changes
+the pin. Missing-criteria parsing precedes author dispatch, but that stop
+reason does not prove zero historical attempts or launch charges. Direct queue
+composition is not a bypass.
+
+For an entirely unattempted run and issue lineage, the host procedure is:
+
+1. With supervisors absent, make a contemporaneous read-only inspection of
+   the saved selection and pin, configs, attempts, worker and participant
+   history, and stop records. Establish zero attempts, zero launches and no
+   in-flight or uncertain work anywhere in the abandoned run, and no consumed
+   earlier issue lineage. Any nonzero or unknown accounting stops this recipe:
+   seek the existing separately authorized continuation or disposition. An
+   absent author process is not evidence of zero charges; historical incident
+   notes do not establish eligibility for a future recovery.
+2. After an independently reviewed, final-head three-OS-bootstrap-green
+   planning fix lands, check the live issue's verbatim draft, milestone,
+   readiness, dependencies and project membership against current main.
+   Capture that board evidence immediately before recovery; perform a needed
+   board-body sync only with explicit authorization. If the issue is no longer
+   eligible, stop rather than manufacture readiness.
+3. Only a separate explicit host authorization permits a fresh config with a
+   new `run` and distinct `worktreeRoot` (ISS-151). Keep `stateRoot`, placements,
+   `attemptCeiling`, `nativeLaunchCeiling` and every other config field unchanged.
+   Under explicit live-start authorization, use the canonical Windows entrypoint
+   `scripts/executor/start-loop.ps1 -Config <fresh-config>`. Fresh selection
+   applies the ordinary full-board gate and priority order; it does not
+   force-select the old issue. A pre-selection board refusal follows the
+   same-run boundary above.
+4. Record old/new run IDs, pins, config differences, inspection and board
+   evidence, authorizations and the result in the existing issue note. Count
+   the recovery as host-assisted, not toward M1's three consecutive unattended
+   issues. The [later ISS-206 receipt](https://github.com/todd-skelton/orchestration-platform/issues/368#issuecomment-5819507845)
+   records delivery by PR #650; this recipe does not reopen #648.
+
+All old runtime, worktrees, stops and config bytes remain unchanged. There is
+no silent re-selection on resume, same-run re-pin, selected-file deletion or
+archival to trick selection, fingerprint waiver, backfill or rewritten history.
+No attempts, worker retries, launch charges or ceilings are reset or transferred;
+no completion or PASS is invented, and old review authority does not transfer
+to the new pin. A fresh name is neither a budget escape nor terminal-park
+re-entry: a nonzero lineage is outside this recipe. This documentation grants
+no installation, board mutation, live-run start or unpark authority. Existing
+pinned-context tests remain the behavior contract; do not exercise a live
+recovery as a documentation test.
+
 ## Running
 
 Host installation requires independent exact-head PASS and three-OS bootstrap
