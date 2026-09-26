@@ -150,6 +150,15 @@ old gate receipts remain history. ISS-152's shared, attributed correction applie
 to refreshed gates too, without renewing the allowance. Draft mutations are
 observed before applying them, so an already matching mirror is not repeated.
 Publication, hosted checks and merge/deploy remain bound to the resulting head.
+ISS-211 addresses the draft/note observation stops in `m1-iss210-20260925T0020`:
+only primary draft reads (including mutation confirmation) and learning-note
+reads retry classified GitHub transport failures, with three attempts and
+1-second then 2-second waits. Sibling census and other issue reads stay single-shot.
+After any comment response, a fresh marker observation reconciles acceptance;
+only a proved pre-send failure plus fresh absence permits one additional post
+in that call. A comment HTTP 5xx is uncertain, never pre-send. Exhausted reads
+or an unresolved post retain the non-parking unknown stop and pending intent;
+saved records and restart reconciliation are unchanged.
 Published delivery, including a pending publication intent whose response may
 have been lost, resumes its existing reconciliation, checks and mutations; it
 does not rewrite an in-flight publication merely because main moved. An exact
