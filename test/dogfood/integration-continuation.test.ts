@@ -17,8 +17,11 @@ import { promisify } from "node:util";
 import { afterEach, expect, it } from "vitest";
 import type { Adapter } from "../../scripts/dogfood/flow.js";
 import { githubDeliveryAdapter } from "../../scripts/dogfood/delivery-adapter.mjs";
+import { DeliveryBlocked } from "../../scripts/dogfood/delivery.mjs";
 import type { IntegrationContinuation } from "../../scripts/dogfood/continuation.js";
 import {
+  ISS214_REFRESH_REVIEW_ALLOWANCE,
+  QueueBlocked,
   queueConfigFromLoop,
   queueStep,
   repositoryQueueAdapter,
@@ -335,7 +338,7 @@ async function exhaustedFixture(shape: Shape = "conflict", spentRetry = false, a
     stopMarker: marker,
     candidateHead: reviewed,
     reviewId,
-    authorityUrl: "https://github.com/chase-sets/chase-sets/issues/4388#issuecomment-5703720584",
+    authorityUrl: "https://github.com/fixture/authority/issues/1#issuecomment-1",
     allowedPaths: ["docs/loop.md"],
   };
   const retained = await snapshot(runState);
@@ -1058,6 +1061,18 @@ it.each(["ordinary", "spent", "removed"])(
 );
 
 type Mode =
+  | "published-allowance"
+  | "published-allowance-declaration-faults"
+  | "published-allowance-record-faults"
+  | "published-allowance-authority-faults"
+  | "published-allowance-retry"
+  | "published-allowance-nonpass"
+  | "published-allowance-lost-launch"
+  | "published-allowance-refusal"
+  | "published-allowance-second-refresh"
+  | "published-allowance-second-conflict"
+  | "published-reentry"
+  | "published-single-reentry"
   | "pass"
   | "clean"
   | "dead-retry"
@@ -1101,6 +1116,8 @@ type Mode =
   | "gates-moved-main";
 
 const integrationModes: Mode[] = [
+  "published-reentry",
+  "published-single-reentry",
   "pass",
   "clean",
   "dead-retry",
@@ -1153,6 +1170,16 @@ it.each([
       "dead-retry-review-fail",
       "review-interruption",
       "gates-moved-main",
+      "published-allowance",
+      "published-allowance-declaration-faults",
+      "published-allowance-record-faults",
+      "published-allowance-authority-faults",
+      "published-allowance-retry",
+      "published-allowance-nonpass",
+      "published-allowance-lost-launch",
+      "published-allowance-refusal",
+      "published-allowance-second-refresh",
+      "published-allowance-second-conflict",
     ])
     .map((mode) => ({ mode, spent: true })),
 ])("runs native integration delivery: $mode, spent=$spent", async ({ mode, spent }) => {
@@ -1175,11 +1202,27 @@ it.each([
     f.packet.spentResolution!.authorityBody += " feature.txt";
   }
   if (mode === "overlap-inside") f.packet.allowedPaths.push("overlap.txt");
+  if (mode.startsWith("published-")) {
+    f.loop.nativeLaunchCeiling = 64;
+    while (f.later.length < 23)
+      f.later.push(participant(f.later.length + 1, "ISS-105:1", "refresh", "reviewer", "passed"));
+  }
   const q = await f.compose();
   expect(await f.compose()).toEqual(q);
   const item = q.items[0]!;
   const launches: string[] = [];
   const effects: string[] = [];
+  const allowanceMode = mode.startsWith("published-allowance");
+  let allowance: typeof ISS214_REFRESH_REVIEW_ALLOWANCE | null = null;
+  let authorityReads = 0;
+  let authorityFault = "";
+  const authority = {
+    id: "314",
+    url: "https://github.com/fixture/authority/issues/7#issuecomment-314",
+    author: "fixture-decision-recorder",
+    body: "Synthetic C1/C5: one refresh DELTA reviewer, same run and attempt. No retries or author.",
+    capturedAt: "2030-01-02T03:04:05.000Z",
+  };
   let observing = true;
   let reviewerWaiting = mode === "review-interruption";
   let died = false;
@@ -1224,7 +1267,19 @@ it.each([
       return result;
     },
     async launch(role, config, prompt) {
+      if (allowanceMode && launches.length === 3) {
+        expect(role).toBe("reviewer");
+        expect(
+          JSON.parse(
+            await readFile(resolve(q.stateDirectory, "refresh-review-grant.json"), "utf8"),
+          ),
+        ).toMatchObject({ grant: allowance, directory: config.stateDirectory });
+      }
       launches.push(role);
+      if (mode === "published-allowance-lost-launch" && launches.length === 4)
+        throw new Error("synthetic lost additional launch response");
+      if (mode === "published-allowance-refusal" && launches.length === 4)
+        throw new QueueBlocked("provider-model-refused");
       expect(config.stateDirectory.startsWith(item.source.stateDirectory)).toBe(true);
       expect(config.worktree).toBe(item.source.worktree);
       expect(config.pilotRevision).toBe(item.source.pilotRevision);
@@ -1292,6 +1347,8 @@ it.each([
     async observe(role, config, attempt) {
       if (observing) return { status: "running", id: attempt.id };
       if (role === "reviewer" && reviewerWaiting) return { status: "running", id: attempt.id };
+      if (mode === "published-allowance-retry" && launches.length === 4)
+        return { status: "dead", id: attempt.id, summary: "Synthetic additional reviewer death." };
       if (mode === "lost-terminal" && role === "author" && !lost) {
         lost = true;
         throw new Error("synthetic interrupted terminal observation");
@@ -1320,7 +1377,10 @@ it.each([
       }
       const head =
         mode === "review-stale" ? f.reviewed : await f.git(["rev-parse", "HEAD"], config.worktree);
-      const fail = mode === "review-fail" || mode === "dead-retry-review-fail";
+      const fail =
+        mode === "review-fail" ||
+        mode === "dead-retry-review-fail" ||
+        (mode === "published-allowance-nonpass" && launches.length === 4);
       return {
         status: fail ? "failed" : "passed",
         id: attempt.id,
@@ -1382,6 +1442,15 @@ it.each([
   let merged = false;
   let cleaned = false;
   let publishedHead = "";
+  let publishedConflict = false;
+  let publicationObservations = 0;
+  let hostedObservations = 0;
+  delivery.conflictingPublication = async (config, publication) => {
+    publicationObservations++;
+    expect(config.candidateHead).toBe(publishedHead);
+    expect(publication.head).toBe(publishedHead);
+    return publishedConflict;
+  };
   delivery.observeDraft = async () =>
     draft ? { state: "confirmed", value: { issue: NUMBER } } : { state: "needs-mutation" };
   delivery.applyDraft = async () => {
@@ -1389,7 +1458,7 @@ it.each([
     effects.push("draft");
   };
   delivery.observePublication = async (config, plan, planDigest) =>
-    published
+    published && config.candidateHead === publishedHead
       ? {
           state: "confirmed",
           value: {
@@ -1404,21 +1473,34 @@ it.each([
             planDigest,
           },
         }
-      : { state: "needs-mutation", target: "absent" };
+      : { state: "needs-mutation", target: published ? "forward" : "absent" };
   delivery.publish = async (config) => {
+    if (published)
+      expect(config.refresh).toMatchObject({
+        head: publishedHead,
+        number: 400,
+        url: "https://github.com/fixture/repository/pull/400",
+      });
     published = true;
     publishedHead = config.candidateHead;
+    publishedConflict = false;
     effects.push("publish");
     throw new Error("lost publish response");
   };
-  delivery.checks = async (config) => ({
-    head: publishedHead,
-    checks: config.requiredChecks.map((name) => ({
-      name,
-      bucket: mode === "hosted-fail" ? "fail" : "pass",
-      link: `https://example.test/check/${encodeURIComponent(name)}`,
-    })),
-  });
+  delivery.checks = async (config, publication) => {
+    hostedObservations++;
+    expect(publication).toMatchObject({ number: 400, head: config.candidateHead });
+    if (publishedConflict) throw new DeliveryBlocked("published-candidate-conflict");
+    return {
+      head: publishedHead,
+      checks: config.requiredChecks.map((name) => ({
+        name,
+        bucket:
+          mode === "hosted-fail" ? "fail" : mode.startsWith("published-") ? "pending" : "pass",
+        link: `https://example.test/check/${encodeURIComponent(name)}`,
+      })),
+    };
+  };
   delivery.failedCheckLog = async () => "synthetic failed job log\n";
   delivery.observeMerge = async () =>
     merged
@@ -1444,6 +1526,16 @@ it.each([
       setup,
       delivery,
       gitExecutable: f.gitExecutable,
+      refreshReviewAllowance: allowance,
+      async observeAuthority(url) {
+        authorityReads++;
+        expect(url).toBe(authority.url);
+        if (authorityFault === "unreadable") throw new Error("synthetic unreadable comment");
+        if (authorityFault === "absent") return undefined as never;
+        return authorityFault
+          ? { ...authority, [authorityFault]: "synthetic mismatch" }
+          : authority;
+      },
       async assertExecutor() {},
       repository: {
         ...f.policy,
@@ -1595,6 +1687,33 @@ it.each([
   }
   expect(await f.git(["rev-parse", "HEAD"], f.repository)).toBe(f.main);
   observing = false;
+  if (mode === "published-single-reentry") {
+    const inProcess = adapter();
+    await expect(queueStep(q, inProcess)).resolves.toMatchObject({
+      status: "observing-hosted-checks",
+    });
+    const accepted = await integrationAttempt();
+    expect(accepted).toMatchObject({ phase: "delivery", head: publishedHead, candidateAttempt: 2 });
+    expect(accepted.reviewId).not.toBe(f.reviewId);
+    expect(accepted.history).toHaveLength(25);
+    const before = await snapshot(q.stateDirectory);
+    const calls = [...effects];
+    const checks = hostedObservations;
+    for (let replay = 0; replay < 2; replay++)
+      await expect(queueStep(q, inProcess)).resolves.toMatchObject({
+        status: "observing-hosted-checks",
+      });
+    await expect(run(await f.compose())).resolves.toMatchObject({
+      status: "observing-hosted-checks",
+    });
+    expect(await snapshot(q.stateDirectory)).toEqual(before);
+    expect(effects).toEqual(calls);
+    expect(hostedObservations).toBe(checks + 3);
+    expect(launches).toEqual(["author", "reviewer"]);
+    expect(effects.filter((effect) => effect === "publish")).toHaveLength(1);
+    await f.unchanged();
+    return;
+  }
   if (mode === "review-interruption") {
     for (let replay = 0; replay < 2; replay++)
       await expect(run(await f.compose())).resolves.toMatchObject({ status: "observing-reviewer" });
@@ -1629,7 +1748,11 @@ it.each([
   };
   // Main moving after the resolution review is an observation stop; the next replay
   // refreshes onto that main, and a second conflict is exhausted without renewal.
-  if (["second-conflict", "moved-main", "retry-moved-main", "spent-moved-main"].includes(mode)) {
+  if (
+    ["second-conflict", "moved-main", "retry-moved-main", "spent-moved-main"].includes(mode) ||
+    mode === "published-reentry" ||
+    allowanceMode
+  ) {
     await f.advanceMain(
       mode === "second-conflict" ? "docs/loop.md" : "main.txt",
       "# The loop\n\nMain moved again.\n",
@@ -1638,6 +1761,566 @@ it.each([
     expect(launches).toEqual(
       mode === "retry-moved-main" ? ["author", "author", "reviewer"] : ["author", "reviewer"],
     );
+  }
+  if (mode === "published-reentry" || allowanceMode) {
+    const intermediate = await refresh();
+    expect(intermediate.previousReview).toBe(f.reviewId);
+    expect(
+      JSON.parse(await readFile(resolve(intermediate.directory, "reviewer-terminal.json"), "utf8"))
+        .status,
+    ).toBe("passed");
+    for (const name of ["delivery-source", "publication"])
+      await expect(readFile(resolve(intermediate.directory, `${name}.json`))).rejects.toMatchObject(
+        { code: "ENOENT" },
+      );
+    await expect(run()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+    const current = await refresh();
+    expect(current).toMatchObject({
+      previousDirectory: intermediate.directory,
+      previousHead: intermediate.head,
+    });
+    expect(current.previousReview).not.toBe(f.reviewId);
+    const accepted = await integrationAttempt();
+    expect(accepted).toMatchObject({ phase: "delivery", head: publishedHead, candidateAttempt: 2 });
+    expect(accepted.reviewId).not.toBe(current.previousReview);
+    expect(accepted.reviewId).not.toBe(f.reviewId);
+    expect(accepted.history).toHaveLength(26);
+    if (allowanceMode) {
+      // The allowance modes start from this same persisted publication and carry
+      // only their own post-publication work. The AC1/AC2 re-entry replays and
+      // binding faults below stay with `published-reentry`: the hosted Windows
+      // bootstrap spends roughly 45ms per real Git spawn, and one case that
+      // repeated them (982 spawns) exceeded the fixed 30-second test timeout.
+      await publishedAllowance(current, accepted);
+      return;
+    }
+    const inProcess = adapter();
+    await expect(queueStep(q, inProcess)).resolves.toMatchObject({
+      status: "observing-hosted-checks",
+    });
+    expect(await integrationAttempt()).toEqual(accepted);
+    const before = await snapshot(q.stateDirectory);
+    const calls = [...effects];
+    const checks = hostedObservations;
+    for (let replay = 0; replay < 2; replay++)
+      await expect(queueStep(q, inProcess)).resolves.toMatchObject({
+        status: "observing-hosted-checks",
+      });
+    const reconstructed = await f.compose();
+    await expect(run(reconstructed)).resolves.toMatchObject({ status: "observing-hosted-checks" });
+    expect(await snapshot(q.stateDirectory)).toEqual(before);
+    expect(effects).toEqual(calls);
+    expect(hostedObservations).toBe(checks + 3);
+    expect(launches).toEqual(["author", "reviewer", "reviewer"]);
+    expect(effects.filter((effect) => effect === "publish")).toHaveLength(1);
+
+    // Change one binding at a time after the valid real-path re-entry. Each refusal
+    // must precede another observation/mutation, with every other prerequisite intact.
+    const refusal = "unreviewed-delivery-source";
+    const faults: {
+      label: string;
+      directory: string;
+      name: string;
+      change?: (record: any) => any;
+      reason: string;
+    }[] = [
+      {
+        label: "missing original PASS",
+        directory: f.sourceDirectory,
+        name: "reviewer-terminal",
+        reason: "missing-reviewer-terminal",
+      },
+      {
+        label: "non-PASS original",
+        directory: f.sourceDirectory,
+        name: "reviewer-terminal",
+        change: (r) => ({ ...r, status: "failed" }),
+        reason: refusal,
+      },
+      {
+        label: "original PASS body",
+        directory: f.sourceDirectory,
+        name: "reviewer-terminal",
+        change: (r) => ({
+          ...r,
+          summary: JSON.stringify({
+            ...JSON.parse(r.summary),
+            verdict: "FAIL",
+            findings: [
+              { file: "feature.txt", line: 1, severity: "blocking", text: "Synthetic rejection." },
+            ],
+          }),
+        }),
+        reason: refusal,
+      },
+      {
+        label: "original author completion",
+        directory: f.sourceDirectory,
+        name: "author-terminal",
+        change: (r) => ({ ...r, status: "failed" }),
+        reason: refusal,
+      },
+      {
+        label: "original head",
+        directory: f.sourceDirectory,
+        name: "candidate",
+        change: (r) => ({ ...r, head: f.base }),
+        reason: refusal,
+      },
+      {
+        label: "original review ID",
+        directory: f.sourceDirectory,
+        name: "reviewer-terminal",
+        change: (r) => ({ ...r, id: "synthetic-other-review" }),
+        reason: refusal,
+      },
+      {
+        label: "missing current PASS",
+        directory: current.directory,
+        name: "reviewer-terminal",
+        reason: "malformed-component-record:reviewer-terminal",
+      },
+      {
+        label: "non-PASS current",
+        directory: current.directory,
+        name: "reviewer-terminal",
+        change: (r) => ({ ...r, status: "failed" }),
+        reason: refusal,
+      },
+      {
+        label: "current PASS body",
+        directory: current.directory,
+        name: "reviewer-terminal",
+        change: (r) => ({
+          ...r,
+          summary: JSON.stringify({
+            ...JSON.parse(r.summary),
+            verdict: "FAIL",
+            findings: [
+              { file: "feature.txt", line: 1, severity: "blocking", text: "Synthetic rejection." },
+            ],
+          }),
+        }),
+        reason: refusal,
+      },
+      {
+        label: "current head",
+        directory: current.directory,
+        name: "reviewer-terminal",
+        change: (r) => ({ ...r, head: f.reviewed }),
+        reason: refusal,
+      },
+      {
+        label: "current review ID",
+        directory: current.directory,
+        name: "reviewer-terminal",
+        change: (r) => ({ ...r, id: "synthetic-other-review" }),
+        reason: refusal,
+      },
+      {
+        label: "missing delivery source",
+        directory: current.directory,
+        name: "delivery-source",
+        reason: "malformed-component-record:delivery-source",
+      },
+      {
+        label: "delivery source review",
+        directory: current.directory,
+        name: "delivery-source",
+        change: (r) => ({ ...r, reviewId: f.reviewId }),
+        reason: refusal,
+      },
+      {
+        label: "delivery source head",
+        directory: current.directory,
+        name: "delivery-source",
+        change: (r) => ({ ...r, head: intermediate.head }),
+        reason: refusal,
+      },
+      {
+        label: "delivery source directory",
+        directory: current.directory,
+        name: "delivery-source",
+        change: (r) => ({ ...r, stateDirectory: intermediate.directory }),
+        reason: refusal,
+      },
+      {
+        label: "selected directory",
+        directory: item.source.stateDirectory,
+        name: "native-refresh",
+        change: (r) => ({ ...r, directory: intermediate.directory }),
+        reason: refusal,
+      },
+      {
+        label: "previous directory",
+        directory: item.source.stateDirectory,
+        name: "native-refresh",
+        change: (r) => ({ ...r, previousDirectory: f.sourceDirectory }),
+        reason: refusal,
+      },
+      {
+        label: "previous review",
+        directory: item.source.stateDirectory,
+        name: "native-refresh",
+        change: (r) => ({ ...r, previousReview: f.reviewId }),
+        reason: refusal,
+      },
+      {
+        label: "previous head",
+        directory: item.source.stateDirectory,
+        name: "native-refresh",
+        change: (r) => ({ ...r, previousHead: f.reviewed }),
+        reason: refusal,
+      },
+      {
+        label: "missing intermediate PASS",
+        directory: intermediate.directory,
+        name: "reviewer-terminal",
+        reason: "malformed-component-record:reviewer-terminal",
+      },
+      {
+        label: "non-PASS intermediate",
+        directory: intermediate.directory,
+        name: "reviewer-terminal",
+        change: (r) => ({ ...r, status: "failed" }),
+        reason: refusal,
+      },
+      {
+        label: "current participant",
+        directory: q.stateDirectory,
+        name: "participant-26-terminal",
+        change: (r) => ({ ...r, outcome: "failed" }),
+        reason: refusal,
+      },
+      {
+        label: "intermediate participant",
+        directory: q.stateDirectory,
+        name: "participant-25-terminal",
+        change: (r) => ({ ...r, outcome: "failed" }),
+        reason: refusal,
+      },
+      {
+        label: "accepted review",
+        directory: q.stateDirectory,
+        name: "attempt",
+        change: (r) => ({ ...r, reviewId: "synthetic-other-review" }),
+        reason: refusal,
+      },
+      {
+        label: "accepted head",
+        directory: q.stateDirectory,
+        name: "attempt",
+        change: (r) => ({ ...r, head: f.reviewed }),
+        reason: refusal,
+      },
+    ];
+    const stale = JSON.parse(
+      await readFile(resolve(f.sourceDirectory, "native-refresh.json"), "utf8"),
+    );
+    faults.push({
+      label: "stale attempt-level selection",
+      directory: item.source.stateDirectory,
+      name: "native-refresh",
+      change: () => stale,
+      reason: refusal,
+    });
+    for (const fault of faults) {
+      const path = resolve(fault.directory, `${fault.name}.json`);
+      const bytes = await readFile(path, "utf8");
+      try {
+        if (fault.change) await f.put(fault.directory, fault.name, fault.change(JSON.parse(bytes)));
+        else await rm(path);
+        await expect(run(), fault.label).rejects.toMatchObject({ reason: fault.reason });
+      } finally {
+        await writeFile(path, bytes);
+      }
+      expect(effects, fault.label).toEqual(calls);
+      expect(launches, fault.label).toEqual(["author", "reviewer", "reviewer"]);
+    }
+    // The intermediate PASS is complete review evidence, but it never entered
+    // delivery. Selecting it coherently must still fail for the missing payload.
+    const refreshPath = resolve(item.source.stateDirectory, "native-refresh.json");
+    const attemptPath = resolve(q.stateDirectory, "attempt.json");
+    const refreshBytes = await readFile(refreshPath, "utf8");
+    const attemptBytes = await readFile(attemptPath, "utf8");
+    try {
+      await f.put(item.source.stateDirectory, "native-refresh", intermediate);
+      await f.put(q.stateDirectory, "attempt", {
+        ...accepted,
+        head: intermediate.head,
+        reviewId: current.previousReview,
+      });
+      await expect(run()).rejects.toMatchObject({
+        reason: "malformed-component-record:delivery-source",
+      });
+    } finally {
+      await writeFile(refreshPath, refreshBytes);
+      await writeFile(attemptPath, attemptBytes);
+    }
+    expect(await snapshot(q.stateDirectory)).toEqual(before);
+    await f.unchanged();
+    return;
+  }
+  async function publishedAllowance(current: any, accepted: any) {
+    const digestFile = async (path: string) =>
+      createHash("sha256")
+        .update(await readFile(path))
+        .digest("hex");
+    const stopName = "cycle-6-stop-2";
+    const stopMarker = `loop-stop:${RUN}:6:2`;
+    const selection = { cycle: 6, key: KEY, number: NUMBER, base: current.main };
+    await f.put(f.runState, stopName, {
+      selection,
+      stop: 2,
+      marker: stopMarker,
+      reason: "unreviewed-delivery-source",
+      attempts: 2,
+      history: accepted.history,
+    });
+    await f.put(f.runState, `${stopName}-complete`, {
+      selection,
+      stop: 2,
+      history: accepted.history,
+    });
+    const reservationPath = resolve(q.stateDirectory, "../spent-resolution.json");
+    const reservationBytes = await readFile(reservationPath, "utf8");
+    const granted = {
+      run: RUN,
+      issue: ISSUE,
+      item: item.id,
+      stopMarker,
+      authority: {
+        id: authority.id,
+        url: authority.url,
+        author: authority.author,
+        bodySha256: createHash("sha256").update(authority.body).digest("hex"),
+      },
+      reservationSha256: await digestFile(reservationPath),
+      claimSha256: await digestFile(f.packet.spentResolution!.claim),
+      stopSha256: await digestFile(resolve(f.runState, `${stopName}.json`)),
+      publicationSha256: await digestFile(resolve(current.directory, "publication.json")),
+    };
+    allowance = granted;
+    const grantPath = resolve(q.stateDirectory, "refresh-review-grant.json");
+    await expect(readFile(grantPath)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(authorityReads).toBe(0); // No observation at composition, re-entry or unchanged main.
+    await f.advanceMain("post-publication.txt", "new main after publication\n");
+    publishedConflict = true;
+    await expect(run()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+    expect(
+      JSON.parse(await readFile(resolve(current.directory, "publication-conflict.json"), "utf8")),
+    ).toEqual({ head: accepted.head });
+    expect(authorityReads).toBe(0);
+
+    // Every negative reaches the same native launch boundary. Restore only
+    // synthetic fixture state between independent faults, never live records.
+    // Each group is one case: a fault costs one full delivery pass through Git.
+    const admissionFaults: Partial<Record<Mode, string[]>> = {
+      "published-allowance-declaration-faults": [
+        "missing-declaration",
+        "wrong-run",
+        "wrong-issue",
+        "wrong-attempt",
+        "wrong-stop",
+      ],
+      "published-allowance-record-faults": [
+        "reservation",
+        "claim",
+        "stop",
+        "publication",
+        "participant",
+        "missing-stop-completion",
+      ],
+      "published-allowance-authority-faults": [
+        "absent",
+        "unreadable",
+        "id",
+        "url",
+        "author",
+        "body",
+      ],
+    };
+    const faults = admissionFaults[mode];
+    if (faults) {
+      for (const fault of faults) {
+        const restores: (() => Promise<unknown>)[] = [];
+        allowance = structuredClone(granted);
+        authorityFault = ["absent", "unreadable", "id", "url", "author", "body"].includes(fault)
+          ? fault
+          : "";
+        const change = async (path: string, update: (value: any) => any) => {
+          const bytes = await readFile(path, "utf8");
+          restores.push(() => writeFile(path, bytes));
+          const value = update(JSON.parse(bytes));
+          if (value === undefined) await rm(path);
+          else await writeFile(path, JSON.stringify(value));
+        };
+        if (fault === "missing-declaration") allowance = null;
+        if (fault === "wrong-run") allowance!.run = "synthetic-fresh-run";
+        if (fault === "wrong-issue")
+          allowance!.issue = "https://github.com/fixture/repository/issues/999";
+        if (fault === "wrong-attempt") allowance!.item = "ISS-104:3";
+        if (fault === "wrong-stop") allowance!.stopMarker = `loop-stop:${RUN}:7:1`;
+        if (fault === "reservation")
+          await change(reservationPath, (r) => ({ ...r, launchLimit: 4 }));
+        if (fault === "claim")
+          await change(f.packet.spentResolution!.claim, (r) => ({
+            ...r,
+            authorityUrl: authority.url,
+          }));
+        if (fault === "stop")
+          await change(resolve(f.runState, `${stopName}.json`), (r) => ({
+            ...r,
+            marker: `loop-stop:${RUN}:7:1`,
+          }));
+        if (fault === "publication")
+          await change(resolve(current.directory, "publication.json"), (r) => ({
+            ...r,
+            number: 401,
+          }));
+        if (fault === "participant")
+          await change(resolve(q.stateDirectory, "participant-24-terminal.json"), (r) => ({
+            ...r,
+            usage: usage(999),
+          }));
+        if (fault === "missing-stop-completion")
+          await change(resolve(f.runState, `${stopName}-complete.json`), () => undefined);
+        const reads = authorityReads;
+        await expect(run(), fault).rejects.toMatchObject({
+          reason: "continuation-failed",
+          diagnostics: expect.stringContaining("integration-continuation-launch-exhausted"),
+        });
+        expect(authorityReads - reads, fault).toBe(authorityFault ? 1 : 0);
+        expect(launches, fault).toEqual(["author", "reviewer", "reviewer"]);
+        await expect(readFile(grantPath)).rejects.toMatchObject({ code: "ENOENT" });
+        for (const restore of restores) await restore();
+        await f.put(q.stateDirectory, "attempt", accepted);
+        const pending = await refresh();
+        await rm(resolve(pending.directory, "reviewer-intent.json"), { force: true });
+      }
+    }
+    allowance = granted;
+    authorityFault = "";
+    const reads = authorityReads;
+    reviewerWaiting = true;
+    if (mode === "published-allowance-refusal") {
+      await expect(run()).rejects.toMatchObject({
+        reason: "continuation-failed",
+        diagnostics: expect.stringContaining("integration-continuation-launch-exhausted"),
+      });
+      const consumed = await readFile(grantPath, "utf8");
+      for (let replay = 0; replay < 2; replay++)
+        await expect(run(await f.compose())).rejects.toMatchObject({
+          reason: "continuation-failed",
+        });
+      expect(authorityReads).toBe(reads + 1);
+      expect(launches).toEqual(["author", "reviewer", "reviewer", "reviewer"]);
+      expect(await adapter().history()).toHaveLength(26); // pre-worker refusal has no terminal
+      expect(await readFile(grantPath, "utf8")).toBe(consumed);
+      expect(await readFile(reservationPath, "utf8")).toBe(reservationBytes);
+      await f.unchanged();
+      return;
+    }
+    if (mode === "published-allowance-lost-launch") {
+      await expect(run()).rejects.toThrow("synthetic lost additional launch response");
+      const consumed = await readFile(grantPath, "utf8");
+      for (let replay = 0; replay < 2; replay++)
+        await expect(run(await f.compose())).rejects.toThrow(
+          "reviewer-launch-identity-unknown-reconcile",
+        );
+      expect(await readFile(grantPath, "utf8")).toBe(consumed);
+      expect(authorityReads).toBe(reads + 1);
+      expect(launches).toEqual(["author", "reviewer", "reviewer", "reviewer"]);
+      expect(await adapter().history()).toHaveLength(26); // no invented terminal
+      await f.unchanged();
+      return;
+    }
+    await expect(run()).resolves.toMatchObject({ status: "observing-reviewer" });
+    expect(authorityReads).toBe(reads + 1);
+    const consumed = await readFile(grantPath, "utf8");
+    expect(JSON.parse(consumed)).toMatchObject({ grant: granted, authority });
+    expect(await adapter().history()).toHaveLength(26);
+    expect(launches).toEqual(["author", "reviewer", "reviewer", "reviewer"]);
+    if (faults) {
+      // The control: with every fault restored, the same inputs admit once.
+      expect(await readFile(reservationPath, "utf8")).toBe(reservationBytes);
+      await f.unchanged();
+      return;
+    }
+    // The second-movement modes carry the longest chain, so the steady-state
+    // replays of the admitted reviewer and its publication stay with the others.
+    const chainReplays = mode.startsWith("published-allowance-second") ? 0 : 2;
+    for (let replay = 0; replay < chainReplays; replay++)
+      await expect(run(await f.compose())).resolves.toMatchObject({
+        status: "observing-reviewer",
+      });
+    expect(await readFile(grantPath, "utf8")).toBe(consumed);
+    expect(authorityReads).toBe(reads + 1);
+    reviewerWaiting = false;
+    if (["published-allowance-retry", "published-allowance-nonpass"].includes(mode)) {
+      await expect(run()).rejects.toMatchObject({
+        reason: "continuation-failed",
+        diagnostics: expect.stringContaining(
+          mode.endsWith("retry")
+            ? "integration-continuation-launch-exhausted"
+            : "refresh-review-failed",
+        ),
+      });
+      const failed = await integrationAttempt();
+      expect(failed).toMatchObject({ phase: "failed", candidateAttempt: 2 });
+      expect(failed.history).toHaveLength(27);
+      for (let replay = 0; replay < 2; replay++)
+        await expect(run(await f.compose())).rejects.toMatchObject({
+          reason: "continuation-failed",
+        });
+    } else {
+      await expect(run()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+      const advanced = await integrationAttempt();
+      expect(advanced).toMatchObject({
+        phase: "delivery",
+        candidateAttempt: 2,
+        retries: accepted.retries,
+      });
+      expect(advanced.head).not.toBe(accepted.head);
+      expect(advanced.reviewId).not.toBe(accepted.reviewId);
+      expect(advanced.history.slice(0, 26)).toEqual(accepted.history);
+      expect(advanced.history).toHaveLength(27);
+      expect(effects.filter((e) => e === "publish")).toHaveLength(2);
+      expect(
+        effects.filter((e) => e.startsWith("gate:") && e.endsWith(advanced.head)),
+      ).toHaveLength(4);
+      for (let replay = 0; replay < chainReplays; replay++)
+        await expect(run(await f.compose())).resolves.toMatchObject({
+          status: "observing-hosted-checks",
+        });
+      if (mode.startsWith("published-allowance-second")) {
+        // Another main movement needs another review, or conflicts with the spent
+        // resolution. Neither can consume this decision a second time.
+        await f.advanceMain(
+          mode.endsWith("second-conflict") ? "docs/loop.md" : "post-publication.txt",
+          "another main\n",
+        );
+        publishedConflict = true;
+        await expect(run()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+        await expect(run()).rejects.toMatchObject({
+          reason: "continuation-failed",
+          diagnostics: expect.stringContaining(
+            mode.endsWith("second-conflict")
+              ? "conflict-resolution-exhausted"
+              : "integration-continuation-launch-exhausted",
+          ),
+        });
+        await expect(run(await f.compose())).rejects.toMatchObject({
+          reason: "continuation-failed",
+        });
+      }
+    }
+    expect(publicationObservations).toBeGreaterThan(0);
+    expect(authorityReads).toBe(reads + 1);
+    expect(launches).toEqual(["author", "reviewer", "reviewer", "reviewer"]);
+    expect(await readFile(grantPath, "utf8")).toBe(consumed);
+    expect(await readFile(reservationPath, "utf8")).toBe(reservationBytes);
+    await f.unchanged();
   }
   if (mode === "lost-commit") {
     await expect(run()).rejects.toThrow("lost commit response");

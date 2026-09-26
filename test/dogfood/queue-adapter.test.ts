@@ -1,15 +1,16 @@
 import { execFile, spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { relative, resolve } from "node:path";
 import { PassThrough } from "node:stream";
 import { promisify } from "node:util";
 import { afterEach, expect, it, vi } from "vitest";
 import * as boardLoader from "../../scripts/planning/board-check.mjs";
 import { planningSelectionFixture, retainedFiles } from "./fixtures/planning-selection.js";
 import {
+  ISS214_REFRESH_REVIEW_ALLOWANCE,
   QueueBlocked,
   queueStep,
   queueUsage,
@@ -62,6 +63,37 @@ import {
 
 const roots: string[] = [];
 let timing: CaseTiming | undefined;
+
+it("ISS-214 binds native admission to the captured FINAL decision, without a live author probe", async () => {
+  // The pinned capture is LF; a core.autocrlf=true checkout (hosted Windows) reads CRLF.
+  // Production admission hashes the live API body, so only the fixture read normalizes.
+  const body = Buffer.from(
+    (
+      await readFile(
+        new URL("../../planning/evidence/ISS-214/authority-5843781301.md", import.meta.url),
+        "utf8",
+      )
+    ).replaceAll("\r\n", "\n"),
+    "utf8",
+  );
+  const identity = JSON.parse(
+    await readFile(
+      new URL("../../planning/evidence/ISS-214/authority-5843781301.json", import.meta.url),
+      "utf8",
+    ),
+  );
+  expect(body.byteLength).toBe(identity.body_utf8_bytes);
+  const digest = createHash("sha256").update(body).digest("hex");
+  expect(digest).toBe(identity.body_sha256);
+  expect(ISS214_REFRESH_REVIEW_ALLOWANCE.authority).toEqual({
+    id: String(identity.id),
+    url: identity.html_url,
+    author: identity.author,
+    bodySha256: digest,
+  });
+  expect(body.toString("utf8")).toContain(`run \`${ISS214_REFRESH_REVIEW_ALLOWANCE.run}\``);
+  expect(body.toString("utf8")).toContain(ISS214_REFRESH_REVIEW_ALLOWANCE.stopMarker);
+});
 
 it("ISS-187 retains a saved run's source failure through native absolute-2 entry and replay", async () => {
   const f = await prerequisiteFixture();
@@ -132,9 +164,12 @@ it.each(["source2", "probe", "source4", "ceiling"])(
     f.native.observe = async (role, config, attempt) => {
       const result = await observe(role, config, attempt);
       if (role === "author") return { ...result, status: "passed", summary: "" };
+      // Name the attempt directory itself: a temporary root such as an author
+      // sandbox's `.../iss-214-attempt-4/source/author-temp` must not match.
       const fail =
         ["source4", "ceiling"].includes(scenario) &&
-        (scenario === "ceiling" || !config.stateDirectory.includes("attempt-4"));
+        (scenario === "ceiling" ||
+          !relative(f.loop.stateRoot, config.stateDirectory).includes("attempt-4"));
       return {
         ...result,
         status: fail ? "failed" : "passed",
