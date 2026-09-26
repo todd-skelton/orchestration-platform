@@ -328,6 +328,41 @@ This capability supplies no #457 ruling, planning re-entry, installation or
 preserved-run resume authority. Host installation still requires independent
 exact-head PASS, three-OS bootstrap green and absent supervisors.
 
+ISS-214 repairs `unreviewed-delivery-source` at
+`loop-stop:m1-iss146-147-20260914T2325:11:2`: publication had advanced the
+accepted review beyond the immutable source PASS. Integration delivery now
+checks those identities separately. The original candidate, author terminal,
+PASS and integration grant still bind the source. The accepted head/review
+binds the continuation's selected `native-refresh.json` directory, native PASS,
+delivery-source and charged reviewer; a preceding resolution DELTA binds its
+own directory/head/review even when it never entered delivery. The stale
+attempt-level refresh cannot supply current authority. Both ordinary and spent
+continuations reconcile the same publication on repeated and restarted entry.
+
+The FINAL delegated decision at Chase Sets #4388 comment `5843781301` grants
+exactly one additional refresh DELTA reviewer for ISS-146, same run and absolute
+attempt 2. The executor's declaration is outside saved configuration and the
+consumed integration packet. It pins the decision's author, ID, URL and captured
+body hash, and the recorded reservation, claim, cycle-11 stop and publication
+bytes. Only native post-publication refresh after `published-candidate-conflict`
+can admit it. At that launch boundary the executor checks the then-current
+lineage and observes the live comment, then exclusive-creates
+`integration/spent-resolution/refresh-review-grant.json` with the observation
+and resulting reviewer head/directory before launch. Absent, unreadable or
+mismatched authority retains `integration-continuation-launch-exhausted`.
+Replay validates the retained binding and resumes the ordinary reviewer records
+without another authority probe or launch; a lost launch response cannot renew
+consumption. The old `spent-resolution.json`, its initial 23 participants and
+`launchLimit: 3` remain unchanged; all 26 participants stay charged and the
+additional reviewer is charged once through ordinary terminal accounting.
+No author, repair, worker relaunch, further attempt or second review is admitted.
+The shared retry history, implementation ceiling four and native ceiling 64
+remain intact. Later conflict or non-PASS parks the continuation. Exact-head
+gates, forward publication, hosted checks and native landing/deployment still
+apply. Shipping this repair establishes neither #457 completion nor permission
+for a worker to install an executor or resume the preserved run; those remain
+host-only, separately gated actions after independent review and hosted green.
+
 An exact remote/PR head with DIRTY or CONFLICTING status is a confirmed
 publication with a conflict, including when a publish response was lost or the
 PR already left draft state. Delivery retains its publication receipt and
