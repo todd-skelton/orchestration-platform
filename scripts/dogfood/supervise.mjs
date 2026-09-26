@@ -386,7 +386,14 @@ async function stop(error, retainedAttempts) {
   const reason = error instanceof QueueBlocked ? error.reason : "queue-internal-error";
   const diagnostics = error instanceof QueueBlocked ? error.diagnostics : undefined;
   if (!active || !loop) return { reason };
-  const attempts = retainedAttempts ?? (config ? await currentCandidateAttempt(config) : 0);
+  const attempts =
+    retainedAttempts ??
+    (config
+      ? await currentCandidateAttempt(config)
+      : reason.startsWith("terminal-attempt-admission-") &&
+          loop.terminalAttemptAdmission?.issueKey === active.selection.key
+        ? 2
+        : 0);
   try {
     const history = queueAdapter ? await queueAdapter.history() : active.initialHistory;
     const scope = await stopCycle(

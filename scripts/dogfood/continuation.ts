@@ -169,6 +169,108 @@ export function continuationSlug(packet: AcceptedReplan) {
   return packet.attemptSlug;
 }
 
+// ISS-215: a host-interpreted delegation for one ordinary 2-to-3 successor.
+// These pins are observations to match, not authority inferred from URL syntax.
+export interface TerminalAttemptAdmission {
+  schemaVersion: "dogfood-terminal-attempt-admission/v1";
+  repository: string;
+  issueKey: string;
+  issueUrl: string;
+  run: string;
+  priorAbsoluteAttempt: 2;
+  nextAbsoluteAttempt: 3;
+  terminalMarker: string;
+  terminalReceiptUrl: string;
+  claim: string;
+  claimSha256: string;
+  terminalHistoryDigest: string;
+  priorPublication: {
+    number: number;
+    url: string;
+    sourceBranch: string;
+    head: string;
+    state: "OPEN";
+    isDraft: true;
+  };
+  authorityUrl: string;
+  authorityAuthor: string;
+  authorityBodySha256: string;
+}
+
+export function validateTerminalAttemptAdmission(
+  value: unknown,
+): asserts value is TerminalAttemptAdmission {
+  const reason = "terminal-attempt-admission-mismatch";
+  requireThat(
+    exact(
+      value,
+      "schemaVersion repository issueKey issueUrl run priorAbsoluteAttempt nextAbsoluteAttempt terminalMarker terminalReceiptUrl claim claimSha256 terminalHistoryDigest priorPublication authorityUrl authorityAuthor authorityBodySha256",
+    ),
+    reason,
+  );
+  const comment = (url: unknown) =>
+    typeof url === "string" &&
+    /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/issues\/[1-9]\d*#issuecomment-[1-9]\d*$/.test(url);
+  requireThat(
+    value.schemaVersion === "dogfood-terminal-attempt-admission/v1" &&
+      typeof value.repository === "string" &&
+      /^[\w.-]+\/[\w.-]+$/.test(value.repository) &&
+      name(value.issueKey) &&
+      name(value.run) &&
+      typeof value.issueUrl === "string" &&
+      value.issueUrl.startsWith(`https://github.com/${value.repository}/issues/`) &&
+      /^[1-9]\d*$/.test(value.issueUrl.split("/").at(-1)!) &&
+      value.priorAbsoluteAttempt === 2 &&
+      value.nextAbsoluteAttempt === 3 &&
+      typeof value.terminalMarker === "string" &&
+      value.terminalMarker.startsWith(`loop-stop:${value.run}:`) &&
+      /^[1-9]\d*:[1-9]\d*$/.test(value.terminalMarker.slice(`loop-stop:${value.run}:`.length)) &&
+      comment(value.terminalReceiptUrl) &&
+      value.terminalReceiptUrl.startsWith(`${value.issueUrl}#`) &&
+      typeof value.claim === "string" &&
+      /^integration-continuation-[a-f0-9]{64}$/.test(value.claim) &&
+      digest(value.claimSha256) &&
+      digest(value.terminalHistoryDigest) &&
+      comment(value.authorityUrl) &&
+      text(value.authorityAuthor) &&
+      digest(value.authorityBodySha256),
+    reason,
+  );
+  const p = value.priorPublication;
+  requireThat(
+    exact(p, "number url sourceBranch head state isDraft") &&
+      count(p.number) &&
+      p.number > 0 &&
+      p.url === `https://github.com/${value.repository}/pull/${p.number}` &&
+      p.sourceBranch === `codex/${value.issueKey.toLowerCase()}-attempt-2` &&
+      sha(p.head) &&
+      p.state === "OPEN" &&
+      p.isDraft === true,
+    reason,
+  );
+}
+
+export async function observeTerminalPublication(packet: TerminalAttemptAdmission) {
+  const { stdout } = await promisify(execFile)("gh", [
+    "pr",
+    "view",
+    String(packet.priorPublication.number),
+    "--repo",
+    packet.repository,
+    "--json",
+    "number,url,headRefName,headRefOid,state,isDraft",
+  ]);
+  const p = JSON.parse(stdout);
+  return {
+    number: p.number,
+    url: p.url,
+    sourceBranch: p.headRefName,
+    head: p.headRefOid,
+    state: p.state,
+    isDraft: p.isDraft,
+  };
+}
+
 // ISS-167: one same-run integration of an exhausted reviewed source. The packet names
 // the retained attempt, its terminal marker, the reviewed head/review and the ruled fence.
 export interface IntegrationContinuation {

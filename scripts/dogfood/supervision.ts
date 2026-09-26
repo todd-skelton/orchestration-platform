@@ -73,6 +73,7 @@ export function isItemStopReason(reason: string) {
       "author-malformed",
       "operator-evidence-failed",
       "continuation-failed",
+      "terminal-attempt-admission-mismatch",
       "continuation-repair-not-authorized",
       "implementation-attempt-ceiling-exhausted",
       "reviewer-malformed",

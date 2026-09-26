@@ -1108,6 +1108,67 @@ Saved-stop recovery needs the separate authorization below (ISS-157).
 
 ### Accepted replans and stopped-gate recovery
 
+ISS-215 adds a bounded terminal-park admission to the candidate executor. It is
+available to an installed host only after independent exact-head review and
+final-head three-OS bootstrap green; landing alone grants no installation,
+readiness, unpark or preserved-run start authority.
+
+The optional closed `terminalAttemptAdmission` declaration names
+`schemaVersion: "dogfood-terminal-attempt-admission/v1"`, `repository`,
+`issueKey`, `issueUrl`, `run`, `priorAbsoluteAttempt: 2`,
+`nextAbsoluteAttempt: 3`, `terminalMarker`, `terminalReceiptUrl`, `claim`,
+`claimSha256`, `terminalHistoryDigest`, `priorPublication` (exactly `number`,
+`url`, `sourceBranch`, `head`, `state: "OPEN"`, `isDraft: true`),
+`authorityUrl`, `authorityAuthor` and `authorityBodySha256`. The host must
+interpret and authorize the delegation before supplying it. It cannot coexist
+with `integrationContinuation`, `acceptedReplan` or `gateStopAuthorization`.
+The run retains its four implementation attempts and 64 native launches.
+
+At production composition, after fresh pinned self selection and before setup,
+admission matches the latest completed implementation/integration stop, its
+receipt, the exact claim bytes, the complete terminal history and the prior
+publication. It freshly reads the authority comment's ID, URL, author and
+complete body, the terminal receipt, and the PR's number, URL, source branch,
+head, OPEN state and draft flag. Comment body and claim bytes use SHA-256;
+terminal history uses `queueDigest`. Captures retain UTC observation instants.
+An unavailable external read stops as
+`terminal-attempt-admission-authority-unavailable`, without parking or spending
+admission. A contradictory or stale binding stops as
+`terminal-attempt-admission-mismatch` and parks. A pre-admission refusal
+at attempt 2 adds no charge and does not supersede the implementation
+terminal; a later attempt or admission does. No declaration retains the
+`integration-continuation-required` ordinary-composition exclusion.
+
+One exclusive-create `terminal-attempt-admission-<lineage digest>.json` under
+`stateRoot` binds the declaration, selection, observations and inherited
+accounting. Replay uses this binding without another authority spend. It
+retains the entire run history, including intervening issues, failed-author
+and reviewer routing progress, and consumed worker retry, correction and
+resolution allowances. Changed runs/configurations cannot renew it. Historical
+claims, attempts, reservations, stops, configs, worktrees and receipts remain
+unchanged; the old integration remains terminal.
+
+The successor enters ordinary creation at absolute attempt 3 from
+`attemptBase = selected.base`, with the newly pinned brief. It never projects
+old failures, rebases the rejected candidate, starts from the marked seed or
+imports prescribed findings. Old author/reviewer records and traces accompany
+it only as read-only evidence. Its new source branch is
+`codex/run-<sha256(run)>/<issue-key>-attempt-3`; delivery creates a distinct PR
+on `codex/<issue-key>-attempt-3`. Prior publications remain open/draft and
+unchanged: this mechanism neither moves their branches, reuses their
+workspaces, marks them ready, closes them nor reruns their CI. Any later
+disposition requires separate host authority.
+
+The successor requires ordinary fresh source review, refresh DELTA when main
+moves, final-head local and after-mirror gates, hosted checks and native
+landing. Work non-PASS parks; host uncertainty remains non-parking. Repeated
+failed or completed entry is terminal, with no automatic attempt 4, second
+admission, duplicate worker or second publication. ISS-167/200 instead continue
+the same attempt's integration; acceptedReplan is the separate 4-to-5
+instrument; gateStopAuthorization resumes an existing stopped gate and
+publication. None supplies this new source attempt. ISS-215 repairs admission,
+not the preserved issue's Windows gate failure or its planning readiness.
+
 Accepted replans retain the original main base and participant history;
 published continuations use forward-only refresh from a new local branch to
 the existing published branch. Historical records, branches and worktrees stay
