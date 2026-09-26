@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import {
+  extractAcceptanceCriteria,
   loadPlanningSnapshot,
   parseFrontmatter,
   validatePlanningSnapshot,
@@ -143,20 +144,6 @@ export async function selectCandidates({
     });
 }
 
-function listItems(section) {
-  const items = [];
-  let current;
-  for (const line of section.split(/\r?\n/)) {
-    const item = /^(?:\s*[-*+]|\d+\.)\s+(.+)$/.exec(line);
-    if (item) {
-      if (current) items.push(current);
-      current = item[1].trim();
-    } else if (current && /^\s+\S/.test(line)) current += `\n${line.trim()}`;
-  }
-  if (current) items.push(current);
-  return items;
-}
-
 export async function issueContext({
   repository,
   key,
@@ -171,9 +158,7 @@ export async function issueContext({
   requirePolicy(registered, "selected-issue-unregistered");
   const draft = planning.issueDrafts[key];
   const frontmatter = parseFrontmatter(draft, registered.file);
-  const section = /\n## Done when[ \t]*\r?\n([\s\S]*?)(?=\n## |$)/.exec(draft)?.[1];
-  requirePolicy(section, "selected-issue-criteria-missing");
-  const acceptanceCriteria = listItems(section);
+  const acceptanceCriteria = extractAcceptanceCriteria(draft);
   requirePolicy(acceptanceCriteria.length > 0, "selected-issue-criteria-missing");
   const loopRules = pinned
     ? await pinned.git(["show", `${pinned.revision}:docs/loop.md`])

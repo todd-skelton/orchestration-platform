@@ -31,6 +31,7 @@ import {
   nextCycle as nativeNextCycle,
   persistCycle,
   reconcilePendingStop,
+  repositorySupervisionAdapter,
   startCycle,
   stopCycle,
   type IssueObservation,
@@ -42,6 +43,297 @@ import {
 const roots: string[] = [];
 const nextCycle: typeof nativeNextCycle = (config, root, adapter, repository) =>
   nativeNextCycle(config, root, adapter, repository, async () => {});
+
+function noteTransport(
+  stderr = 'Post "https://api.github.com/graphql": net/http: TLS handshake timeout',
+) {
+  return Object.assign(new Error("command echo authorization Bearer SECRET"), {
+    code: 1,
+    stdout: "",
+    stderr,
+  });
+}
+
+async function noteFixture() {
+  const root = await mkdtemp(resolve(tmpdir(), "supervision-note-"));
+  roots.push(root);
+  const config = loop(root);
+  const cycle = selected();
+  cycle.initialHistory = [
+    {
+      ordinal: 1,
+      id: "retained-author",
+      item: "ISS-105:1",
+      stage: "source",
+      role: "author",
+      outcome: "dead",
+      usage: {
+        inputTokens: { status: "unavailable" },
+        outputTokens: { status: "unavailable" },
+        costUsd: { status: "unavailable" },
+      },
+    },
+  ];
+  await persistCycle(config, cycle);
+  const row = {
+    number: 362,
+    state: "OPEN",
+    body: "<!-- planning-key: ISS-105 -->",
+    labels: [{ name: "ready" }],
+    comments: [] as { body: string }[],
+  };
+  const events: string[] = [];
+  const probe = vi.fn(async () => JSON.stringify(row));
+  const post = vi.fn(async (body: string) => {
+    row.comments.push({ body });
+  });
+  const run = vi.fn(async (_executable: string, args: string[], _cwd: string) => {
+    events.push(args[1]!);
+    if (args[1] === "view") return { stdout: await probe(), stderr: "" };
+    if (args[1] === "comment") {
+      await post(args[args.indexOf("--body") + 1]!);
+      return {
+        stdout: "https://github.com/fixture/repository/issues/362#issuecomment-1",
+        stderr: "",
+      };
+    }
+    throw new Error(`unexpected mutation: ${args.join(" ")}`);
+  });
+  const pause = vi.fn(async (_ms: number) => {});
+  const adapter = repositorySupervisionAdapter({ run }, pause);
+  const park = vi.fn(() => {
+    throw new Error("run stop must not park");
+  });
+  const policy = { ...repositoryPolicy, park };
+  const directory = resolve(config.stateRoot, config.run);
+  const stop = () => stopCycle(config, cycle, "provider-unavailable", 2, adapter, policy);
+  const reconcile = () => reconcilePendingStop(config, cycle, adapter, policy);
+  return {
+    config,
+    cycle,
+    row,
+    events,
+    probe,
+    post,
+    run,
+    pause,
+    adapter,
+    park,
+    policy,
+    directory,
+    stop,
+    reconcile,
+  };
+}
+
+it.each([
+  "before",
+  "after",
+  "lost-success",
+  "lost-success-5xx",
+  "existing",
+  "pre-send",
+  "pre-send-twice",
+])(
+  "ISS-211 actual note adapter reconciles %s with fresh probes and bounded writes",
+  async (mode) => {
+    const f = await noteFixture();
+    if (mode === "existing")
+      f.row.comments.push({ body: "<!-- loop-stop:selection-run:1:1 --> retained note" });
+    if (mode === "before") f.probe.mockRejectedValueOnce(noteTransport());
+    if (mode === "after")
+      f.probe.mockResolvedValueOnce(JSON.stringify(f.row)).mockRejectedValueOnce(noteTransport());
+    if (mode.startsWith("lost-success"))
+      f.post.mockImplementationOnce(async (body) => {
+        f.row.comments.push({ body });
+        f.probe.mockRejectedValueOnce(noteTransport());
+        throw noteTransport(
+          mode === "lost-success-5xx"
+            ? "gh: Bad Gateway (HTTP 502)"
+            : 'Post "https://api.github.com/graphql": EOF',
+        );
+      });
+    if (mode.startsWith("pre-send")) f.post.mockRejectedValueOnce(noteTransport());
+    if (mode === "pre-send-twice") f.post.mockRejectedValueOnce(noteTransport());
+    if (mode === "pre-send-twice") {
+      await expect(f.stop()).rejects.toMatchObject({ reason: "learning-note-state-unknown" });
+      expect(f.events).toEqual(["view", "comment", "view", "comment", "view"]);
+      expect(f.row.comments).toEqual([]);
+      await expect(
+        readFile(resolve(f.directory, "cycle-1-stop-1-complete.json")),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+    } else {
+      await expect(f.stop()).resolves.toBe("run");
+      expect(f.row.comments).toHaveLength(1);
+      expect(
+        JSON.parse(await readFile(resolve(f.directory, "cycle-1-stop-1-complete.json"), "utf8")),
+      ).toEqual({ selection: f.cycle.selection, stop: 1, history: f.cycle.initialHistory });
+      expect(f.events).toEqual(
+        mode === "existing"
+          ? ["view"]
+          : mode === "before"
+            ? ["view", "view", "comment", "view"]
+            : mode === "pre-send"
+              ? ["view", "comment", "view", "comment", "view"]
+              : ["view", "comment", "view", "view"],
+      );
+    }
+    expect(f.post).toHaveBeenCalledTimes(
+      mode === "existing" ? 0 : mode.startsWith("pre-send") ? 2 : 1,
+    );
+    expect(f.pause.mock.calls).toEqual(
+      ["before", "after", "lost-success", "lost-success-5xx"].includes(mode) ? [[1000]] : [],
+    );
+    expect(f.park).not.toHaveBeenCalled();
+    expect(f.row.labels).toEqual([{ name: "ready" }]);
+    await expect(readFile(resolve(f.directory, "cycle-1-complete.json"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  },
+);
+
+it.each([
+  "read-exhaustion",
+  "post-probe-exhaustion",
+  "uncertain-5xx",
+  "uncertain-eof",
+  "unclassified-post",
+])(
+  "ISS-211 pending run-stop %s retains legacy records across first and second invocation",
+  async (mode) => {
+    const f = await noteFixture();
+    const selection = await readFile(resolve(f.directory, "cycle-1-selected.json"));
+    if (mode === "read-exhaustion") f.probe.mockRejectedValue(noteTransport());
+    else
+      f.post.mockImplementationOnce(async (body) => {
+        if (mode === "post-probe-exhaustion") {
+          f.row.comments.push({ body });
+          f.probe.mockRejectedValue(noteTransport());
+        }
+        throw mode === "unclassified-post"
+          ? new Error("unknown provenance SECRET")
+          : noteTransport(
+              mode === "uncertain-5xx"
+                ? "gh: Bad Gateway (HTTP 502)"
+                : 'Post "https://api.github.com/graphql": EOF',
+            );
+      });
+    await expect(f.stop()).rejects.toMatchObject({ reason: "learning-note-state-unknown" });
+    expect(f.post).toHaveBeenCalledTimes(mode === "read-exhaustion" ? 0 : 1);
+    expect(f.probe).toHaveBeenCalledTimes(
+      mode === "read-exhaustion" ? 3 : mode === "post-probe-exhaustion" ? 4 : 2,
+    );
+    expect(f.pause.mock.calls).toEqual(mode.includes("exhaustion") ? [[1000], [2000]] : []);
+    expect(f.park).not.toHaveBeenCalled();
+    const intent = await readFile(resolve(f.directory, "cycle-1-stop-1.json"));
+    expect(JSON.parse(intent.toString())).toMatchObject({
+      attempts: 2,
+      history: f.cycle.initialHistory,
+      marker: "loop-stop:selection-run:1:1",
+    });
+    await expect(
+      readFile(resolve(f.directory, "cycle-1-stop-1-complete.json")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    f.probe.mockImplementation(async () => JSON.stringify(f.row));
+    // Restart retains its existing marker-first rule; an accepted note is no-op.
+    await expect(f.reconcile()).resolves.toEqual({ scope: "run", reason: "provider-unavailable" });
+    expect(f.row.comments).toHaveLength(1);
+    expect(f.post).toHaveBeenCalledTimes(
+      mode === "read-exhaustion" || mode === "post-probe-exhaustion" ? 1 : 2,
+    );
+    expect(await readFile(resolve(f.directory, "cycle-1-stop-1.json"))).toEqual(intent);
+    expect(await readFile(resolve(f.directory, "cycle-1-selected.json"))).toEqual(selection);
+    await expect(f.reconcile()).resolves.toBeUndefined();
+    expect(f.park).not.toHaveBeenCalled();
+    await expect(readFile(resolve(f.directory, "cycle-1-complete.json"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  },
+);
+
+it.each([
+  "401",
+  "403",
+  "malformed-json",
+  "wrong-number",
+  "wrong-key",
+  "closed",
+  "malformed-comment",
+  "duplicate",
+  "post-duplicate",
+  "post-wrong-key",
+  "post-closed",
+])("ISS-211 note %s refuses authoritative data without transport retry", async (mode) => {
+  const f = await noteFixture();
+  const corrupt = () => {
+    if (mode.includes("duplicate"))
+      f.row.comments = Array.from({ length: 2 }, () => ({
+        body: "<!-- loop-stop:selection-run:1:1 -->",
+      }));
+    if (mode.includes("wrong-key")) f.row.body = "<!-- planning-key: ISS-999 -->";
+    if (mode.includes("closed")) f.row.state = "CLOSED";
+  };
+  if (mode.startsWith("post-"))
+    f.post.mockImplementationOnce(async () => {
+      corrupt();
+    });
+  else corrupt();
+  if (mode === "401" || mode === "403")
+    f.probe.mockRejectedValue(noteTransport(`gh: Forbidden (HTTP ${mode})`));
+  if (mode === "malformed-json") f.probe.mockResolvedValue("not JSON: TLS handshake timeout");
+  if (mode === "wrong-number") f.row.number = 999;
+  if (mode === "malformed-comment")
+    f.probe.mockResolvedValue(JSON.stringify({ ...f.row, comments: [{}] }));
+  const reason = mode.includes("duplicate")
+    ? "duplicate-learning-note"
+    : mode.includes("wrong-key")
+      ? "selected-issue-identity-drift"
+      : mode.includes("closed")
+        ? "stopped-issue-state-unknown"
+        : mode === "401" || mode === "403"
+          ? "learning-note-state-unknown"
+          : "issue-observation-unavailable";
+  await expect(f.stop()).rejects.toMatchObject({ reason });
+  expect(f.probe).toHaveBeenCalledTimes(mode.startsWith("post-") ? 2 : 1);
+  expect(f.post).toHaveBeenCalledTimes(mode.startsWith("post-") ? 1 : 0);
+  expect(f.pause).not.toHaveBeenCalled();
+  expect(f.park).not.toHaveBeenCalled();
+  await expect(
+    readFile(resolve(f.directory, "cycle-1-stop-1-complete.json")),
+  ).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+it.each(["start", "complete"])(
+  "ISS-211 non-note %s observation stays single-shot",
+  async (mode) => {
+    const f = await noteFixture();
+    f.probe.mockRejectedValue(noteTransport());
+    const operation =
+      mode === "start"
+        ? startCycle(f.config, f.cycle, f.adapter)
+        : completeCycle(f.config, f.cycle, [], f.adapter);
+    await expect(operation).rejects.toMatchObject({
+      reason: "issue-observation-unavailable",
+      diagnostics: undefined,
+    });
+    expect(f.probe).toHaveBeenCalledTimes(1);
+    expect(f.pause).not.toHaveBeenCalled();
+    expect(f.post).not.toHaveBeenCalled();
+  },
+);
+
+it.each(["gh: Service Unavailable (HTTP 503)", 'Post "https://api.github.com/graphql": EOF'])(
+  "ISS-211 note read recovers transport %s with the actual CLI boundary",
+  async (stderr) => {
+    const f = await noteFixture();
+    f.probe.mockRejectedValueOnce(noteTransport(stderr));
+    await expect(f.stop()).resolves.toBe("run");
+    expect(f.probe).toHaveBeenCalledTimes(3);
+    expect(f.post).toHaveBeenCalledTimes(1);
+    expect(f.pause.mock.calls).toEqual([[1000]]);
+    expect(f.events).toEqual(["view", "view", "comment", "view"]);
+  },
+);
 
 it("ISS-187 observes live process identity, excludes itself and defers unknown owners", async () => {
   const f = await prerequisiteFixture();
@@ -730,6 +1022,10 @@ blocked_by: [${blockedBy.join(", ")}]
 ## Why
 
 Because.
+
+## Done when
+
+- Preserve behavior.
 `;
 }
 

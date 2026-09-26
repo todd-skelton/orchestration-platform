@@ -31,7 +31,11 @@ import {
   createNativeDbAdmission,
   nativeDbProfileAdapter,
 } from "../../scripts/dogfood/supervise.mjs";
-import { withinConflictHunks } from "../../scripts/dogfood/conflict.js";
+import {
+  resolveConflict,
+  withinConflictHunks,
+  type Conflict,
+} from "../../scripts/dogfood/conflict.js";
 import type {
   DeliveryAdapter,
   DeliveryConfig,
@@ -110,6 +114,7 @@ async function fixture(
   fixed = { prefix: "", suffix: "" },
   snapshot?: PlanningSnapshot,
   selection = { key: "ISS-100", number: 100 },
+  initialFiles: Record<string, string> = {},
 ) {
   // Delivery expects canonical roots, including macOS /var and Windows temp aliases.
   const root = await realpath(await mkdtemp(resolve(temporaryRoot, "native-refresh-")));
@@ -162,6 +167,8 @@ async function fixture(
     resolve(repo, "feature.txt"),
     routeList ? "const routes = [\n  'existing',\n];\n" : `${fixed.prefix}old\n${fixed.suffix}`,
   );
+  for (const [file, contents] of Object.entries(initialFiles))
+    await writeFile(resolve(repo, file), contents);
   const base = await commit(repo);
   await git(repo, ["clone", "--bare", repo, origin]);
   await git(repo, [
@@ -2402,6 +2409,436 @@ async function conflictingFixture() {
   return f;
 }
 
+const overlapPath = "overlap with spaces.txt";
+const overlapBase = "first\n" + "stable\n".repeat(10) + "last\n";
+
+it("derives exact-path text eligibility from real immutable NUL-delimited trees", async () => {
+  const f = await fixture();
+  // Synthetic C/M/S objects, not historical incident identities. Construct trees
+  // directly so tab names and symlink modes also work on Windows without checkout.
+  const input = (args: string[], bytes: string) =>
+    new Promise<string>((done, fail) => {
+      const child = execFile(
+        "git",
+        [
+          "-C",
+          f.sourceTree,
+          "-c",
+          "user.name=Fixture",
+          "-c",
+          "user.email=fixture@example.test",
+          ...args,
+        ],
+        (error, stdout) => (error ? fail(error) : done(stdout.trim())),
+      );
+      child.stdin!.end(bytes);
+    });
+  type Entry = { text: string; mode?: string } | undefined;
+  const rows: Record<string, [Entry, Entry, Entry]> = {};
+  const regular = (text: string): Entry => ({ text });
+  for (const file of ["space path", "tab\tpath", "empty"])
+    rows[file] = [regular("candidate"), regular("main"), regular(file === "empty" ? "" : "both")];
+  for (const side of [0, 1, 2]) {
+    rows[`absent-${side}`] = [regular("candidate"), regular("main"), regular("seed")];
+    rows[`absent-${side}`]![side] = undefined;
+    rows[`nul-${side}`] = [regular("candidate"), regular("main"), regular("seed")];
+    rows[`nul-${side}`]![side] = regular("binary\0");
+    for (const mode of ["100755", "120000"]) {
+      rows[`${mode}-${side}`] = [regular("candidate"), regular("main"), regular("seed")];
+      rows[`${mode}-${side}`]![side] = { text: "other", mode };
+    }
+  }
+  rows.executable = ["candidate", "main", "seed"].map((text) => ({ text, mode: "100755" })) as [
+    Entry,
+    Entry,
+    Entry,
+  ];
+  rows["renamed-old"] = [regular("candidate"), undefined, undefined];
+  rows["renamed-new"] = [undefined, regular("main"), regular("seed")];
+  const marked = "<<<<<<< HEAD\ncandidate\n=======\nmain\n>>>>>>> main\n";
+  rows["feature.txt"] = [regular("candidate\n"), regular("main\n"), regular(marked)];
+  const ids: Record<string, string[]> = {};
+  const trees: string[] = [];
+  for (const side of [0, 1, 2]) {
+    let records = "";
+    for (const [path, entries] of Object.entries(rows)) {
+      const entry = entries[side];
+      if (!entry) continue;
+      const blob = await input(["hash-object", "-w", "--stdin"], entry.text);
+      (ids[path] ??= [])[side] = blob;
+      records += `${entry.mode ?? "100644"} blob ${blob}\t${path}\0`;
+    }
+    trees.push(await input(["mktree", "-z"], records));
+  }
+  const candidate = await input(["commit-tree", trees[0]!, "-p", f.head], "candidate\n");
+  const main = await input(["commit-tree", trees[1]!, "-p", f.head], "main\n");
+  const seed = await input(["commit-tree", trees[2]!, "-p", candidate, "-p", main], "seed\n");
+  const conflict: Conflict = { seed, files: { "feature.txt": marked } };
+  const stateDirectory = resolve(f.state, "synthetic-seed");
+  await mkdir(stateDirectory);
+  const before = await f.git(f.sourceTree, ["status", "--porcelain"]);
+  await expect(
+    resolveConflict(
+      { ...f.source, stateDirectory },
+      f.native,
+      f.item.setup.pilotWorktree,
+      main,
+      candidate,
+      conflict,
+      async () => {
+        throw new Error("captured before launch");
+      },
+    ),
+  ).rejects.toThrow("captured before launch");
+  expect(conflict.census).toEqual({
+    candidate,
+    main,
+    seed,
+    k: ["feature.txt"],
+    u: ["empty", "space path", "tab\tpath"],
+    blobs: Object.fromEntries(
+      ["feature.txt", "empty", "space path", "tab\tpath"].map((file) => [
+        file,
+        { candidate: ids[file]![0], main: ids[file]![1], seed: ids[file]![2] },
+      ]),
+    ),
+  });
+  expect(await f.git(f.sourceTree, ["rev-parse", "HEAD"])).toBe(f.head);
+  expect(await f.git(f.sourceTree, ["status", "--porcelain"])).toBe(before);
+  expect(f.authorPrompts).toEqual([]);
+});
+
+async function overlapFixture(published = false) {
+  const f = await fixture(undefined, undefined, false, undefined, undefined, undefined, {
+    [overlapPath]: overlapBase,
+    "importer.txt": "import './feature.txt';\n",
+    "same.txt": "base\n",
+    "candidate-only.txt": "base\n",
+    "main-only.txt": "base\n",
+  });
+  await writeFile(resolve(f.sourceTree, overlapPath), overlapBase.replace("first", "candidate"));
+  await writeFile(resolve(f.sourceTree, "same.txt"), "same\n");
+  await writeFile(resolve(f.sourceTree, "candidate-only.txt"), "candidate\n");
+  const candidate = await f.commit(f.sourceTree);
+  await f.pinSource();
+  if (published) await f.enablePublicationRefresh();
+  await writeFile(resolve(f.repo, overlapPath), overlapBase.replace("last", "main"));
+  await writeFile(resolve(f.repo, "feature.txt"), "main\n");
+  await writeFile(resolve(f.repo, "same.txt"), "same\n");
+  await writeFile(resolve(f.repo, "main-only.txt"), "main\n");
+  const main = await f.advanceMain();
+  const record = resolve(f.sourceState, "native-refresh.json");
+  const saved = async () => JSON.parse(await readFile(record, "utf8"));
+  const resolveK = () => writeFile(resolve(f.sourceTree, "feature.txt"), "candidate\nmain\n");
+  f.setResolution(resolveK);
+  return { ...f, candidate, main, record, saved, resolveK };
+}
+
+it.each([false, true])(
+  "captures immutable overlap before any author (published: %s)",
+  async (published) => {
+    const f = await overlapFixture(published);
+    let captured: Conflict["census"];
+    const git = f.native.git;
+    const snapshots: string[][] = [];
+    const snapshot = async () => [
+      await f.git(f.sourceTree, ["rev-parse", "HEAD"]),
+      await f.git(f.sourceTree, ["ls-files", "--stage", "-z"]),
+      await readFile(resolve(f.sourceTree, "feature.txt"), "utf8"),
+      await readFile(resolve(f.sourceTree, overlapPath), "utf8"),
+    ];
+    f.native.git = async (tree, args) => {
+      if (args[0] === "ls-tree" && !snapshots.length) snapshots.push(await snapshot());
+      return git(tree, args);
+    };
+    f.setResolution(async () => {
+      const saved = await f.saved();
+      captured = saved.conflict.census;
+      expect(await snapshot()).toEqual(snapshots[0]);
+      expect(captured).toMatchObject({
+        candidate: f.candidate,
+        main: f.main,
+        seed: saved.conflict.seed,
+        k: ["feature.txt"],
+        u: [overlapPath],
+      });
+      expect(await f.git(f.sourceTree, ["rev-list", "--parents", "-n", "1", captured!.seed])).toBe(
+        `${captured!.seed} ${f.candidate} ${f.main}`,
+      );
+      for (const file of [...captured!.k, ...captured!.u])
+        for (const side of ["candidate", "main", "seed"] as const)
+          expect(captured!.blobs[file]![side]).toBe(
+            await f.git(f.sourceTree, ["rev-parse", `${captured![side]}:${file}`]),
+          );
+      // The importer of the marked module and S=C, S=M, C=M controls grant no U permission.
+      expect(Object.keys(captured!.blobs).sort()).toEqual(["feature.txt", overlapPath]);
+      await f.resolveK();
+      await writeFile(resolve(f.sourceTree, overlapPath), "candidate and main preserved\n");
+    });
+    await expect(f.deliver()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+    expect(f.authorPrompts[0]).toContain(JSON.stringify(captured));
+    expect(f.authorPrompts[0]).toContain("U permits only necessary preservation edits");
+    expect(f.authorPrompts[0]).not.toContain("Do not modify text outside those hunks");
+    expect(f.prompts[0]).toContain(JSON.stringify(captured));
+    expect(f.prompts[0]).toContain("every changed U file and its direct callers");
+    expect(f.prompts[0]).toContain("author-delta-1.jsonl");
+    const bytes = await readFile(f.record, "utf8");
+    await expect(f.deliver()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+    expect(await readFile(f.record, "utf8")).toBe(bytes);
+    expect(f.authorPrompts).toHaveLength(1);
+    expect(f.prompts).toHaveLength(1);
+  },
+);
+
+it.each([
+  "unchanged",
+  "unrelated",
+  "k-binary",
+  "binary",
+  "markers",
+  "delete",
+  "rename",
+  "mode",
+  "symlink",
+  "fence-inside",
+  "fence-outside",
+])("bounds an otherwise valid overlap resolution: %s", async (mode) => {
+  const f = await overlapFixture();
+  if (mode.startsWith("fence"))
+    f.item.source.correctionPaths =
+      mode === "fence-inside" ? ["feature.txt", overlapPath] : ["feature.txt"];
+  if (mode.startsWith("fence")) await f.pinSource();
+  f.setResolution(async () => {
+    await f.resolveK();
+    const path = resolve(f.sourceTree, overlapPath);
+    if (mode === "unrelated") await writeFile(resolve(f.sourceTree, "importer.txt"), "unrelated\n");
+    else if (mode === "k-binary")
+      await writeFile(resolve(f.sourceTree, "feature.txt"), "binary\0\n");
+    else if (mode === "binary") await writeFile(path, "binary\0\n");
+    else if (mode === "markers") await writeFile(path, "<<<<<<< leftover\n");
+    else if (mode === "delete") await rm(path);
+    else if (mode === "rename") {
+      await f.git(f.sourceTree, ["mv", overlapPath, "renamed.txt"]);
+    } else if (mode === "mode") {
+      await f.git(f.sourceTree, ["config", "core.filemode", "false"]);
+      await f.git(f.sourceTree, ["update-index", "--chmod=+x", overlapPath]);
+    } else if (mode === "symlink") {
+      // Index control is portable to Windows without symlink creation privileges.
+      const blob = await f.git(f.sourceTree, ["rev-parse", `HEAD:${overlapPath}`]);
+      await f.git(f.sourceTree, ["config", "core.symlinks", "false"]);
+      await f.git(f.sourceTree, ["update-index", "--cacheinfo", "120000", blob, overlapPath]);
+    } else if (mode.startsWith("fence")) await writeFile(path, "candidate and main\n");
+  });
+  if (mode === "unchanged") {
+    await expect(f.deliver()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+  } else {
+    await expect(f.deliver()).rejects.toMatchObject({
+      reason: "conflict-resolution-scope-escape",
+      diagnostics: expect.stringContaining(f.record),
+    });
+    expect(f.prompts).toEqual([]);
+    expect(f.gateHeads).toEqual([]);
+  }
+  expect((await f.saved()).conflict.census.u).toEqual([overlapPath]);
+  expect(f.authorPrompts).toHaveLength(1);
+  if (mode.startsWith("fence")) {
+    expect(f.authorPrompts[0]).toContain("Resolve only Git's marked conflicting hunks");
+    expect(f.authorPrompts[0]).toContain("U is evidence, never edit authority");
+  }
+});
+
+it("keeps actual outside-hunk K bytes immutable while allowing U", async () => {
+  const f = await fixture(
+    undefined,
+    undefined,
+    false,
+    { prefix: "fixed\n", suffix: "tail\n" },
+    undefined,
+    undefined,
+    { [overlapPath]: overlapBase },
+  );
+  await writeFile(resolve(f.sourceTree, overlapPath), overlapBase.replace("first", "candidate"));
+  await f.commit(f.sourceTree);
+  await f.pinSource();
+  await writeFile(resolve(f.repo, overlapPath), overlapBase.replace("last", "main"));
+  await writeFile(resolve(f.repo, "feature.txt"), "fixed\nmain\ntail\n");
+  await f.advanceMain();
+  f.setResolution(async () => {
+    await writeFile(resolve(f.sourceTree, "feature.txt"), "changed\ncandidate\nmain\ntail\n");
+    await writeFile(resolve(f.sourceTree, overlapPath), "candidate and main\n");
+  });
+  await expect(f.deliver()).rejects.toMatchObject({
+    reason: "conflict-resolution-scope-escape",
+    diagnostics: expect.stringContaining("feature.txt"),
+  });
+});
+
+it.each(["unchanged", "escape", "retry"])(
+  "retains a legacy K-only worker contract: %s",
+  async (mode) => {
+    const f = await overlapFixture();
+    const preflight = f.native.preflight;
+    // Synthesize a pre-ISS-199 pinned configuration, with its original fingerprint.
+    // No historical production record or worker is modified by this fixture.
+    f.native.preflight = async (config) => {
+      const retained = config.author.prompt
+        .split("Retain independently reviewed feature ")[1]!
+        .split(" Seed-bound conflict census:")[0]!;
+      const original = {
+        ...config,
+        author: {
+          ...config.author,
+          prompt:
+            "Resolve only Git's marked conflicting hunks. Preserve both reviewed feature behavior and current-main changes. Do not modify text outside those hunks, add files, redesign the feature or fix unrelated defects. If preservation needs broader changes, return FAIL. This is the single bounded conflict resolution, not a fresh implementation. Retain independently reviewed feature " +
+            retained,
+        },
+        reviewer: {
+          ...config.reviewer,
+          prompt:
+            "This is an independent DELTA review of conflict resolution. Check the resolved hunks and direct callers against both parents. Reject semantic scope expansion, dropped feature or current-main behavior, and missing execution evidence. Inherit the retained source review; do not restart a full source sweep or infer patch equivalence. Retain independently reviewed feature " +
+            retained,
+        },
+      };
+      const fingerprint = createHash("sha256")
+        .update(
+          JSON.stringify({
+            config: original,
+            prompts: [original.author.prompt, original.reviewer.prompt],
+          }),
+        )
+        .digest("hex");
+      await writeFile(
+        resolve(config.stateDirectory, "config.json"),
+        JSON.stringify({ fingerprint, config: original, host: process.platform }),
+      );
+      const saved = await f.saved();
+      delete saved.conflict.census;
+      await writeFile(f.record, JSON.stringify(saved));
+      throw new Error("synthetic legacy configuration pinned");
+    };
+    await expect(f.deliver()).rejects.toThrow("synthetic legacy configuration pinned");
+    f.native.preflight = preflight;
+    const git = f.native.git;
+    f.native.git = async (tree, args) => {
+      if (args[0] === "ls-tree") throw new Error("legacy census backfill forbidden");
+      return git(tree, args);
+    };
+    f.setRunning(true);
+    await expect(f.deliver()).resolves.toMatchObject({ status: "observing-author" });
+    await expect(f.deliver()).resolves.toMatchObject({ status: "observing-author" });
+    expect(f.authorPrompts).toHaveLength(1);
+    expect(f.authorPrompts[0]).not.toContain("Seed-bound conflict census");
+    f.setRunning(false);
+    if (mode === "escape")
+      await writeFile(
+        resolve(f.sourceTree, overlapPath),
+        "preservation edit forbidden to legacy worker\n",
+      );
+    if (mode === "retry") {
+      const observe = f.native.observe;
+      let retry = true;
+      f.native.observe = async (role, config, attempt) => {
+        if (role === "author" && retry) {
+          retry = false;
+          return { id: attempt.id, status: "malformed" };
+        }
+        return observe(role, config, attempt);
+      };
+    }
+    if (mode === "escape")
+      await expect(f.deliver()).rejects.toThrow("conflict-resolution-scope-escape");
+    else {
+      await expect(f.deliver()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+      await expect(f.deliver()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+      expect(f.authorPrompts).toHaveLength(mode === "retry" ? 2 : 1);
+      expect(f.prompts).toHaveLength(1);
+    }
+    expect((await f.saved()).conflict.census).toBeUndefined();
+  },
+);
+
+it.each(["read", "save", "prelaunch", "retry", "commit"])(
+  "resumes the same census after %s interruption",
+  async (mode) => {
+    const f = await overlapFixture();
+    const git = f.native.git;
+    let interrupted = false;
+    f.native.git = async (tree, args) => {
+      if (args[0] === "ls-tree") {
+        if (mode === "read" && !interrupted) {
+          interrupted = true;
+          throw new Error("injected census read failure");
+        }
+      }
+      return git(tree, args);
+    };
+    // Interrupt after the census was saved but before flow pins its configuration.
+    const preflight = f.native.preflight;
+    f.native.preflight = async (config) => {
+      if (mode === "prelaunch" && !interrupted) {
+        interrupted = true;
+        throw new Error("injected prelaunch interruption");
+      }
+      return preflight(config);
+    };
+    if (mode === "save") {
+      // Occupy the existing atomic save's temporary path after seed persistence.
+      f.native.git = async (tree, args) => {
+        const result = await git(tree, args);
+        if (args[0] === "ls-tree" && !interrupted) {
+          interrupted = true;
+          await mkdir(`${f.record}.next`);
+        }
+        return result;
+      };
+    }
+    f.setResolution(async () => {
+      await f.resolveK();
+      await writeFile(resolve(f.sourceTree, overlapPath), "candidate and main\n");
+    });
+    if (["read", "save", "prelaunch"].includes(mode)) {
+      await expect(f.deliver()).rejects.toThrow(
+        mode === "read"
+          ? "injected census read failure"
+          : mode === "prelaunch"
+            ? "injected prelaunch interruption"
+            : `${f.record}.next`,
+      );
+      expect(f.authorPrompts).toEqual([]);
+      expect((await f.saved()).conflict.census === undefined).toBe(mode !== "prelaunch");
+      if (mode === "save") await rm(`${f.record}.next`, { recursive: true });
+    }
+    if (mode === "retry") {
+      const observe = f.native.observe;
+      f.native.observe = async (role, config, attempt) => {
+        if (role === "author" && !interrupted) {
+          interrupted = true;
+          return { id: attempt.id, status: "malformed", summary: "injected malformed completion" };
+        }
+        return observe(role, config, attempt);
+      };
+    }
+    if (mode === "commit") f.loseCommit("resolution");
+    if (mode === "commit")
+      await expect(f.deliver()).rejects.toThrow("lost conflict commit response");
+    await expect(f.deliver()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+    const saved = await f.saved();
+    expect(saved.resolutionUsed).toBe(true);
+    expect(saved.conflict.census).toMatchObject({
+      candidate: f.candidate,
+      main: f.main,
+      u: [overlapPath],
+    });
+    expect(f.authorPrompts).toHaveLength(mode === "retry" ? 2 : 1);
+    for (const prompt of [...f.authorPrompts, ...f.prompts])
+      expect(prompt).toContain(JSON.stringify(saved.conflict.census));
+    const reads = f.commands.filter((args) => args[0] === "ls-tree").length;
+    await f.advanceMain(["ISS-100", "ISS-101", "ISS-102"]);
+    await expect(f.deliver()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+    expect(f.commands.filter((args) => args[0] === "ls-tree")).toHaveLength(reads);
+  },
+);
+
 const conflictHunk = "<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> main\n";
 const marked = (...fixed: string[]) => fixed.join(conflictHunk);
 const largeFixed =
@@ -2603,7 +3040,7 @@ describe.each([false, true])(
   },
 );
 
-it.each(["no-hunk", "binary", "missing-side", "unsupported-mode"])(
+it.each(["no-hunk", "binary", "missing-side", "unsupported-mode", "rename-delete", "symlink"])(
   "retains unsupported refusal for a %s Git conflict before author dispatch",
   async (mode) => {
     const f = await fixture(undefined, undefined, false, {
@@ -2616,7 +3053,12 @@ it.each(["no-hunk", "binary", "missing-side", "unsupported-mode"])(
       const attributes = await f.git(f.sourceTree, ["rev-parse", "--git-path", "info/attributes"]);
       await writeFile(resolve(f.sourceTree, attributes), "feature.txt -merge\n");
     }
-    if (mode === "missing-side") await f.git(f.repo, ["rm", "feature.txt"]);
+    if (mode === "rename-delete") {
+      await f.git(f.sourceTree, ["mv", "feature.txt", "candidate-name.txt"]);
+      await f.commit(f.sourceTree);
+      await f.pinSource();
+      await f.git(f.repo, ["mv", "feature.txt", "main-name.txt"]);
+    } else if (mode === "missing-side") await f.git(f.repo, ["rm", "feature.txt"]);
     else
       await writeFile(
         resolve(f.repo, "feature.txt"),
@@ -2627,12 +3069,20 @@ it.each(["no-hunk", "binary", "missing-side", "unsupported-mode"])(
       await f.git(f.repo, ["config", "core.filemode", "false"]);
       await f.git(f.repo, ["update-index", "--chmod=+x", "feature.txt"]);
     }
+    if (mode === "symlink") {
+      await f.git(f.repo, ["config", "core.symlinks", "false"]);
+      const blob = await f.git(f.repo, ["rev-parse", "HEAD:feature.txt"]);
+      await f.git(f.repo, ["update-index", "--cacheinfo", "120000", blob, "feature.txt"]);
+    }
     await f.advanceMain();
     await expect(f.deliver()).rejects.toThrow("conflict-resolution-unsupported");
     expect(f.authorPrompts).toEqual([]);
     expect(f.prompts).toEqual([]);
     expect(f.gateHeads).toEqual([]);
     expect(f.publications()).toBe(0);
+    const saved = JSON.parse(await readFile(resolve(f.sourceState, "native-refresh.json"), "utf8"));
+    expect(saved.conflict.census).toBeUndefined();
+    expect(f.commands.some((args) => args[0] === "ls-tree")).toBe(false);
   },
 );
 

@@ -7,6 +7,8 @@ import { RepairBlocked, parseReview } from "./repair-policy.mjs";
 import { loadBoardSnapshot, normalizeBody, planningKeyOf } from "../planning/board-check.mjs";
 import { checkCandidateBoard } from "../planning/candidate-board.mjs";
 import { resolvePnpmLauncher } from "../pnpm-launcher.mjs";
+// @ts-expect-error Node 24 executes this private TypeScript module directly.
+import { GithubCommandFailure } from "./github-command-failure.ts";
 import {
   DeliveryBlocked,
   type CheckEvidence,
@@ -1278,22 +1280,40 @@ export function githubDeliveryAdapter(
     },
     async observeDraft(config, draft) {
       if (typeof draft.attributes.baseBody === "string") return observeSibling(config, draft);
-      try {
-        const row = await commands.ghJson(config, [
-          "issue",
-          "view",
-          String(draft.issue),
-          "--json",
-          "number,title,body,milestone",
-        ]);
-        if (row?.number !== draft.issue) return { state: "unknown" };
+      for (let attempt = 0; ; attempt++) {
+        let row;
+        try {
+          row = await commands.ghJson(config, [
+            "issue",
+            "view",
+            String(draft.issue),
+            "--json",
+            "number,title,body,milestone",
+          ]);
+        } catch (error) {
+          const failure = new GithubCommandFailure(error);
+          if (failure.transport && attempt < 2) {
+            await pause((attempt + 1) * 1000);
+            continue;
+          }
+          return { state: "unknown", diagnostics: failure.message };
+        }
+        if (
+          row?.number !== draft.issue ||
+          typeof row.title !== "string" ||
+          typeof row.body !== "string" ||
+          !(row.milestone === null || typeof row.milestone?.title === "string")
+        )
+          return { state: "unknown" };
+        // An unregistered seed may have no key; an acquired foreign key is
+        // never permission to overwrite that issue, even after a read retry.
+        const key = /<!--\s*planning-key:\s*([^\s]+)\s*-->/.exec(row.body)?.[1];
+        if (key !== undefined && key !== draft.key) return { state: "unknown" };
         return row.title === draft.title &&
           normalizeBody(row.body) === normalizeBody(draft.body) &&
           (row.milestone?.title ?? null) === draft.attributes.milestone
           ? { state: "confirmed", value: { issue: draft.issue } }
           : { state: "needs-mutation" };
-      } catch {
-        return { state: "unknown" };
       }
     },
     async applyDraft(config, draft) {
@@ -1594,14 +1614,19 @@ export function githubDeliveryAdapter(
           return run.status === "completed";
         };
         if (!(await verify())) return null;
-        const log = await commands.gh(config, [
-          "run",
-          "view",
-          String(selection.run),
-          "--attempt",
-          String(selection.attempt),
-          "--log-failed",
-        ]);
+        const log = await commands.gh(
+          config,
+          check.bucket === "cancel"
+            ? ["run", "view", "--job", String(selection.job), "--log"]
+            : [
+                "run",
+                "view",
+                String(selection.run),
+                "--attempt",
+                String(selection.attempt),
+                "--log-failed",
+              ],
+        );
         if (!(await verify())) throw new Error("workflow changed while fetching logs");
         return log;
       } catch (error) {

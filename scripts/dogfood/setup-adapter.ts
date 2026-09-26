@@ -452,6 +452,16 @@ export function gitSetupAdapter(options: SetupAdapterOptions = {}): SetupAdapter
         )
           throw new SetupBlocked("setup-path-overlaps-existing-checkout");
 
+        // ISS-205: only exact canonical checkout identity makes these reads equivalent.
+        // A shared Git common directory (or case-folded path) is insufficient.
+        const sameCheckout = controller === repository;
+        const controllerTopRead = git(
+          gitExecutable,
+          config,
+          ["rev-parse", "--show-toplevel"],
+          controller,
+        );
+        const controllerHeadRead = git(gitExecutable, config, ["rev-parse", "HEAD"], controller);
         const [
           controllerTop,
           controllerHead,
@@ -461,10 +471,14 @@ export function gitSetupAdapter(options: SetupAdapterOptions = {}): SetupAdapter
           pilotObject,
           baseObject,
         ] = await joinGitReads([
-          git(gitExecutable, config, ["rev-parse", "--show-toplevel"], controller),
-          git(gitExecutable, config, ["rev-parse", "HEAD"], controller),
-          git(gitExecutable, config, ["rev-parse", "--show-toplevel"], repository),
-          git(gitExecutable, config, ["rev-parse", "HEAD"], repository),
+          controllerTopRead,
+          controllerHeadRead,
+          sameCheckout
+            ? controllerTopRead
+            : git(gitExecutable, config, ["rev-parse", "--show-toplevel"], repository),
+          sameCheckout
+            ? controllerHeadRead
+            : git(gitExecutable, config, ["rev-parse", "HEAD"], repository),
           git(gitExecutable, config, ["branch", "--show-current"], repository),
           git(gitExecutable, config, ["rev-parse", "--verify", `${config.pilotRevision}^{commit}`]),
           git(gitExecutable, config, ["rev-parse", "--verify", `${config.base}^{commit}`]),
@@ -486,7 +500,7 @@ export function gitSetupAdapter(options: SetupAdapterOptions = {}): SetupAdapter
           git(gitExecutable, config, ["check-ref-format", "--branch", config.baseBranch]),
           git(gitExecutable, config, ["check-ref-format", "--branch", config.sourceBranch]),
           assertClean(gitExecutable, config, controller),
-          assertClean(gitExecutable, config, repository),
+          ...(sameCheckout ? [] : [assertClean(gitExecutable, config, repository)]),
         ]);
       } catch (error) {
         if (error instanceof SetupBlocked) throw error;

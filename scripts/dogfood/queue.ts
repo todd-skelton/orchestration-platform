@@ -5,11 +5,13 @@ import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path
 import { promisify } from "node:util";
 import {
   continuationSlug,
+  observeIntegrationAuthority,
   validateAcceptedReplan,
   validateIntegrationContinuation,
   // @ts-expect-error Node 24 executes this private TypeScript composition directly.
 } from "./continuation.ts";
 import type { AcceptedReplan, IntegrationContinuation } from "./continuation.js";
+import type { Conflict } from "./conflict.js";
 export { continuationSlug };
 import { resolveRouting, validateRoutingRow, type RoutingRow } from "./routing.mjs";
 import { assertControllerExecutor, githubDeliveryAdapter } from "./delivery-adapter.mjs";
@@ -33,7 +35,7 @@ import { correctGate, QueueBlocked, step } from "./flow.ts";
 import type { Adapter, Attempt, Config as SourceConfig, Role } from "./flow.js";
 // @ts-expect-error Node 24 executes this private TypeScript composition directly.
 import { currentMain, rebaseOnto, refreshDelivery } from "./refresh.ts";
-export { QueueBlocked };
+export { QueueBlocked, DeliveryBlocked };
 import {
   reviewedRepairAdapter,
   sourceReviewerReportPrompt,
@@ -93,6 +95,12 @@ export interface QueueItem {
     sourceDirectory: string;
     main: string;
     context: string;
+    spent?: {
+      conflict: Conflict;
+      candidate: string;
+      preservation: { path: string; semantics: string }[];
+      launchLimit: number;
+    };
   };
   id: string;
   issue: string;
@@ -662,6 +670,7 @@ export async function queueConfigFromLoop(
   repositoryAdapter: RepositoryAdapter,
   priorHistory: QueueParticipant[] = [],
   validatedExecutor?: Awaited<ReturnType<typeof validateLoopExecutor>>,
+  observeAuthority = observeIntegrationAuthority,
 ) {
   validateLoopConfig(config);
   demand(
@@ -795,7 +804,7 @@ export async function queueConfigFromLoop(
   let attemptBase = selected.base;
   let mainBase = selected.base;
   let initialHistory: QueueParticipant[] = [...priorHistory];
-  let authorFailures: SourceConfig["authorFailures"] = { count: 0, ids: [] };
+  let authorFailures: NonNullable<SourceConfig["authorFailures"]> = { count: 0, ids: [] };
   let reviewerRung = 0;
   let prescribedFindings: ReviewFinding[] | undefined;
   let rejectedHead: string | undefined;
@@ -982,8 +991,11 @@ export async function queueConfigFromLoop(
     validateHistory(initialHistory, config.nativeLaunchCeiling);
     // Reserve the lineage outside the run before setup; a changed packet cannot spend it again.
     const claim = await optionalRecord(stateRoot, integrationClaim);
+    const { spentResolution: spent, ...originalPacket } = integrationPacket;
     demand(
-      claim === ABSENT || queueDigest(claim) === queueDigest(integrationPacket),
+      spent
+        ? claim !== ABSENT && queueDigest(claim) === queueDigest(originalPacket)
+        : claim === ABSENT || queueDigest(claim) === queueDigest(integrationPacket),
       "integration-continuation-already-consumed",
     );
     if (claim === ABSENT)
@@ -1016,6 +1028,222 @@ export async function queueConfigFromLoop(
       context: integrationPrompt,
     };
     integrationDirectory = resolve(attemptDirectory, "integration");
+    if (spent) {
+      const reason = "integration-continuation-history-unavailable";
+      demand(spent.claim === resolve(stateRoot, `${integrationClaim}.json`), reason);
+      const retainedIntegration = integrationDirectory;
+      const sourceAuthor = await optionalRecord(exhausted.directory, "author-attempt");
+      const sourceTerminal = await optionalRecord(exhausted.directory, "author-terminal");
+      demand(
+        sourceAuthor !== ABSENT &&
+          sourceTerminal !== ABSENT &&
+          sourceAuthor.id === sourceTerminal.id &&
+          sourceTerminal.status === "passed" &&
+          sourceTerminal.head === original.config.base,
+        reason,
+      );
+      const failed = await optionalRecord(retainedIntegration, "attempt");
+      const retainedSource = resolve(retainedIntegration, "source");
+      const refresh = await optionalRecord(retainedSource, "native-refresh");
+      demand(failed !== ABSENT && refresh !== ABSENT, reason);
+      validateFailedAttempt(failed, priorSourceAttempt, config.attemptCeiling);
+      demand(
+        failed.run === config.run &&
+          failed.item === attempt.item &&
+          failed.issue === issueUrl &&
+          failed.base === integrationPacket.candidateHead &&
+          failed.candidateAttempt === integrationPacket.absoluteAttempt &&
+          failed.reviewId === integrationPacket.reviewId &&
+          failed.head === integrationPacket.candidateHead &&
+          refresh.resolutionUsed === true &&
+          !refresh.head &&
+          refresh.previousHead === integrationPacket.candidateHead &&
+          refresh.previousReview === integrationPacket.reviewId &&
+          refresh.main === spent.main &&
+          refresh.conflict?.seed === spent.seed &&
+          refresh.directory === resolve(retainedSource, `refresh-${spent.main}`) &&
+          object(refresh.conflict.files) &&
+          Object.keys(refresh.conflict.files).length > 0,
+        reason,
+      );
+      const workerConfig = await optionalRecord(refresh.directory, "config");
+      const failedAuthor = await optionalRecord(refresh.directory, "author-attempt");
+      const failedTerminal = await optionalRecord(refresh.directory, "author-terminal");
+      demand(
+        workerConfig !== ABSENT &&
+          workerConfig.config?.base === spent.seed &&
+          workerConfig.config.run === config.run &&
+          workerConfig.config.issue === issueUrl &&
+          workerConfig.config.repository === config.repository &&
+          workerConfig.config.stateDirectory === refresh.directory &&
+          failedAuthor !== ABSENT &&
+          failedAuthor.id === spent.failedAuthor &&
+          failedTerminal !== ABSENT &&
+          failedTerminal.id === spent.failedAuthor &&
+          failedTerminal.status === "failed" &&
+          failedTerminal.head === spent.seed,
+        reason,
+      );
+      for (const directory of [retainedIntegration, retainedSource, refresh.directory])
+        for (const name of ["publication", "publication-intent"])
+          demand((await optionalRecord(directory, name)) === ABSENT, reason);
+      demand(
+        (await git(["rev-list", "--parents", "-n", "1", spent.seed])) ===
+          `${spent.seed} ${integrationPacket.candidateHead} ${spent.main}`,
+        reason,
+      );
+      demand(
+        (await git(["merge-base", exhausted.refresh.main, spent.main])) === exhausted.refresh.main,
+        reason,
+      );
+      const k = Object.keys(refresh.conflict.files).sort();
+      demand(
+        JSON.stringify(k) === JSON.stringify(spent.resolutions.map((rule) => rule.path).sort()) &&
+          k.every((path) => integrationPacket.allowedPaths.includes(path)),
+        reason,
+      );
+      const [, , cycle, ordinal] = spent.stopMarker.split(":");
+      const stop = await optionalRecord(runState, `cycle-${cycle}-stop-${ordinal}`);
+      const receipt = await optionalRecord(runState, `cycle-${cycle}-stop-${ordinal}-complete`);
+      demand(
+        stop !== ABSENT &&
+          receipt !== ABSENT &&
+          stop.marker === spent.stopMarker &&
+          stop.selection?.key === selected.key &&
+          stop.selection.number === selected.number &&
+          stop.attempts === integrationPacket.absoluteAttempt &&
+          stop.reason === "continuation-failed" &&
+          stop.history?.some(
+            (p: QueueParticipant) => p.id === spent.failedAuthor && p.outcome === "failed",
+          ) &&
+          receipt.history?.some(
+            (p: QueueParticipant) => p.id === spent.failedAuthor && p.outcome === "failed",
+          ) &&
+          receipt.stop === Number(ordinal) &&
+          JSON.stringify(receipt.selection) === JSON.stringify(stop.selection),
+        "integration-continuation-stop-mismatch",
+      );
+      const retainedHistory = await readQueueHistory({
+        stateDirectory: retainedIntegration,
+        initialHistory: failed.history,
+        nativeLaunchCeiling: config.nativeLaunchCeiling,
+      });
+      // Direct composition has no supervisor-supplied prefix. Completed cycles still
+      // carry later launches, and must not disappear from its remaining capacity.
+      for (const name of await readdir(runState)) {
+        if (!/^cycle-\d+(?:-stop-\d+)?-complete\.json$/.test(name)) continue;
+        const completed = await optionalRecord(runState, name.slice(0, -5));
+        validateHistory(completed.history, config.nativeLaunchCeiling);
+        if (completed.history.length > initialHistory.length) initialHistory = completed.history;
+      }
+      if (retainedHistory.length > initialHistory.length) initialHistory = retainedHistory;
+      demand(
+        retainedHistory.every(
+          (p, index) =>
+            JSON.stringify(participantWithoutUsage(p)) ===
+            JSON.stringify(participantWithoutUsage(initialHistory[index]!)),
+        ),
+        reason,
+      );
+      demand(
+        initialHistory.some(
+          (p) => p.id === spent.failedAuthor && p.role === "author" && p.outcome === "failed",
+        ),
+        reason,
+      );
+      authorFailures =
+        failed.authorFailures ?? workerConfig.config.authorFailures ?? authorFailures;
+      // Older failure projections did not retain the counter. Count the terminal once,
+      // in the new reservation only; never change that historical attempt.
+      for (const participant of retainedHistory.filter(
+        (p) => p.item === attempt.item && p.role === "author" && p.outcome !== "passed",
+      ))
+        if (!authorFailures.ids.includes(participant.id))
+          authorFailures = {
+            ...authorFailures,
+            count: authorFailures.count + 1,
+            ids: [...authorFailures.ids, participant.id],
+          };
+      reviewerRung =
+        initialHistory.findLast((p) => p.item === attempt.item && p.role === "reviewer")?.rung ??
+        reviewerRung;
+      inheritedWorkerRetry ||=
+        failed.retries > 0 || refresh.flowRetried === true || failedAuthor.retries === 1;
+      integrationDirectory = resolve(retainedIntegration, "spent-resolution");
+      const reservation = await optionalRecord(retainedIntegration, "spent-resolution");
+      demand(
+        reservation === ABSENT ||
+          queueDigest(reservation.packet) === queueDigest(integrationPacket),
+        "integration-continuation-already-consumed",
+      );
+      const launchLimit =
+        reservation === ABSENT
+          ? Math.min(
+              inheritedWorkerRetry ? 2 : 3,
+              config.nativeLaunchCeiling - initialHistory.length,
+            )
+          : reservation.launchLimit;
+      if (reservation === ABSENT) {
+        demand(
+          initialHistory.length + 2 <= config.nativeLaunchCeiling,
+          "native-launch-ceiling-exhausted",
+        );
+        let authority;
+        try {
+          authority = await observeAuthority(spent.authorityUrl);
+        } catch {
+          throw new QueueBlocked("integration-continuation-authority-unavailable");
+        }
+        demand(
+          authority.url === spent.authorityUrl &&
+            authority.id === spent.authorityUrl.split("issuecomment-")[1] &&
+            authority.author === "todd-skelton" &&
+            authority.body === spent.authorityBody &&
+            [...spent.resolutions, ...spent.preservation].every(
+              (rule) =>
+                authority.body.includes(rule.path) && authority.body.includes(rule.semantics),
+            ),
+          "integration-continuation-authority-mismatch",
+        );
+        await writeFile(
+          resolve(retainedIntegration, "spent-resolution.json"),
+          JSON.stringify({
+            packet: integrationPacket,
+            directory: integrationDirectory,
+            authority,
+            initialHistory,
+            authorFailures,
+            reviewerRung,
+            inheritedWorkerRetry,
+            launchLimit,
+          }),
+          { flag: "wx", flush: true },
+        );
+      } else {
+        const resumed = await optionalRecord(integrationDirectory, "attempt");
+        if (resumed === ABSENT || !["failed", "complete"].includes(resumed.phase))
+          initialHistory = reservation.initialHistory;
+        else if (initialHistory.length < reservation.initialHistory.length)
+          initialHistory = reservation.initialHistory;
+        authorFailures = reservation.authorFailures;
+        reviewerRung = reservation.reviewerRung;
+        inheritedWorkerRetry = reservation.inheritedWorkerRetry;
+      }
+      attemptBase = spent.seed;
+      mainBase = spent.main;
+      integrationPrompt = `ISS-200 spent-resolution continuation: start from seed ${spent.seed}, whose parents are reviewed C ${integrationPacket.candidateHead} and M ${spent.main}. Fresh ruling ${spent.authorityUrl}, captured before reservation at ${resolve(retainedIntegration, "spent-resolution.json")}. Resolve K only within its marked hunks under these semantics: ${JSON.stringify(spent.resolutions)}. Only census U members explicitly ruled here permit preservation edits: ${JSON.stringify(spent.preservation)}. Do not expand semantics. Read the failed author's attempt, terminal and trace at ${refresh.directory}, retained integration ${retainedIntegration}, original source/review/traces ${exhausted.directory}, and stop ${spent.stopMarker}. Preserve every selected acceptance criterion. Failed partial work, old PASS and old gates are not acceptance. One author/DELTA pair with only the remaining shared retry, at most ${inheritedWorkerRetry ? 2 : 3} launches including later-main reviews. No source/gate repair or chained recovery; any work failure parks.\n\n${promptContext}`;
+      integration = {
+        ...integration,
+        main: spent.main,
+        context: integrationPrompt,
+        spent: {
+          conflict: { files: refresh.conflict.files, seed: spent.seed },
+          candidate: integrationPacket.candidateHead,
+          preservation: spent.preservation,
+          launchLimit,
+        },
+      };
+    }
   }
   while (!replan && !integration) {
     const priorSlug = `${selected.key.toLowerCase()}-attempt-${sourceAttempt}`;
@@ -1160,7 +1388,7 @@ export async function queueConfigFromLoop(
   const slug = replan
     ? continuationSlug(config.acceptedReplan!)
     : integrationPacket
-      ? `${basename(integrationPacket.attemptDirectory)}-integration`
+      ? `${basename(integrationPacket.attemptDirectory)}-integration${integrationPacket.spentResolution ? "-spent-resolution" : ""}`
       : `${selected.key.toLowerCase()}-attempt-${sourceAttempt}`;
   // ISS-167 owns one directory beneath the retained attempt; that attempt stays unchanged.
   const queueDirectory = integrationDirectory ?? resolve(runState, slug);
@@ -1265,7 +1493,16 @@ export async function queueConfigFromLoop(
     stateDirectory: paths.source,
     allowedPaths: ["."],
     ...(config.acceptedReplan ? { correctionPaths: config.acceptedReplan.allowedPaths } : {}),
-    ...(integrationPacket ? { correctionPaths: integrationPacket.allowedPaths } : {}),
+    ...(integrationPacket
+      ? {
+          correctionPaths: integrationPacket.spentResolution
+            ? [
+                ...integrationPacket.spentResolution.resolutions,
+                ...integrationPacket.spentResolution.preservation,
+              ].map((rule) => rule.path)
+            : integrationPacket.allowedPaths,
+        }
+      : {}),
     ...(config.acceptedReplan?.preReviewEvidence
       ? { preReviewEvidence: config.acceptedReplan.preReviewEvidence }
       : {}),
@@ -1477,6 +1714,7 @@ export function validateQueueConfig(config: QueueConfig) {
           "sourceDirectory",
           "main",
           "context",
+          ...(item.integrationContinuation.spent ? ["spent"] : []),
         ]) &&
           /^[A-Za-z0-9._:-]{1,128}$/.test(item.integrationContinuation.reviewId) &&
           isAbsolute(item.integrationContinuation.sourceDirectory) &&
@@ -1661,6 +1899,151 @@ export async function currentCandidateAttempt(config: QueueConfig) {
 export async function hasStartedDelivery(config: QueueConfig) {
   const attempt = await optionalRecord(config.stateDirectory, "attempt");
   return attempt !== ABSENT && ["delivery", "complete"].includes(attempt.phase);
+}
+
+// ISS-184: a merged, cleaned native delivery still owes its repository hook.
+// Read retained records directly: eligibility and deleted worktrees are no longer
+// inputs to this phase. deliveryStep owns validation of the completed receipts.
+export async function retainedPostMergeDelivery(config: LoopConfig, selected: SelectedLoopIssue) {
+  // The self adapter has no post-merge observation to resume.
+  if (config.adapter === "self") return undefined;
+  const runDirectory = resolve(config.stateRoot, config.run);
+  const directories = Array.from({ length: config.attemptCeiling }, (_, index) =>
+    resolve(runDirectory, `${selected.key.toLowerCase()}-attempt-${index + 1}`),
+  );
+  if (config.acceptedReplan?.issueKey === selected.key)
+    directories.push(resolve(runDirectory, continuationSlug(config.acceptedReplan)));
+  if (config.integrationContinuation?.issueKey === selected.key) {
+    const integration = resolve(config.integrationContinuation.attemptDirectory, "integration");
+    directories.push(integration, resolve(integration, "spent-resolution"));
+  }
+  for (const directory of directories.reverse()) {
+    const attempt = await optionalRecord(directory, "attempt");
+    if (attempt === ABSENT || !["delivery", "complete"].includes(attempt.phase)) continue;
+    if (!attempt.stateDirectory) continue;
+    let origin = attempt.stateDirectory as string;
+    let retainedConfig: DeliveryConfig | undefined;
+    let refresh: PublicationRefresh | undefined;
+    let retries = attempt.retries;
+    // Follow the existing lifecycle pointers, never discover arbitrary receipt files.
+    for (;;) {
+      const correction = await optionalRecord(origin, "gate-correction");
+      const recovery = await optionalRecord(origin, "gate-stop-continuation");
+      if (recovery !== ABSENT) {
+        retainedConfig = recovery.delivery;
+        retries = Math.max(retries, recovery.delivery.retries);
+        origin = resolve(origin, "gate-stop-continuation");
+      } else if (correction !== ABSENT) {
+        const result = await optionalRecord(origin, "gate-correction-result");
+        if (result === ABSENT) break;
+        retainedConfig = correction.delivery;
+        retries = result.retries;
+        origin = correction.directory;
+      } else {
+        const active = await optionalRecord(origin, "native-refresh");
+        if (active === ABSENT || !active.head) break;
+        retries = Math.max(retries, active.retries);
+        refresh = active.publicationRefresh ?? refresh;
+        origin = active.directory;
+      }
+    }
+    const merge = await optionalRecord(origin, "merge");
+    const cleanup = await optionalRecord(origin, "cleanup");
+    if (merge === ABSENT && cleanup === ABSENT) continue;
+    demand(merge !== ABSENT && cleanup !== ABSENT, "incomplete-retained-post-merge");
+    demand(
+      ["source", "repair"].includes(attempt.acceptedStage) &&
+        attempt.stateDirectory === resolve(directory, attempt.acceptedStage),
+      "malformed-retained-post-merge-attempt",
+    );
+    const issue = `https://github.com/${config.repository}/issues/${selected.number}`;
+    demand(
+      attempt.run === config.run &&
+        attempt.issue === issue &&
+        attempt.item.startsWith(`${selected.key}:`) &&
+        attempt.acceptedStage !== null,
+      "retained-post-merge-identity-mismatch",
+    );
+    const source = await json(origin, "delivery-source");
+    demand(
+      origin !== attempt.stateDirectory ||
+        (source.head === attempt.head && source.reviewId === attempt.reviewId),
+      "retained-post-merge-identity-mismatch",
+    );
+    demand(
+      (await optionalRecord(origin, "delivery-config")) !== ABSENT,
+      "incomplete-retained-post-merge",
+    );
+    const plan = (await json(origin, "delivery-plan")).plan;
+    const setup = await json(resolve(directory, "setup"), "setup-plan");
+    demand(
+      setup.run === config.run &&
+        setup.issue === issue &&
+        setup.repository === config.repository &&
+        source.run === config.run &&
+        source.issue === issue &&
+        source.repository === config.repository,
+      "retained-post-merge-identity-mismatch",
+    );
+    const publication =
+      config.acceptedReplan?.issueKey === selected.key
+        ? config.acceptedReplan.publication
+        : undefined;
+    const delivery: DeliveryConfig = {
+      controller: source.controller,
+      run: source.run,
+      issue: source.issue,
+      repository: source.repository,
+      controllerRoot: setup.controllerRoot,
+      repositoryRoot: setup.repositoryRoot,
+      controllerRevision: source.controllerRevision,
+      worktree: source.worktree,
+      reviewWorktree: source.reviewWorktree,
+      stateDirectory: origin,
+      candidateHead: source.head,
+      retries,
+      ...(setup.sourceBranch !== plan.publication.sourceBranch && !publication
+        ? { localBranch: setup.sourceBranch }
+        : {}),
+      ...(publication
+        ? {
+            refresh: {
+              number: publication.number,
+              url: publication.url,
+              head: publication.head,
+              localBranch: setup.sourceBranch,
+            },
+          }
+        : {}),
+      requiredChecks: source.requiredChecks,
+      policy: {
+        key: selected.key,
+        number: selected.number,
+        title: plan.publication.title,
+        sourceBranch: plan.publication.sourceBranch,
+      },
+      ...retainedConfig,
+    };
+    Object.assign(delivery, { stateDirectory: origin, candidateHead: source.head, retries });
+    if (refresh) delivery.refresh = refresh;
+    // The completed path is read-only and does not call any adapter mutation or
+    // worktree operation. The saved fingerprint also checks reconstructed policy.
+    const result = await deliveryStep(
+      delivery,
+      githubDeliveryAdapter(undefined, config.gitExecutable),
+      {} as DeliveryPolicyAdapter,
+    );
+    demand(result.status === "complete", "incomplete-retained-post-merge");
+    let history = await readQueueHistory({
+      stateDirectory: directory,
+      nativeLaunchCeiling: config.nativeLaunchCeiling,
+      initialHistory: [],
+    });
+    validateHistory(attempt.history, config.nativeLaunchCeiling);
+    if (attempt.history.length > history.length) history = attempt.history;
+    return { config: delivery, delivery: result, history, attempts: attempt.candidateAttempt };
+  }
+  return undefined;
 }
 
 // ISS-161: observe a completed source author without entering its saved worktree.
@@ -2087,7 +2470,7 @@ function initialAttempt(
     ...(item.source.author.ladder
       ? { authorFailures: item.source.authorFailures ?? { count: 0, ids: [] } }
       : {}),
-    retries: 0,
+    retries: item.integrationContinuation?.spent && item.source.inheritedWorkerRetry ? 1 : 0,
     acceptedStage: null,
     stateDirectory: null,
   };
@@ -2408,6 +2791,7 @@ export async function queueStep(config: QueueConfig, adapter: QueueAdapter): Pro
           "launcher-failed",
           "operator-evidence-failed",
           "continuation-repair-not-authorized",
+          "integration-continuation-launch-exhausted",
           "refresh-review-failed",
           "gate-correction-not-authorized",
           "gate-correction-failed",
@@ -2434,32 +2818,29 @@ export async function queueStep(config: QueueConfig, adapter: QueueAdapter): Pro
             : candidate === ABSENT
               ? attempt.head
               : candidate.head;
-        await record(
-          directory,
-          "attempt",
-          attemptFailureRecord(
-            config,
-            item,
-            item.implementationAttempt,
-            {
-              head: failedHead,
-              reviewId: attempt.reviewId ?? "",
-              findings:
-                item.conflictContinuation || item.integrationContinuation
-                  ? attempt.findings
-                  : [
-                      {
-                        file: item.acceptedReplan!.allowedPaths[0]!,
-                        line: 1,
-                        severity: "blocking",
-                        text: `${error.reason}: ${error.diagnostics ?? ""}`,
-                      },
-                    ],
-            },
-            await adapter.history(),
-            Math.max(attempt.retries, error.retries),
-          ),
+        const failure = attemptFailureRecord(
+          config,
+          item,
+          item.implementationAttempt,
+          {
+            head: failedHead,
+            reviewId: attempt.reviewId ?? "",
+            findings:
+              item.conflictContinuation || item.integrationContinuation
+                ? attempt.findings
+                : [
+                    {
+                      file: item.acceptedReplan!.allowedPaths[0]!,
+                      line: 1,
+                      severity: "blocking",
+                      text: `${error.reason}: ${error.diagnostics ?? ""}`,
+                    },
+                  ],
+          },
+          await adapter.history(),
+          Math.max(attempt.retries, error.retries),
         );
+        await record(directory, "attempt", failure);
         throw new QueueBlocked(
           error.reason === "operator-evidence-failed" ? error.reason : "continuation-failed",
           error.message + (error.diagnostics ? `: ${error.diagnostics}` : ""),
@@ -2491,7 +2872,9 @@ export async function queueStep(config: QueueConfig, adapter: QueueAdapter): Pro
         run: config.run,
         cursor: config.items.length,
         items: config.items.length,
-        participants: attempt.history.length,
+        participants: item.integrationContinuation?.spent
+          ? entryHistory.length
+          : attempt.history.length,
       };
 
     if (attempt.phase === "setup") {
@@ -2987,6 +3370,12 @@ export function repositoryQueueAdapter(
         "continuation-repair-not-authorized",
       );
       const priorHistory = await readHistory();
+      if (item.integrationContinuation?.spent)
+        demand(
+          priorHistory.length - config.initialHistory.length <
+            item.integrationContinuation.spent.launchLimit,
+          "integration-continuation-launch-exhausted",
+        );
       demand(priorHistory.length < config.nativeLaunchCeiling, "native-launch-ceiling-exhausted");
       const repairCompatiblePrompt =
         stage === "source" && role === "reviewer"
@@ -3593,7 +3982,7 @@ export function repositoryQueueAdapter(
       });
       demand(
         !integrating ||
-          (originalCandidate.head === accepted.head &&
+          (originalCandidate.head === (integrating.spent?.candidate ?? accepted.head) &&
             originalEvidence.reviewId === accepted.reviewId &&
             originalEvidence.reviewId === integrating.reviewId),
         "unreviewed-delivery-source",
@@ -3609,7 +3998,7 @@ export function repositoryQueueAdapter(
             stateDirectory: accepted.stateDirectory,
           }
         : originalEvidence;
-      delivery.candidateHead = originalCandidate.head;
+      delivery.candidateHead = integrating?.spent ? item.base : originalCandidate.head;
       if (correctionRecord !== ABSENT) {
         const correction = correctionRecord;
         let completed = await optionalRecord(correctionOrigin, "gate-correction-result");
@@ -3821,6 +4210,7 @@ export function repositoryQueueAdapter(
                   context: integrating.context,
                   main: integrating.main,
                   inheritedDirectory: integrating.sourceDirectory,
+                  ...(integrating.spent ? { spent: integrating.spent } : {}),
                 }
               : undefined,
           !!item.conflictContinuation || !!integrating,

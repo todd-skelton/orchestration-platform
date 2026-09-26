@@ -19,6 +19,10 @@
     {
       "key": "M3",
       "title": "Chase Sets adoption"
+    },
+    {
+      "key": "M4",
+      "title": "Deferred Windows reliability evidence"
     }
   ],
   "issues": [
@@ -614,6 +618,12 @@
       "blockedBy": []
     },
     {
+      "key": "ISS-184",
+      "file": "planning/drafts/ISS-184.md",
+      "milestone": "M2",
+      "blockedBy": []
+    },
+    {
       "key": "ISS-185",
       "file": "planning/drafts/ISS-185.md",
       "milestone": "M2",
@@ -671,6 +681,92 @@
       "key": "ISS-198",
       "file": "planning/drafts/ISS-198.md",
       "milestone": "M1",
+      "blockedBy": []
+    },
+    {
+      "key": "ISS-199",
+      "file": "planning/drafts/ISS-199.md",
+      "milestone": "M1",
+      "blockedBy": []
+    },
+    {
+      "key": "ISS-200",
+      "file": "planning/drafts/ISS-200.md",
+      "milestone": "M1",
+      "blockedBy": [
+        "ISS-199"
+      ]
+    },
+    {
+      "key": "ISS-201",
+      "file": "planning/drafts/ISS-201.md",
+      "milestone": "M2",
+      "blockedBy": []
+    },
+    {
+      "key": "ISS-202",
+      "file": "planning/drafts/ISS-202.md",
+      "milestone": "M1",
+      "blockedBy": []
+    },
+    {
+      "key": "ISS-203",
+      "file": "planning/drafts/ISS-203.md",
+      "milestone": "M1",
+      "blockedBy": []
+    },
+    {
+      "key": "ISS-204",
+      "file": "planning/drafts/ISS-204.md",
+      "milestone": "M1",
+      "blockedBy": []
+    },
+    {
+      "key": "ISS-205",
+      "file": "planning/drafts/ISS-205.md",
+      "milestone": "M1",
+      "blockedBy": []
+    },
+    {
+      "key": "ISS-206",
+      "file": "planning/drafts/ISS-206.md",
+      "milestone": "M1",
+      "blockedBy": []
+    },
+    {
+      "key": "ISS-208",
+      "file": "planning/drafts/ISS-208.md",
+      "milestone": "M1",
+      "blockedBy": []
+    },
+    {
+      "key": "ISS-209",
+      "file": "planning/drafts/ISS-209.md",
+      "milestone": "M1",
+      "blockedBy": []
+    },
+    {
+      "key": "ISS-210",
+      "file": "planning/drafts/ISS-210.md",
+      "milestone": "M1",
+      "blockedBy": []
+    },
+    {
+      "key": "ISS-212",
+      "file": "planning/drafts/ISS-212.md",
+      "milestone": "M1",
+      "blockedBy": []
+    },
+    {
+      "key": "ISS-211",
+      "file": "planning/drafts/ISS-211.md",
+      "milestone": "M1",
+      "blockedBy": []
+    },
+    {
+      "key": "ISS-213",
+      "file": "planning/drafts/ISS-213.md",
+      "milestone": "M4",
       "blockedBy": []
     }
   ]

@@ -6,11 +6,14 @@ import { promisify } from "node:util";
 import * as queue from "./queue.ts";
 import type { RepositoryAdapter } from "./repository-adapter.js";
 import { resolveRouting } from "./routing.mjs";
+// @ts-expect-error Node 24 executes this private TypeScript module directly.
+import { GithubCommandFailure } from "./github-command-failure.ts";
 
 const {
   continuationSlug,
   QueueBlocked,
   readQueueHistory,
+  retainedPostMergeDelivery,
   retainedSourceFailure,
   prerequisiteSourceFailure,
   validateHistory,
@@ -57,7 +60,7 @@ export interface SupervisionAdapter {
     blocked: SelectedIssue,
   ): Promise<"absent" | "live" | "unknown">;
   currentMain(config: LoopConfig, executingRoot: string): Promise<string>;
-  issue(config: LoopConfig, number: number): Promise<IssueObservation>;
+  issue(config: LoopConfig, number: number, purpose?: "learning-note"): Promise<IssueObservation>;
   removeReady(config: LoopConfig, number: number): Promise<void>;
   close(config: LoopConfig, number: number): Promise<void>;
   comment(config: LoopConfig, number: number, body: string): Promise<void>;
@@ -511,6 +514,10 @@ export async function nextCycle(
       // ISS-144: external closure supersedes workspace recovery and pending stops.
       const observed = await adapter.issue(config, selected.number);
       assertIssue(selected, observed);
+      // Native merge/cleanup is not external closure: its repository hook may
+      // still be pending, even when both worker worktrees have been removed.
+      if (await retainedPostMergeDelivery(config, selected))
+        return { selection: selected, initialHistory };
       if (observed.state === "CLOSED") {
         const slugs = Array.from(
           { length: config.attemptCeiling },
@@ -530,6 +537,15 @@ export async function nextCycle(
         // ISS-167: the integration's launches live beneath its retained attempt.
         if (config.integrationContinuation?.issueKey === selected.key)
           slugs.push(`${basename(config.integrationContinuation.attemptDirectory)}/integration`);
+        // A removed grant cannot refund launches when external closure supersedes
+        // admission. Discover the new lifecycle from its existing reservation only.
+        for (const slug of [...slugs]) {
+          const integration = `${slug}/integration`;
+          if (
+            (await optionalRecord(resolve(directory, integration), "spent-resolution")) !== ABSENT
+          )
+            slugs.push(integration, `${integration}/spent-resolution`);
+        }
         for (const slug of slugs) {
           const history = await readQueueHistory({
             stateDirectory: resolve(directory, slug),
@@ -805,19 +821,33 @@ async function postLearningNote(
   note: { marker: string; body: string },
   adapter: SupervisionAdapter,
 ) {
-  let observed = await adapter.issue(config, selection.number);
-  assertIssue(selection, observed);
-  if (observed.state !== "OPEN") throw new QueueBlocked("stopped-issue-state-unknown");
-  const matching = observed.comments.filter((body) => body.includes(`<!-- ${note.marker} -->`));
-  if (matching.length > 1) throw new QueueBlocked("duplicate-learning-note");
-  if (matching.length === 0) {
-    await adapter.comment(config, selection.number, note.body);
-    observed = await adapter.issue(config, selection.number);
+  const observe = async () => {
+    const observed = await adapter.issue(config, selection.number, "learning-note");
     assertIssue(selection, observed);
-    if (!observed.comments.some((body) => body.includes(`<!-- ${note.marker} -->`)))
-      throw new QueueBlocked("learning-note-state-unknown");
+    if (observed.state !== "OPEN") throw new QueueBlocked("stopped-issue-state-unknown");
+    const matching = observed.comments.filter((body) => body.includes(`<!-- ${note.marker} -->`));
+    if (matching.length > 1) throw new QueueBlocked("duplicate-learning-note");
+    return { observed, found: matching.length === 1 };
+  };
+  let current = await observe();
+  if (current.found) return current.observed;
+  for (let post = 0; ; post++) {
+    let failure: GithubCommandFailure | undefined;
+    try {
+      await adapter.comment(config, selection.number, note.body);
+    } catch (error) {
+      // Only the owning CLI boundary supplies a command outcome. Unrelated
+      // adapter exceptions retain their ordinary interruption semantics.
+      if (!(error instanceof GithubCommandFailure)) throw error;
+      failure = error;
+    }
+    // Even a failed response may have posted. Probe now, never reuse pre-post
+    // absence. Only a proved pre-send failure permits one additional write.
+    current = await observe();
+    if (current.found) return current.observed;
+    if (post === 0 && failure?.preSend) continue;
+    throw new QueueBlocked("learning-note-state-unknown", failure?.message);
   }
-  return observed;
 }
 
 export async function stopCycle(
@@ -1009,31 +1039,54 @@ async function run(executable: string, args: string[], cwd: string) {
   });
 }
 
-export function repositorySupervisionAdapter(): SupervisionAdapter {
+export function repositorySupervisionAdapter(
+  commands: { run: typeof run } = { run },
+  pause: (ms: number) => Promise<void> = (ms) => new Promise((done) => setTimeout(done, ms)),
+): SupervisionAdapter {
   const gh = async (config: LoopConfig, args: string[]) =>
     (
-      await run(
+      await commands.run(
         "gh",
         [...args, "--repo", `github.com/${config.repository}`],
         config.stableExecutorRoot,
       )
     ).stdout.trim();
-  const observe = async (config: LoopConfig, number: number): Promise<IssueObservation> => {
-    try {
-      const row = JSON.parse(
-        await gh(config, [
+  const observe: SupervisionAdapter["issue"] = async (config, number, purpose) => {
+    let raw: string;
+    for (let attempt = 0; ; attempt++) {
+      try {
+        raw = await gh(config, [
           "issue",
           "view",
           String(number),
           "--json",
           "number,body,state,labels,comments",
-        ]),
-      );
+        ]);
+        break;
+      } catch (error) {
+        const failure = new GithubCommandFailure(error);
+        if (purpose === "learning-note" && failure.transport && attempt < 2) {
+          await pause((attempt + 1) * 1000);
+          continue;
+        }
+        throw new QueueBlocked(
+          purpose === "learning-note"
+            ? "learning-note-state-unknown"
+            : "issue-observation-unavailable",
+          purpose === "learning-note" ? failure.message : undefined,
+        );
+      }
+    }
+    try {
+      const row = JSON.parse(raw);
       if (
         row?.number !== number ||
+        typeof row.body !== "string" ||
         !["OPEN", "CLOSED"].includes(row.state) ||
         !Array.isArray(row.labels) ||
-        !Array.isArray(row.comments)
+        !Array.isArray(row.comments) ||
+        !row.labels.every((label: any) => typeof label?.name === "string") ||
+        !row.comments.every((comment: any) => typeof comment?.body === "string")
       )
         throw new Error("malformed issue");
       return {
@@ -1070,7 +1123,11 @@ export function repositorySupervisionAdapter(): SupervisionAdapter {
       await gh(config, ["issue", "close", String(number)]);
     },
     async comment(config, number, body) {
-      await gh(config, ["issue", "comment", String(number), "--body", body]);
+      try {
+        await gh(config, ["issue", "comment", String(number), "--body", body]);
+      } catch (error) {
+        throw new GithubCommandFailure(error);
+      }
     },
   };
 }

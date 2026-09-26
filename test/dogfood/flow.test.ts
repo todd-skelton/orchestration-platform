@@ -39,7 +39,8 @@ import {
 import { stopCycle } from "../../scripts/dogfood/supervision.js";
 import type { LoopConfig } from "../../scripts/dogfood/queue.js";
 import { reviewedRepairAdapter } from "../../scripts/dogfood/repair-adapter.js";
-import { SELF_ROUTING } from "../../scripts/dogfood/routing.mjs";
+import { SELF_ROUTING, type RoutingRow } from "../../scripts/dogfood/routing.mjs";
+import shippedRouting from "../../adapters/chase-sets-routing.json" with { type: "json" };
 import { MAX_TERMINAL_SUMMARY_LENGTH } from "../../scripts/dogfood/terminal-summary.mjs";
 import {
   MAX_VERDICT_EXCERPT_LENGTH,
@@ -53,6 +54,22 @@ import { evidenceDescriptor, writeEvidence } from "./fixtures/continuation.js";
 const base = "a".repeat(40),
   head = "b".repeat(40),
   pilotRevision = "c".repeat(40);
+// Synthetic retained seed used by adapter-lifecycle tests; real census capture
+// and its Git identities are exercised by refresh.test.ts.
+const conflictSeed = {
+  seed: base,
+  files: {
+    "scripts/repair.mjs": "prefix\n<<<<<<< HEAD\na\n=======\nb\n>>>>>>> main\nsuffix\n",
+  },
+  census: {
+    candidate: head,
+    main: pilotRevision,
+    seed: base,
+    k: ["scripts/repair.mjs"],
+    u: [],
+    blobs: { "scripts/repair.mjs": { candidate: head, main: pilotRevision, seed: base } },
+  },
+};
 const cleanup: string[] = [];
 
 it.each(["source", "repair", "gate", "conflict-boundary"])(
@@ -103,13 +120,7 @@ it.each(["source", "repair", "gate", "conflict-boundary"])(
                 f.pilot,
                 pilotRevision,
                 head,
-                {
-                  seed: base,
-                  files: {
-                    "scripts/repair.mjs":
-                      "prefix\n<<<<<<< HEAD\na\n=======\nb\n>>>>>>> main\nsuffix\n",
-                  },
-                },
+                conflictSeed,
                 async () => {
                   throw new Error("saved conflict seed must be reused");
                 },
@@ -306,13 +317,7 @@ it.each(["source", "repair", "gate", "conflict-boundary", "review-refresh"])(
                 f.pilot,
                 pilotRevision,
                 head,
-                {
-                  seed: base,
-                  files: {
-                    "scripts/repair.mjs":
-                      "prefix\n<<<<<<< HEAD\na\n=======\nb\n>>>>>>> main\nsuffix\n",
-                  },
-                },
+                conflictSeed,
                 async () => {
                   throw new Error("saved conflict seed must be reused");
                 },
@@ -831,15 +836,197 @@ async function fixture() {
   };
 }
 
-it.each(["probe", "launch"])(
-  "uses one reviewer fallback only for %s model refusal, retaining it on resume",
-  async (refusal) => {
+it("replays literal predecessor placements and rungs but refuses changed ladder fingerprints", async () => {
+  const f = await fixture();
+  // Retained configuration is deliberately independent of the shipped defaults.
+  const author = [
+    { model: "gpt-5.6-luna", effort: "high" },
+    { model: "gpt-5.6-luna", effort: "xhigh" },
+    { model: "claude-sonnet-5", effort: "medium" },
+  ];
+  const reviewer = [
+    { model: "claude-opus-5", effort: "high" },
+    { model: "gpt-5.6-sol", effort: "high" },
+  ];
+  f.config.routing = { row: 2, review: 11 };
+  f.config.author = { ...author[0]!, ladder: author, prompt: "author" };
+  f.config.reviewer = { ...reviewer[0]!, ladder: reviewer, prompt: "reviewer" };
+  f.config.inheritedWorkerRetry = true;
+  f.adapter.authorRung = async () => 1;
+  const launch = f.adapter.launch;
+  f.adapter.launch = async (role, config, prompt) => {
+    if (role === "reviewer" && config.reviewer.model === "claude-opus-5")
+      throw new QueueBlocked("provider-model-refused");
+    return launch(role, config, prompt);
+  };
+  f.authorDone();
+  await expect(f.run()).resolves.toMatchObject({ status: "observing-reviewer", retries: 1 });
+  const files = [
+    "config.json",
+    "author-attempt.json",
+    "author-terminal.json",
+    "reviewer-intent.json",
+    "reviewer-attempt.json",
+  ];
+  const snapshot = () =>
+    Promise.all(files.map((file) => readFile(resolve(f.config.stateDirectory, file), "utf8")));
+  const retained = await snapshot();
+  expect(JSON.parse(retained[1]!)).toMatchObject({
+    routing: { row: 2, review: 11 },
+    rung: 1,
+    placement: { model: "gpt-5.6-luna", effort: "xhigh" },
+  });
+  expect(JSON.parse(retained[4]!)).toMatchObject({
+    routing: { row: 2, review: 11 },
+    rung: 1,
+    placement: { model: "gpt-5.6-sol", effort: "high" },
+    models: { author: "gpt-5.6-luna", reviewer: "gpt-5.6-sol" },
+  });
+  const observe = f.adapter.observe;
+  f.adapter.observe = async (role, config, attempt) => {
+    expect(config[role]).toMatchObject(
+      role === "author"
+        ? { model: "gpt-5.6-luna", effort: "xhigh", rung: 1 }
+        : { model: "gpt-5.6-sol", effort: "high", rung: 1 },
+    );
+    return observe(role, config, attempt);
+  };
+  for (let replay = 0; replay < 2; replay++) {
+    await expect(f.run()).resolves.toMatchObject({ status: "observing-reviewer", retries: 1 });
+    expect(await snapshot()).toEqual(retained);
+    await expect(
+      readFile(resolve(f.config.stateDirectory, "reviewer-terminal.json")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  }
+  const observations = f.observations.length;
+  // Change even an unused rung: equality must fail before replay or another launch.
+  for (const role of ["author", "reviewer"] as const) {
+    const placement = f.config[role].ladder![0]!;
+    const predecessor = placement.model;
+    placement.model = role === "author" ? "gpt-6-luna" : "claude-opus-5-5";
+    await expect(f.run()).rejects.toThrow("conflicting-run-configuration");
+    expect(await snapshot()).toEqual(retained);
+    placement.model = predecessor;
+  }
+  expect(f.observations).toHaveLength(observations);
+  expect(f.launches).toEqual(["author", "reviewer"]);
+});
+
+it("retains a literal pre-ISS-203 ladder and refuses the new placements before launch", async () => {
+  const f = await fixture();
+  const author = [
+    { model: "gpt-6-luna", effort: "high" },
+    { model: "gpt-6-luna", effort: "xhigh" },
+    { model: "claude-sonnet-5", effort: "medium" },
+  ];
+  const reviewer = [
+    { model: "claude-opus-5-5", effort: "high" },
+    { model: "gpt-6-sol", effort: "high" },
+  ];
+  f.config.routing = { row: 2, review: 11 };
+  f.config.author = { ...author[0]!, ladder: author, prompt: "author" };
+  f.config.reviewer = { ...reviewer[0]!, ladder: reviewer, prompt: "reviewer" };
+  f.adapter.authorRung = async () => 2;
+  f.authorDone();
+  await expect(f.run()).resolves.toMatchObject({ status: "observing-reviewer" });
+  const files = [
+    "config.json",
+    "author-attempt.json",
+    "author-terminal.json",
+    "reviewer-attempt.json",
+  ];
+  const snapshot = () =>
+    Promise.all(files.map((file) => readFile(resolve(f.config.stateDirectory, file), "utf8")));
+  const retained = await snapshot();
+  expect(JSON.parse(retained[1]!)).toMatchObject({
+    rung: 2,
+    placement: { model: "claude-sonnet-5", effort: "medium" },
+  });
+  await expect(f.run()).resolves.toMatchObject({ status: "observing-reviewer" });
+  expect(await snapshot()).toEqual(retained);
+  const observations = f.observations.length;
+  const current = shippedRouting.find((row) => row.row === 2 && row.review === 11)!;
+  for (const role of ["author", "reviewer"] as const) {
+    const old = f.config[role].ladder!;
+    f.config[role].ladder = current[role];
+    await expect(f.run()).rejects.toThrow("conflicting-run-configuration");
+    expect(await snapshot()).toEqual(retained);
+    f.config[role].ladder = old;
+  }
+  expect(f.observations).toHaveLength(observations);
+  expect(f.launches).toEqual(["author", "reviewer"]);
+});
+
+const reviewerPolicies: RoutingRow[] = [
+  SELF_ROUTING,
+  ...(shippedRouting as RoutingRow[]).filter((row) => row.row === 2 || row.row === 3),
+];
+
+it.each([
+  {
+    row: 2,
+    expected: [
+      "gpt-6-luna/high",
+      "gpt-6-luna/xhigh",
+      "gpt-6-sol/medium",
+      "claude-sonnet-5/medium",
+      "claude-sonnet-5/medium",
+    ],
+  },
+  {
+    row: 15,
+    expected: [
+      "claude-opus-5-5/high",
+      "gpt-6-astra/high",
+      "gpt-6-astra/high",
+      "gpt-6-astra/high",
+      "gpt-6-astra/high",
+    ],
+  },
+])(
+  "uses the retained failure count and clamps the changed row $row author ladder",
+  async ({ row, expected }) => {
+    const routing = shippedRouting.find((entry) => entry.row === row && entry.review === 11)!;
+    for (const [failures, placement] of expected.entries()) {
+      const f = await fixture();
+      f.config.routing = { row, review: 11 };
+      f.config.author = { ...routing.author[0]!, ladder: routing.author, prompt: "author" };
+      f.config.reviewer = { ...routing.reviewer[0]!, ladder: routing.reviewer, prompt: "reviewer" };
+      f.adapter.authorRung = async () => failures;
+      const launch = f.adapter.launch;
+      f.adapter.launch = async (role, config, prompt) => {
+        if (role === "author") {
+          expect(`${config.author.model}/${config.author.effort}`).toBe(placement);
+          expect(config.author.rung).toBe(Math.min(failures, routing.author.length - 1));
+        }
+        return launch(role, config, prompt);
+      };
+      await expect(f.run()).resolves.toMatchObject({ status: "observing-author" });
+      await expect(f.run()).resolves.toMatchObject({ status: "observing-author" });
+      expect(f.launches).toEqual(["author"]);
+      expect(
+        JSON.parse(await readFile(resolve(f.config.stateDirectory, "author-attempt.json"), "utf8")),
+      ).toMatchObject({
+        rung: Math.min(failures, routing.author.length - 1),
+        placement: routing.author[Math.min(failures, routing.author.length - 1)],
+      });
+    }
+  },
+);
+
+it.each(
+  reviewerPolicies.flatMap((routing) =>
+    ["probe", "launch"].map((refusal) => ({ routing, refusal })),
+  ),
+)(
+  "uses one reviewer fallback only for $refusal refusal in $routing.row/$routing.review, retaining it on resume",
+  async ({ routing, refusal }) => {
     const f = await fixture();
-    f.config.routing = SELF_ROUTING;
-    f.config.author = { ...SELF_ROUTING.author[0]!, ladder: SELF_ROUTING.author, prompt: "author" };
+    f.config.routing = { row: routing.row, ...(routing.review ? { review: routing.review } : {}) };
+    f.config.author = { ...routing.author[0]!, ladder: routing.author, prompt: "author" };
     f.config.reviewer = {
-      ...SELF_ROUTING.reviewer[0]!,
-      ladder: SELF_ROUTING.reviewer,
+      ...routing.reviewer[0]!,
+      ladder: routing.reviewer,
       prompt: "reviewer",
     };
     const launch = f.adapter.launch;
@@ -847,15 +1034,19 @@ it.each(["probe", "launch"])(
     const models: string[] = [];
     f.adapter.launch = async (role, config, prompt) => {
       models.push(config[role].model);
-      if (role === "reviewer" && config.reviewer.model === "claude-opus-5" && refusal === "probe")
+      if (
+        role === "reviewer" &&
+        config.reviewer.model === routing.reviewer[0]!.model &&
+        refusal === "probe"
+      )
         throw new QueueBlocked("provider-model-refused");
       return launch(role, config, prompt);
     };
     f.adapter.observe = async (role, config, attempt) => {
       if (role === "reviewer") {
-        if (config.reviewer.model === "claude-opus-5")
+        if (config.reviewer.model === routing.reviewer[0]!.model)
           return { id: attempt.id, status: "dead", modelRefused: true };
-        expect(config.reviewer.model).toBe("gpt-5.6-sol");
+        expect(config.reviewer).toMatchObject({ ...routing.reviewer[1], rung: 1 });
         return { id: attempt.id, status: "running" };
       }
       return observe(role, config, attempt);
@@ -863,26 +1054,31 @@ it.each(["probe", "launch"])(
     f.authorDone();
     await expect(f.run()).resolves.toMatchObject({ status: "observing-reviewer" });
     await expect(f.run()).resolves.toMatchObject({ status: "observing-reviewer" });
-    expect(models).toEqual(["gpt-6-astra", "claude-opus-5", "gpt-5.6-sol"]);
+    expect(models).toEqual([routing.author[0]!.model, ...routing.reviewer.map((p) => p.model)]);
     const attempt = JSON.parse(
       await readFile(resolve(f.config.stateDirectory, "reviewer-attempt.json"), "utf8"),
     );
     expect(attempt).toMatchObject({
-      routing: { row: "self" },
-      placement: { model: "gpt-5.6-sol", effort: "high" },
-      models: { author: "gpt-6-astra", reviewer: "gpt-5.6-sol" },
+      routing: f.config.routing,
+      rung: 1,
+      placement: routing.reviewer[1],
+      models: { author: routing.author[0]!.model, reviewer: routing.reviewer[1]!.model },
     });
     expect(attempt.retries).toBeUndefined();
   },
 );
 
-it.each(["verdict", "malformed", "outage", "death"])(
-  "does not change reviewer model after %s",
-  async (failure) => {
+it.each(
+  reviewerPolicies.flatMap((routing) =>
+    ["verdict", "malformed", "outage", "death"].map((failure) => ({ routing, failure })),
+  ),
+)(
+  "does not change reviewer model after $failure in $routing.row/$routing.review",
+  async ({ routing, failure }) => {
     const f = await fixture();
     f.config.reviewer = {
-      ...SELF_ROUTING.reviewer[0]!,
-      ladder: SELF_ROUTING.reviewer,
+      ...routing.reviewer[0]!,
+      ladder: routing.reviewer,
       prompt: "reviewer",
     };
     const launch = f.adapter.launch;
@@ -921,9 +1117,7 @@ it.each(["verdict", "malformed", "outage", "death"])(
     f.authorDone();
     if (failure === "verdict") await expect(f.run()).rejects.toThrow("reviewer-failed");
     else await expect(f.run()).resolves.toMatchObject({ status: "observing-reviewer" });
-    expect(models).toEqual(
-      failure === "verdict" ? ["claude-opus-5"] : ["claude-opus-5", "claude-opus-5"],
-    );
+    expect(models).toEqual(Array(failure === "verdict" ? 1 : 2).fill(routing.reviewer[0]!.model));
   },
 );
 
@@ -956,34 +1150,45 @@ it("walks every reviewer rung only on refusal and records the final rung before 
   ).toMatchObject({ rung: 2, placement: ladder[2] });
 });
 
-it("stops when the fallback is also refused and does not fall back for arbitrary launch errors", async () => {
-  for (const reason of [
-    "provider-model-refused",
-    "provider-unavailable",
-    "launch-identity-timeout-reconcile",
-  ]) {
-    const f = await fixture();
-    f.config.reviewer = {
-      ...SELF_ROUTING.reviewer[0]!,
-      ladder: SELF_ROUTING.reviewer,
-      prompt: "reviewer",
-    };
-    const launch = f.adapter.launch;
-    const models: string[] = [];
-    f.adapter.launch = async (role, config, prompt) => {
-      if (role === "reviewer") {
-        models.push(config.reviewer.model);
-        throw new QueueBlocked(reason);
-      }
-      return launch(role, config, prompt);
-    };
-    f.authorDone();
-    await expect(f.run()).rejects.toThrow(reason);
-    expect(models).toEqual(
-      reason === "provider-model-refused" ? ["claude-opus-5", "gpt-5.6-sol"] : ["claude-opus-5"],
-    );
-  }
-});
+it.each(reviewerPolicies)(
+  "stops after both reviewers refuse in $row/$review and retains arbitrary launch errors",
+  async (routing) => {
+    for (const reason of [
+      "provider-model-refused",
+      "worker-model-refused",
+      "provider-unavailable",
+      "launch-identity-timeout-reconcile",
+    ]) {
+      const f = await fixture();
+      f.config.reviewer = {
+        ...routing.reviewer[0]!,
+        ladder: routing.reviewer,
+        prompt: "reviewer",
+      };
+      const launch = f.adapter.launch;
+      const observe = f.adapter.observe;
+      const models: string[] = [];
+      f.adapter.launch = async (role, config, prompt) => {
+        if (role === "reviewer") {
+          models.push(config.reviewer.model);
+          if (reason !== "worker-model-refused") throw new QueueBlocked(reason);
+        }
+        return launch(role, config, prompt);
+      };
+      f.adapter.observe = async (role, config, attempt) => {
+        if (role === "reviewer" && reason === "worker-model-refused")
+          return { id: attempt.id, status: "dead", modelRefused: true };
+        return observe(role, config, attempt);
+      };
+      f.authorDone();
+      const refused = reason === "provider-model-refused" || reason === "worker-model-refused";
+      await expect(f.run()).rejects.toThrow(refused ? "provider-model-refused" : reason);
+      expect(models).toEqual(
+        (refused ? routing.reviewer : routing.reviewer.slice(0, 1)).map((p) => p.model),
+      );
+    }
+  },
+);
 
 it("recognizes a model refusal only before the worker has produced work", async () => {
   const f = await fixture();

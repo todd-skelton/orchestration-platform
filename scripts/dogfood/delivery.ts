@@ -135,7 +135,7 @@ export type Observation<T> =
   | { state: "confirmed"; value: T }
   | { state: "needs-mutation" }
   | { state: "pending" }
-  | { state: "unknown" };
+  | { state: "unknown"; diagnostics?: string };
 
 export type MergeObservation =
   | { state: "confirmed"; value: MergeEvidence }
@@ -479,6 +479,8 @@ async function confirmMutation<T>(
     return receipt;
   }
   let observation = await observe();
+  if (observation.state === "unknown")
+    throw new DeliveryBlocked(`${name}-state-unknown`, observation.diagnostics);
   if (observation.state === "confirmed") {
     const value = { head, ...project(observation.value) };
     validate(value);
@@ -491,7 +493,8 @@ async function confirmMutation<T>(
     await mutate();
   } catch {}
   observation = await observe();
-  demand(observation.state !== "unknown", `${name}-outcome-unknown`);
+  if (observation.state === "unknown")
+    throw new DeliveryBlocked(`${name}-outcome-unknown`, observation.diagnostics);
   demand(observation.state === "confirmed", `${name}-unconfirmed-reconcile-before-retry`);
   const value = { head, ...project(observation.value) };
   validate(value);
@@ -864,11 +867,11 @@ export async function hostedFailureEvidence(
   const failed = checks.filter((check) => ["fail", "cancel"].includes(check.bucket));
   demand(failed.length > 0, "hosted-failure-evidence-unavailable");
   const logs: string[] = [];
-  const runs = new Set<string>();
+  const fetched = new Set<string>();
   for (const check of failed) {
-    const run = check.link.split("/job/")[0]!;
-    if (runs.has(run)) continue;
-    runs.add(run);
+    const target = check.bucket === "cancel" ? check.link : check.link.split("/job/")[0]!;
+    if (fetched.has(target)) continue;
+    fetched.add(target);
     demand(adapter.failedCheckLog, `hosted-check-log-unavailable:${check.name}`);
     const log = await adapter.failedCheckLog(config, check, publication);
     if (log === null) return null;

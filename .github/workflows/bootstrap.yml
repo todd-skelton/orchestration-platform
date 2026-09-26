@@ -14,8 +14,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 100
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
@@ -25,3 +26,83 @@ jobs:
       - run: corepack prepare pnpm@11.22.0 --activate
       - run: corepack pnpm install --frozen-lockfile
       - run: pnpm run verify:bootstrap
+
+  windows_refresh:
+    name: Windows tests / refresh
+    runs-on: windows-latest
+    timeout-minutes: 100
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - run: corepack enable
+      - run: corepack prepare pnpm@11.22.0 --activate
+      - run: corepack pnpm install --frozen-lockfile
+      - run: pnpm run verify:bootstrap --windows-shard refresh
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: ${{ always() }}
+        with:
+          name: windows-refresh-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/bootstrap-refresh.json
+          if-no-files-found: warn
+
+  windows_queue:
+    name: Windows tests / queue
+    runs-on: windows-latest
+    timeout-minutes: 100
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - run: corepack enable
+      - run: corepack prepare pnpm@11.22.0 --activate
+      - run: corepack pnpm install --frozen-lockfile
+      - run: pnpm run verify:bootstrap --windows-shard queue
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: ${{ always() }}
+        with:
+          name: windows-queue-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/bootstrap-queue.json
+          if-no-files-found: warn
+
+  windows_remainder:
+    name: Windows tests / remainder
+    runs-on: windows-latest
+    timeout-minutes: 100
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - run: corepack enable
+      - run: corepack prepare pnpm@11.22.0 --activate
+      - run: corepack pnpm install --frozen-lockfile
+      - run: pnpm run verify:bootstrap --windows-shard remainder
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: ${{ always() }}
+        with:
+          name: windows-remainder-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/bootstrap-remainder.json
+          if-no-files-found: warn
+
+  windows:
+    name: Node 24 / windows-latest
+    needs: [windows_refresh, windows_queue, windows_remainder]
+    if: ${{ always() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24
+      - run: node scripts/verify/windows-aggregate.mjs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BOOTSTRAP_HEAD: ${{ github.event.pull_request.head.sha || github.sha }}
+          WINDOWS_NEEDS: ${{ toJSON(needs) }}

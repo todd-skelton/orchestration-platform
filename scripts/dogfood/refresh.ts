@@ -76,7 +76,16 @@ export async function refreshDelivery(
   sourceRetries: number,
   deliveryAdapter?: DeliveryAdapter,
   resolutionUsed = false,
-  continuation?: { context: string; main: string; inheritedDirectory: string },
+  continuation?: {
+    context: string;
+    main: string;
+    inheritedDirectory: string;
+    spent?: {
+      conflict: Conflict;
+      candidate: string;
+      preservation: { path: string; semantics: string }[];
+    };
+  },
   preserveMerge = false,
 ): Promise<
   | { status: "observing-author" | "observing-reviewer" }
@@ -86,6 +95,21 @@ export async function refreshDelivery(
   const inherited = continuation?.inheritedDirectory ?? origin;
   const git = (args: string[]) => native.git(delivery.worktree, args);
   let active: Refresh | undefined = await readOptional(resolve(origin, "native-refresh.json"));
+  if (!active && continuation?.spent) {
+    active = {
+      main: continuation.main,
+      previousHead: continuation.spent.candidate,
+      previousReview: evidence.reviewId,
+      previousDirectory: inherited,
+      directory: resolve(origin, `refresh-${continuation.main}`),
+      flowRetried: !!sourceRetries,
+      retries: sourceRetries,
+      resolutionUsed: true,
+      conflict: structuredClone(continuation.spent.conflict),
+    };
+    await mkdir(active.directory, { recursive: true });
+    await save(origin, "native-refresh", active);
+  }
   let directory = active?.directory ?? origin;
   // Published delivery is already past its gates; do not rewrite an in-flight publication.
   let published = await readOptional(resolve(directory, "publication.json"));
@@ -238,13 +262,13 @@ export async function refreshDelivery(
           author: {
             ...source.author,
             ...originalAuthor?.placement,
-            prompt: `Resolve only Git's marked conflicting hunks. Preserve both reviewed feature behavior and current-main changes. Do not modify text outside those hunks, add files, redesign the feature or fix unrelated defects. If preservation needs broader changes, return FAIL. This is the single bounded conflict resolution, not a fresh implementation. ${retained}`,
+            prompt: retained,
           },
           reviewer: {
             ...source.reviewer,
             ...originalReviewer?.placement,
             rung: originalReviewer?.rung,
-            prompt: `This is an independent DELTA review of conflict resolution. Check the resolved hunks and direct callers against both parents. Reject semantic scope expansion, dropped feature or current-main behavior, and missing execution evidence. Inherit the retained source review; do not restart a full source sweep or infer patch equivalence. ${retained}`,
+            prompt: retained,
           },
         },
         native,
@@ -253,10 +277,22 @@ export async function refreshDelivery(
         active.previousHead,
         active.conflict,
         () => save(origin, "native-refresh", active),
+        continuation?.spent?.preservation,
       );
     } catch (error) {
-      if (error instanceof QueueBlocked && error.reason === "reviewer-failed")
-        throw new QueueBlocked("refresh-review-failed", error.diagnostics);
+      if (
+        error instanceof QueueBlocked &&
+        (error.reason === "reviewer-failed" || active.conflict.census)
+      )
+        throw new QueueBlocked(
+          error.reason === "reviewer-failed" ? "refresh-review-failed" : error.reason,
+          active.conflict.census
+            ? [error.diagnostics, `Full conflict census: ${resolve(origin, "native-refresh.json")}`]
+                .filter(Boolean)
+                .join("\n")
+            : error.diagnostics,
+          error.retries,
+        );
       throw error;
     }
     if (result.status === "observing-author" || result.status === "observing-reviewer")

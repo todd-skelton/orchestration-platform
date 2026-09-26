@@ -37,8 +37,8 @@ it("returns self's ladder, allowing only self to fall back to a static pair", ()
       { model: "claude-fable-5-1", effort: "high" },
     ],
     reviewer: [
-      { model: "claude-opus-5", effort: "high" },
-      { model: "gpt-5.6-sol", effort: "high" },
+      { model: "claude-opus-5-5", effort: "high" },
+      { model: "gpt-6-sol", effort: "high" },
     ],
   });
   expect(resolveRouting("self", undefined)).toBeUndefined();
@@ -48,18 +48,27 @@ it("returns self's ladder, allowing only self to fall back to a static pair", ()
   );
 });
 
-it("ships every author row with both independent, cross-vendor review policies", async () => {
+it("ships the exact ISS-203 matrix with two independent reviewers per policy", async () => {
   const rows: RoutingRow[] = JSON.parse(
     await readFile(new URL("../../adapters/chase-sets-routing.json", import.meta.url), "utf8"),
   );
   const expected = new Map([
-    [2, ["gpt-5.6-luna/high", "gpt-5.6-luna/xhigh", "claude-sonnet-5/medium"]],
-    [3, ["claude-sonnet-5/medium", "claude-sonnet-5/high", "gpt-5.6-luna/high"]],
+    [2, ["gpt-6-luna/high", "gpt-6-luna/xhigh", "gpt-6-sol/medium", "claude-sonnet-5/medium"]],
+    [3, ["claude-opus-5-5/medium", "claude-opus-5-5/high", "gpt-6-astra/medium"]],
     [4, ["gpt-6-astra/medium", "gpt-6-astra/high", "claude-fable-5-1/high"]],
     [7, ["gpt-6-astra/high", "gpt-6-astra/xhigh", "claude-fable-5-1/high"]],
-    [10, ["gpt-5.6-sol/high", "gpt-6-astra/high", "claude-fable-5-1/high"]],
-    [14, ["claude-opus-5/medium", "claude-opus-5/high", "gpt-6-astra/high"]],
-    [15, ["claude-opus-5/high", "claude-opus-5/max", "gpt-6-astra/high"]],
+    [10, ["gpt-6-sol/high", "gpt-6-astra/high", "claude-fable-5-1/high"]],
+    [14, ["claude-opus-5-5/medium", "claude-opus-5-5/high", "gpt-6-astra/high"]],
+    [15, ["claude-opus-5-5/high", "gpt-6-astra/high"]],
+  ]);
+  const expectedReviewers = new Map([
+    [2, ["claude-opus-5-5", "gpt-6-astra"]],
+    [3, ["gpt-6-sol", "claude-sonnet-5"]],
+    [4, ["claude-opus-5-5", "gpt-6-sol"]],
+    [7, ["claude-opus-5-5", "gpt-6-sol"]],
+    [10, ["claude-opus-5-5", "claude-sonnet-5"]],
+    [14, ["gpt-6-sol", "claude-sonnet-5"]],
+    [15, ["gpt-6-sol", "claude-sonnet-5"]],
   ]);
   const vendor = (model: string) => model.split("-")[0];
   expect(rows.map(({ row, review }) => `${row}:${review}`)).toEqual(
@@ -68,22 +77,67 @@ it("ships every author row with both independent, cross-vendor review policies",
   for (const row of rows) {
     expect(() => validateRoutingRow(row)).not.toThrow();
     expect(row.author.map((p) => `${p.model}/${p.effort}`)).toEqual(expected.get(Number(row.row)));
-    expect(vendor(row.author.at(-1)!.model)).not.toBe(vendor(row.author[0]!.model));
-    const { reviewer } = row;
-    const models = [10, 14, 15].includes(Number(row.row))
-      ? ["gpt-5.6-sol", "claude-sonnet-5"]
-      : [3].includes(Number(row.row))
-        ? ["gpt-5.6-sol", "claude-opus-5"]
-        : ["claude-opus-5", "gpt-5.6-sol"];
-    if (row.row === 10) models[0] = "claude-opus-5";
-    expect(reviewer).toEqual(
-      models.map((model) => ({ model, effort: row.review === 11 ? "high" : "medium" })),
+    expect(row.reviewer).toEqual(
+      expectedReviewers.get(Number(row.row))!.map((model) => ({
+        model,
+        effort: row.review === 11 ? "high" : "medium",
+      })),
     );
-    expect(resolveRouting("chase-sets", row, rows)).toEqual(row);
+    const selection = parseRoutingMarker(
+      `<!-- routing: ${JSON.stringify({ version: 1, row: row.row, review: row.review })} -->`,
+    );
+    expect(resolveRouting("chase-sets", selection, rows)).toEqual(row);
+  }
+  for (const row of [...rows, SELF_ROUTING]) {
+    expect(() => validateRoutingRow(row)).not.toThrow();
+    expect(vendor(row.author.at(-1)!.model)).not.toBe(vendor(row.author[0]!.model));
+    for (const placement of [...row.author, ...row.reviewer])
+      expect(["low", "medium", "high", "xhigh"]).toContain(placement.effort);
+    expect(row.reviewer).toHaveLength(2);
+    expect(new Set(row.reviewer.map((p) => p.model)).size).toBe(2);
+    expect(row.reviewer.every((p) => row.author.every((a) => a.model !== p.model))).toBe(true);
+    // An unused author rung must still exclude that model from either review seat.
+    for (const author of row.author) {
+      for (const index of [0, 1]) {
+        const overlap = structuredClone(row);
+        overlap.reviewer[index]!.model = author.model;
+        expect(() => validateRoutingRow(overlap)).toThrow("routing-reviewer-not-independent");
+      }
+    }
+    const repeated = structuredClone(row);
+    repeated.reviewer[1] = { ...row.reviewer[0]!, effort: "low" };
+    expect(() => validateRoutingRow(repeated)).toThrow("invalid-routing-fallback");
   }
   expect(() => resolveRouting("chase-sets", { row: 5, review: 11 }, rows)).toThrow(
     "routing-row-unconfigured",
   );
+});
+
+it("keeps literal predecessor and operator placements valid without a closed model roster", () => {
+  for (const row of [
+    {
+      row: 2,
+      review: 11 as const,
+      author: [
+        { model: "gpt-5.6-luna", effort: "high" },
+        { model: "gpt-5.6-luna", effort: "xhigh" },
+        { model: "claude-sonnet-5", effort: "medium" },
+      ],
+      reviewer: [
+        { model: "claude-opus-5", effort: "high" },
+        { model: "gpt-5.6-sol", effort: "high" },
+      ],
+    },
+    {
+      row: 2,
+      review: 11 as const,
+      author: [{ model: "operator-author", effort: "operator-effort" }],
+      reviewer: [{ model: "operator-reviewer", effort: "operator-effort" }],
+    },
+  ]) {
+    expect(() => validateRoutingRow(row)).not.toThrow();
+    expect(resolveRouting("chase-sets", { row: 2, review: 11 }, [row])).toEqual(row);
+  }
 });
 
 it("rejects overlap with any author rung and malformed or repeated placements", () => {

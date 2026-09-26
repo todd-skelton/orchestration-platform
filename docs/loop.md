@@ -150,6 +150,15 @@ old gate receipts remain history. ISS-152's shared, attributed correction applie
 to refreshed gates too, without renewing the allowance. Draft mutations are
 observed before applying them, so an already matching mirror is not repeated.
 Publication, hosted checks and merge/deploy remain bound to the resulting head.
+ISS-211 addresses the draft/note observation stops in `m1-iss210-20260925T0020`:
+only primary draft reads (including mutation confirmation) and learning-note
+reads retry classified GitHub transport failures, with three attempts and
+1-second then 2-second waits. Sibling census and other issue reads stay single-shot.
+After any comment response, a fresh marker observation reconciles acceptance;
+only a proved pre-send failure plus fresh absence permits one additional post
+in that call. A comment HTTP 5xx is uncertain, never pre-send. Exhausted reads
+or an unresolved post retain the non-parking unknown stop and pending intent;
+saved records and restart reconciliation are unchanged.
 Published delivery, including a pending publication intent whose response may
 have been lost, resumes its existing reconciliation, checks and mutations; it
 does not rewrite an in-flight publication merely because main moved. An exact
@@ -192,18 +201,51 @@ existing `native-refresh.json`. After aborting the conflicting integration, the
 executor merges the reviewed head with that same current main and pins the
 marked text as an intermediate merge commit. This input preserves both parents
 and supplies a clean, repeatable base for the ordinary author lifecycle; it is
-never an accepted delivery head. The existing author placement resolves only
-the marked hunks. Text outside them (including line endings), other files and
-file modes cannot change.
+never an accepted delivery head. The existing author placement resolves the
+marked hunks; text outside those hunks (including line endings) stays immutable
+in every captured conflict file K.
 Only ordinary text conflicts with both sides present are supported; unsupported
 conflicts stop as `conflict-resolution-unsupported`. Scope escape or author
 failure stops as `conflict-resolution-scope-escape` or
 `conflict-resolution-failed` (ISS-147).
 
+ISS-199 admits necessary unmarked preservation edits after ISS-146's cycle-10
+conflict author recorded that its hunk-only scope prohibited them. Before a
+new conflict author, the existing refresh record retains a census bound to
+reviewed candidate C, integration main M and seed S (whose parents are C and M).
+K is exactly the native captured conflict set, never rederived. U contains
+only paths outside K present at the same exact path in all three immutable
+Git trees as mode `100644` blobs without NUL, with C different from M and S
+different from each. Empty files are text. NUL-delimited tree records preserve
+spaces and tabs; comparisons do not infer renames, inspect import graphs or
+run gates on the marked tree. The record saves sorted K/U and each path's
+C/M/S blob IDs before launch. Git/read/save failure retains ordinary setup
+error handling; it cannot mean an empty census.
+
+Ordinary unfenced resolution may edit U only to preserve both parents' intent.
+Overlap is neither proof of breakage nor a repair obligation: U may remain
+unchanged. Changed U files must remain regular text without conflict markers.
+Additions, deletions, renames, mode changes, symlinks, binary conversions and
+edits outside K union U remain scope escapes. K always retains its literal
+hunk-only boundary. A separately ruled `correctionPaths`/`allowedPaths` fence
+retains its narrower K-only contract even for a U path named in the packet;
+the captured-K fence still runs before seed and launch. Unsupported native
+capture never enters the census. The consumed ISS-146 packet gains no edit
+permission, relaunch or resolution renewal.
+
+Author and DELTA prompts retain the complete census; stop diagnostics point
+to `native-refresh.json` while the ordinary published excerpt stays bounded.
+Replay uses that saved census and seed, not newer main or author edits. A
+missing census can be computed before the first worker configuration is pinned;
+legacy pinned, in-flight and completed workers keep their old K-only contract
+without backfill. Existing retry and commit reconciliation remain in place.
+
 The independent delta reviewer inherits the original review, author trace and
-source records, plus the resolution author's captured execution evidence. It
-checks the resolved hunks and direct callers for semantic expansion or lost
-feature/main behavior at the exact resulting head. A failed review remains
+source records, both parents and any saved census, plus the resolution author's
+captured execution evidence. It checks the resolved K hunks, every changed U
+file and their direct callers for semantic expansion or lost feature/main
+behavior at the exact resulting head. Census membership and old PASS are not
+acceptance. A failed review remains
 `refresh-review-failed`; neither a clean merge nor author PASS supplies review
 authority. The existing per-main refresh directory retains worker attempts,
 terminals, candidate and review evidence. Restart resumes those workers and
@@ -248,6 +290,43 @@ publication, hosted checks and native landing remain mandatory; gate correction 
 and any work failure parks the issue as `continuation-failed` while unrelated work
 advances. Replay resumes the same integration and its claim; a parked integration
 cannot be replayed into another author, attempt or publication.
+
+ISS-200 adds the optional `spentResolution` case to that same v1 packet for one
+unpublished integration whose conflict author failed at its retained seed. The
+original fields must still match the original lineage claim byte for byte. The
+case names `claim`, the later completed `stopMarker`, `failedAuthor`, `main`,
+`seed`, a fresh `authorityUrl` and exact `authorityBody`, and `resolutions` and
+`preservation` arrays of `{path, semantics}`. Resolutions enumerate captured K;
+preservation permits only the explicitly ruled subset of the seed-bound U census.
+Old allowed paths and ordinary U membership grant no new permission. K's fixed
+bytes and line endings remain immutable; unchanged U is permitted.
+
+Before setup, admission matches the failed integration and seed-bound terminal,
+source PASS, C/M/S, spent claim/resolution and completed stop, and refuses any
+publication or publication intent. Before its first reservation it captures the
+fresh GitHub comment's author (`todd-skelton`), ID, URL, body and UTC observation
+time; the body must equal the packet and contain the enumerated semantics. The
+host must interpret and authorize that ruling: text matching and URL syntax do
+not establish approval. One exclusive-create `spent-resolution.json` under the
+retained integration binds the packet, capture, inherited accounting and one
+`spent-resolution/` directory. Replay uses that reservation without another
+probe or allowance. Changed packets cannot spend it again. All old records,
+worktrees, partial work and the original claim remain unchanged.
+
+The new worktrees start at S. Native refresh saves a new ISS-199 census before
+author dispatch, then uses the existing resolver and independent DELTA lifecycle.
+No-op cannot accept S. The remaining shared mechanical retry and charged history
+carry forward, allowing at most three launches (two if the retry was spent),
+within the unchanged run ceiling. Later main must descend from M and is merged,
+never rebased over S; a clean refresh needs a new DELTA within that same bound.
+A further conflict or work failure parks as `continuation-failed`, with no source
+repair, gate correction, new attempt or chained recovery. Host uncertainty keeps
+its ordinary non-parking stop. Fresh final-head local and after-mirror gates,
+publication, hosted checks, landing and deployment remain required. Delivered or
+parked replay stays inert; external closure carries only participant history.
+This capability supplies no #457 ruling, planning re-entry, installation or
+preserved-run resume authority. Host installation still requires independent
+exact-head PASS, three-OS bootstrap green and absent supervisors.
 
 An exact remote/PR head with DIRTY or CONFLICTING status is a confirmed
 publication with a conflict, including when a publish response was lost or the
@@ -320,8 +399,12 @@ delivery reuses its receipts without another worker, publication or merge.
 Legacy untyped failures supply no correction eligibility.
 
 Complete failed-run logs live in the delivery runtime's `hosted-failure.log`,
-with exact candidate, publication and failed check/run URLs. Each run is fetched
-once even when several jobs fail. Corrective author and reviewer launches get
+with exact candidate, publication and failed check/run URLs. Failed logs are fetched
+once per run even when several jobs fail; cancelled logs are fetched separately
+once per job because GitHub's `--log-failed` omits them (ISS-206). Both wait for
+the completed run and revalidate attribution after acquisition. Bootstrap's
+`smoke` matrix jobs have a 100-minute job limit; expiry is failure evidence,
+never green. Corrective author and reviewer launches get
 the absolute evidence path rather than raw logs in prompts or terminal reports.
 They inspect underlying diagnostics independently; this supplies neither a
 verdict nor a waiver, and all ordinary delivery gates remain mandatory (ISS-141).
@@ -369,6 +452,22 @@ this bounded in-flight observation under rule 9; no new runtime schema or
 migration is required (ISS-143).
 
 ### Saved-cycle recovery
+
+ISS-184 completes Chase Sets post-merge observation when the exact owning
+Platform Deploy run succeeds with a successful release-scope step whose raw
+job log reports `deploy="false"`, and staging, image build and production are
+consistently skipped. Its supervisor log identifies the scope, cumulative paths
+and skipped jobs as a deployment leg unexercised, separately from the latest
+executed staging image verification's commit, digest and timestamp. Missing or
+ambiguous accounting remains unresolved; historical Actions evidence is not a
+fresh provider-health observation. Required deployment still needs successful
+immutable-image verification, with the existing 45-minute/30-second polling.
+Saved native merge/cleanup obligations precede external-closure completion and
+fresh issue composition. Existing delivery records validate the retained head
+before the repository hook runs, even after worker worktrees have been removed.
+Only ordinary missing cycle completion is written; no worker, publication,
+merge, cleanup, eligibility waiver or historical record rewrite is involved.
+This grants no executor installation or preserved-run restart authority.
 
 ISS-187 permits one self prerequisite detour declared by `prerequisite` on the
 existing 64-launch/four-attempt run: `blockedCycle`, `blockedKey`, `blockedNumber`,
@@ -456,7 +555,7 @@ the adapter's planning row, before setup. For Chase Sets, the operator adds
 exactly one marker to the issue body when refining it:
 
 ```html
-<!-- routing: {"version":1,"row":7,"review":11} -->
+<!-- routing: {"version":1,"row":2,"review":11} -->
 ```
 
 `row` selects the author placement and `review` explicitly selects review row
@@ -471,20 +570,21 @@ ISS-158 replaces fixed seats with per-row ladders after the repeated dead
 Astra/high launches in `m1-iss154-20260915T1004` and #7844's exhausted
 `m2-purchase-limit-20260915T0132` attempts. Set `routingRows` to the array in
 `adapters/chase-sets-routing.json`. Each row has only `row`, `review`, `author`
-and `reviewer`, with ordered placement arrays:
+and `reviewer`, with ordered placement arrays (current ISS-203 row 2 shown):
 
 ```json
 {
-  "row": 7,
+  "row": 2,
   "review": 11,
   "author": [
-    { "model": "gpt-6-astra", "effort": "high" },
-    { "model": "gpt-6-astra", "effort": "xhigh" },
-    { "model": "claude-fable-5-1", "effort": "high" }
+    { "model": "gpt-6-luna", "effort": "high" },
+    { "model": "gpt-6-luna", "effort": "xhigh" },
+    { "model": "gpt-6-sol", "effort": "medium" },
+    { "model": "claude-sonnet-5", "effort": "medium" }
   ],
   "reviewer": [
-    { "model": "claude-opus-5", "effort": "high" },
-    { "model": "gpt-5.6-sol", "effort": "high" }
+    { "model": "claude-opus-5-5", "effort": "high" },
+    { "model": "gpt-6-astra", "effort": "high" }
   ]
 }
 ```
@@ -509,15 +609,68 @@ Delta and corrective reviews retain the selected reviewer rung.
 Empty ladders, repeated placements and the old fixed-seat shape are rejected;
 there is no live-config migration. Reviewer models must be disjoint from all
 author models. `routing-reviewer-not-independent` rejects overlap, and
-`invalid-routing-fallback` rejects repeated reviewer models. The self ladder
-is Astra/high, Astra/xhigh, Fable/high, with Opus/high then Sol/high review.
+`invalid-routing-fallback` rejects repeated reviewer models. The current self ladder
+is Astra/high, Astra/xhigh, Fable/high, with Opus 5.5/high then GPT-6 Sol/high review.
 Static `author` and `reviewer` config fields remain the self adapter's fallback
 only when its context has no routing row; Chase Sets requires `routingRows`.
+
+ISS-203 applies the complete provisional matrix in `docs/model-selection.md`
+to all fourteen Chase pairs, retaining self unchanged. Row 2 authors are
+Luna/high, Luna/xhigh, Sol/medium, Sonnet/medium, with Opus then Astra review.
+Row 3 authors are Opus/medium, Opus/high, Astra/medium, with Sol then Sonnet
+review. Row 15 authors are Opus/high then Astra/high, with Sol then Sonnet
+review; Opus/max is removed and later failures clamp at Astra/high. Rows 4,
+7, 10 and 14 retain their existing ladders. Both review seats use high for
+review 11 and medium for review 12, with models disjoint from every author rung.
+Every author tail is the other vendor; row 15's benchmark-based Opus/max skip
+joins the historical row-10 Sol/xhigh exception to effort-before-model.
+Sonnet review tails provide weaker refusal-only continuity, never a quality
+escalation. Reviewer exhaustion still stops the host with the pool reset time.
+
+These placements use the September 23 research report cited in ISS-203, not
+local quality certification. Weighted API benchmark USD/task is not subscription
+spend or accepted-artifact cost; provider-fallback Opus/Fable cells do not
+establish pure-model performance, reviewer recall, UI fit or a service bar.
+The documented same-row checkpoint and quality, latency, resource and exhaustion
+triggers require operator judgment, not automatic routing or trial authority.
+Failure-count advancement, repair/delta behavior and all ceilings remain unchanged.
+
+ISS-203 cutover is only for separately authorized fresh runs and paths, after
+independent exact-head PASS and final-head three-OS bootstrap green, with
+supervisors absent. Immediately before an authorized install, the host captures
+native account_pool/CLI admission for every exact target model/effort, with UTC
+instant, identity and result. Catalogue presence, earlier probes and fixtures
+establish neither timely admission nor quality. Workers touch no live executor,
+WSL run, provider or runtime. No installation, probe, start, unpark, host rotation
+or attempt renewal is authorized here. Saved configurations, fingerprints,
+histories, participant identities/rungs, attempts, retries, charges and ceilings
+remain intact: same-config replay keeps its rung, and changed ladders still refuse
+`conflicting-run-configuration` before launch, without alias, backfill or waiver.
+
+Historically, ISS-202 applied Todd's successor ruling to the then-existing native ladders:
+`gpt-5.6-luna` becomes `gpt-6-luna`, `gpt-5.6-sol` becomes `gpt-6-sol`, and
+`claude-opus-5` becomes `claude-opus-5-5`, preserving roles, efforts and order.
+Current ladder short labels Luna/Sol mean GPT-6 and Opus means Opus 5.5;
+historical text and records retain their original identities. Replacement
+transfers no predecessor benchmark, score, verdict or capability evidence,
+and native Opus row 14/15 roles grant no incumbent permission or new roles.
+Cutover is quiescent and for authorized fresh runs/paths only, after independent
+exact-head review and three-OS bootstrap green, with supervisors absent.
+Immediately before an authorized install the host captures native account_pool/CLI
+admission for each exact successor model/effort with UTC instant and result;
+catalogue presence and earlier probes do not establish admission or quality.
+This grants no probe, installation, start, unpark or #457 renewal authority.
+Old runs/configs, participant identities and all charges stay unchanged.
+Same-config replay retains its saved placement/rung; changed ladders retain
+`conflicting-run-configuration` before launch, without aliases, backfill or waiver.
+Preserved-run continuation needs separate disposition: no automatic resume,
+budget reset or exhausted-lineage re-entry. Generic operator strings remain
+open configuration and static configs are not rewritten.
 
 Each launch persists a zero-based rung index before dispatch, then retains it
 with the worker attempt and participant placement. Resume uses the recorded
 rung. Learning notes include it; older records without a rung remain history.
-`docs/model-selection.md` describes the shipped ladders and benchmark basis.
+`docs/model-selection.md` describes the shipped ladders and historical benchmark basis.
 Workers still use the existing Codex launcher and account_pool provider.
 
 `planning/roadmap.json` registers milestones and issues. Each issue has a
@@ -558,8 +711,10 @@ each item as one acceptance criterion; a section without supported list items
 stops with `selected-issue-criteria-missing`, never a whole-body fallback.
 ISS-153 fixes the ordered form recorded in ISS-152's pre-dispatch stop.
 
-`pnpm planning:check` proves drafts and roadmap agree and the graph is
-acyclic. `pnpm planning:board-check` proves every open registered issue on
+`pnpm planning:check` proves drafts and roadmap agree, the graph is acyclic,
+and every registered draft has `## Done when` with items consumable by the
+self adapter's shared criteria extractor, regardless of readiness or milestone (ISS-208).
+`pnpm planning:board-check` proves every open registered issue on
 GitHub carries the marker, the draft link and the verbatim draft, has the
 right milestone, and sits on the delivery project once. Closed issues are
 history and are not compared. The GitHub issue body is:
@@ -605,6 +760,69 @@ producer and compatibility branch only at a reviewed stopped-install cutover
 after an operator's read-only census finds zero unfinished or re-enterable
 pre-cutover self cycles, legacy or marked; completed history stays readable.
 This is not a time-based sunset and authorizes no census here.
+
+### Zero-attempt recovery from a stale pinned self brief
+
+ISS-209 documents the [ISS-206 recovery receipt](https://github.com/todd-skelton/orchestration-platform/issues/368#issuecomment-5818298416):
+on 2026-09-24, resuming `m1-iss206-20260924T1545` through
+`scripts/executor/start-loop.ps1` still refused `selected-issue-criteria-missing`
+after heading-only PR #649 landed and the executor was upgraded. Its saved
+`planningRevision` remained `886c30818e24ba7a58b837c7bffce78de79d24a3`, before
+the fix at `e6b68871ab6153fdb124e2b0a29fc1e1f6d65e38`. The host reported zero
+attempts and launches and preserved that run. Fresh run
+`m1-iss206-20260924T1642` then refused a board-body mismatch until the host
+synced #648's `## Acceptance` heading to the landed `## Done when` draft.
+That was a host body sync, not an automatic ISS-178 delivery mirror.
+
+The boundary is whether selection was saved. Before any saved selection,
+repairing current-main planning and full-board agreement permits the ordinary,
+host-authorized same-run retry through `scripts/executor/start-loop.ps1`.
+With a persisted pinned selection, resume through that same entrypoint keeps
+its brief and base: neither a later draft fix nor an executor upgrade changes
+the pin. Missing-criteria parsing precedes author dispatch, but that stop
+reason does not prove zero historical attempts or launch charges. Direct queue
+composition is not a bypass.
+
+For an entirely unattempted run and issue lineage, the host procedure is:
+
+1. With supervisors absent, make a contemporaneous read-only inspection of
+   the saved selection and pin, configs, attempts, worker and participant
+   history, and stop records. Establish zero attempts, zero launches and no
+   in-flight or uncertain work anywhere in the abandoned run, and no consumed
+   earlier issue lineage. Any nonzero or unknown accounting stops this recipe:
+   seek the existing separately authorized continuation or disposition. An
+   absent author process is not evidence of zero charges; historical incident
+   notes do not establish eligibility for a future recovery.
+2. After an independently reviewed, final-head three-OS-bootstrap-green
+   planning fix lands, check the live issue's verbatim draft, milestone,
+   readiness, dependencies and project membership against current main.
+   Capture that board evidence immediately before recovery; perform a needed
+   board-body sync only with explicit authorization. If the issue is no longer
+   eligible, stop rather than manufacture readiness.
+3. Only a separate explicit host authorization permits a fresh config with a
+   new `run` and distinct `worktreeRoot` (ISS-151). Keep `stateRoot`, placements,
+   `attemptCeiling`, `nativeLaunchCeiling` and every other config field unchanged.
+   Under explicit live-start authorization, use the canonical Windows entrypoint
+   `scripts/executor/start-loop.ps1 -Config <fresh-config>`. Fresh selection
+   applies the ordinary full-board gate and priority order; it does not
+   force-select the old issue. A pre-selection board refusal follows the
+   same-run boundary above.
+4. Record old/new run IDs, pins, config differences, inspection and board
+   evidence, authorizations and the result in the existing issue note. Count
+   the recovery as host-assisted, not toward M1's three consecutive unattended
+   issues. The [later ISS-206 receipt](https://github.com/todd-skelton/orchestration-platform/issues/368#issuecomment-5819507845)
+   records delivery by PR #650; this recipe does not reopen #648.
+
+All old runtime, worktrees, stops and config bytes remain unchanged. There is
+no silent re-selection on resume, same-run re-pin, selected-file deletion or
+archival to trick selection, fingerprint waiver, backfill or rewritten history.
+No attempts, worker retries, launch charges or ceilings are reset or transferred;
+no completion or PASS is invented, and old review authority does not transfer
+to the new pin. A fresh name is neither a budget escape nor terminal-park
+re-entry: a nonzero lineage is outside this recipe. This documentation grants
+no installation, board mutation, live-run start or unpark authority. Existing
+pinned-context tests remain the behavior contract; do not exercise a live
+recovery as a documentation test.
 
 ## Running
 
@@ -824,7 +1042,8 @@ mentions is left to the catalog, as is every model without a configured status U
 When every account blocks the model, a block clearing inside
 `providerOutageCeilingMs` waits as `waiting-provider` with the pool's reset
 time, and a longer block is `provider-model-refused`: the worker advances its
-ISS-158 ladder, whose last rung is the other vendor, and an exhausted ladder
+ISS-158 author ladder, whose last rung remains the other vendor under ISS-203,
+or its independent refusal-only reviewer ladder, and an exhausted ladder
 stops the host with the reset time. The block's end is compared with the one
 absolute wait deadline the models probe already owns, never a fresh duration.
 A block whose end is unknown, past or unparsable at any account is
@@ -835,6 +1054,14 @@ Routing by quota state stays with the operator's marker and ISS-158's ladders (I
 Vitest runs files serially with one worker to bound competing real-Git fixtures;
 every test and the existing test/hook timeouts remain in place for local and
 hosted bootstrap gates (ISS-160).
+
+ISS-210 partitions hosted Windows bootstrap across three standard runners:
+refresh, queue, and the remainder from Vitest's canonical discovery. Each keeps
+all four gates and serial tests; local defaults, Ubuntu and macOS stay full.
+The unchanged required Windows name aggregates all three successes and embeds
+cancelled-shard logs (or fails with `shard-log-unavailable`). No observer or
+required-check contract changes. Landed-head latency and cost qualification
+remain host-owned; the partition alone establishes neither target nor savings.
 
 A delayed synthetic helper reproduces auth failure before HTTP; separating the
 real probe from logical error replay reaches HTTP with the malformed payload

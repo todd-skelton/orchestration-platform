@@ -3,6 +3,8 @@ import { tmpdir } from "node:os";
 import { delimiter, resolve } from "node:path";
 import { expect, it, vi } from "vitest";
 import * as self from "../../adapters/self.mjs";
+import { validatePlanningSnapshot } from "../../scripts/planning/check.mjs";
+import { iss206Draft } from "../fixtures/iss206.js";
 import {
   loadRepositoryAdapter,
   repositoryDeliveryPolicy,
@@ -267,6 +269,16 @@ it.each([
   ["star", "## Done when\n\n* First\n  continued\n* Second", ["First\ncontinued", "Second"]],
   ["plus", "## Done when\n\n+ First\n  continued\n+ Second", ["First\ncontinued", "Second"]],
   [
+    "indented unordered items",
+    "## Done when\n\n  - First\n    continued\n\t* Second\n  + Third",
+    ["First\ncontinued", "Second", "Third"],
+  ],
+  [
+    "heading whitespace and next-section boundary",
+    "## Done when \t\n\n- First\n\n  continued\n## Next\n- Excluded",
+    ["First\ncontinued"],
+  ],
+  [
     "ordered with nested continuation",
     "## Done when\n\n1. First\n   continued\n   1. Nested detail\n10. Second",
     ["First\ncontinued\n1. Nested detail", "Second"],
@@ -277,6 +289,7 @@ it.each([
     ["First\ncontinued", "Second"],
   ],
   ["missing heading", "## Why\n\n- Not acceptance", null],
+  ["Acceptance heading", "## Acceptance\n\n1. Not consumable", null],
   ["empty section", "## Done when\n\n", null],
   ["prose only", "## Done when\n\nAn unsupported paragraph.", null],
   ["orphan continuation", "## Done when\n\n   Continuation before any item.", null],
@@ -290,14 +303,24 @@ it.each([
     await mkdir(resolve(root, "planning/drafts"), { recursive: true });
     await mkdir(resolve(root, "docs"));
     await writeFile(resolve(root, "docs/loop.md"), "# The loop\n");
-    await writeFile(
-      resolve(root, "planning/roadmap.json"),
-      JSON.stringify({ issues: [{ key: "ISS-001", file: "planning/drafts/ISS-001.md" }] }),
-    );
-    await writeFile(
-      resolve(root, "planning/drafts/ISS-001.md"),
-      `---\nkey: ISS-001\ntitle: "Criteria fixture"\n---\n\n${section}\n\n## Out of scope\n\n- Never a criterion\n`,
-    );
+    const roadmap = {
+      schemaVersion: "orchestration-roadmap/v1",
+      repository: "todd-skelton/orchestration-platform",
+      project: { id: "fixture", number: 1, title: "Delivery", url: "https://example.test/project" },
+      milestones: [{ key: "M1", title: "First" }],
+      issues: [
+        { key: "ISS-001", file: "planning/drafts/ISS-001.md", milestone: "M1", blockedBy: [] },
+      ],
+    };
+    const draft = `---\nkey: ISS-001\ntitle: "Criteria fixture"\nmilestone: "First"\nblocked_by: []\n---\n\n${section}\n\n## Out of scope\n\n- Never a criterion\n`;
+    const validate = () => validatePlanningSnapshot({ roadmap, issueDrafts: { "ISS-001": draft } });
+    if (expected) expect(validate).not.toThrow();
+    else
+      expect(validate).toThrow(
+        "planning/drafts/ISS-001.md requires ## Done when with supported list items",
+      );
+    await writeFile(resolve(root, "planning/roadmap.json"), JSON.stringify(roadmap));
+    await writeFile(resolve(root, "planning/drafts/ISS-001.md"), draft);
     const context = self.issueContext({
       repository: "todd-skelton/orchestration-platform",
       key: "ISS-001",
@@ -306,6 +329,42 @@ it.each([
     });
     if (expected) await expect(context).resolves.toMatchObject({ acceptanceCriteria: expected });
     else await expect(context).rejects.toMatchObject({ reason: "selected-issue-criteria-missing" });
+  } finally {
+    await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
+  }
+});
+
+it("self criteria: PR #647's three criteria retain their exact text and order after a heading-only repair", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "self-criteria-iss206-"));
+  try {
+    await mkdir(resolve(root, "planning/drafts"), { recursive: true });
+    await mkdir(resolve(root, "docs"));
+    await writeFile(resolve(root, "docs/loop.md"), "# The loop\n");
+    await writeFile(
+      resolve(root, "planning/roadmap.json"),
+      JSON.stringify({ issues: [{ key: "ISS-206", file: "planning/drafts/ISS-206.md" }] }),
+    );
+    const path = resolve(root, "planning/drafts/ISS-206.md");
+    const context = () =>
+      self.issueContext({
+        repository: "todd-skelton/orchestration-platform",
+        key: "ISS-206",
+        number: 206,
+        executorRoot: root,
+      });
+    await writeFile(path, iss206Draft);
+    await expect(context()).rejects.toMatchObject({ reason: "selected-issue-criteria-missing" });
+    const repaired = iss206Draft.replace("## Acceptance", "## Done when");
+    await writeFile(path, repaired);
+    const result = await context();
+    expect(result.body).toBe(repaired);
+    expect(result.acceptanceCriteria).toHaveLength(3);
+    // Reconstruct the literal historical section, without parsing its items in the test.
+    expect(
+      result.acceptanceCriteria
+        .map((criterion, index) => `${index + 1}. ${criterion.replaceAll("\n", "\n   ")}`)
+        .join("\n"),
+    ).toBe(iss206Draft.split("\n## Acceptance\n")[1]!.split("\n## Not built\n")[0]!.trim());
   } finally {
     await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
   }
