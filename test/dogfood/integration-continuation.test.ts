@@ -1,9 +1,10 @@
-import { execFile } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
   appendFile,
   mkdir,
   mkdtemp,
+  open,
   readFile,
   readdir,
   realpath,
@@ -14,15 +15,20 @@ import {
 import { tmpdir } from "node:os";
 import { resolve, sep } from "node:path";
 import { promisify } from "node:util";
+import { pathToFileURL } from "node:url";
 import { afterEach, expect, it } from "vitest";
 import type { Adapter } from "../../scripts/dogfood/flow.js";
 import { githubDeliveryAdapter } from "../../scripts/dogfood/delivery-adapter.mjs";
 import { DeliveryBlocked } from "../../scripts/dogfood/delivery.mjs";
-import type { IntegrationContinuation } from "../../scripts/dogfood/continuation.js";
+import type {
+  IntegrationContinuation,
+  TerminalAttemptAdmission,
+} from "../../scripts/dogfood/continuation.js";
 import {
   ISS214_REFRESH_REVIEW_ALLOWANCE,
   QueueBlocked,
   queueConfigFromLoop,
+  queueDigest,
   queueStep,
   repositoryQueueAdapter,
   validateLoopConfig,
@@ -32,6 +38,7 @@ import {
 import type { RepositoryAdapter } from "../../scripts/dogfood/repository-adapter.js";
 import { SELF_ROUTING } from "../../scripts/dogfood/routing.mjs";
 import { gitSetupAdapter } from "../../scripts/dogfood/setup-adapter.js";
+import type { SetupAdapter } from "../../scripts/dogfood/setup.js";
 import {
   nextCycle,
   persistCycle,
@@ -421,6 +428,1118 @@ async function exhaustedFixture(shape: Shape = "conflict", spentRetry = false, a
     put,
   };
 }
+
+// All ISS-215 IDs, repositories, comments, timestamps and bodies below are synthetic.
+// No real external-authority observation is replaced or reinterpreted by this fixture.
+// The persisted shape follows the run: a failed ISS-167 integration whose consumed ISS-200
+// spent resolution failed again after publication, then the completed cycle-11 stop.
+async function terminalAdmissionFixture() {
+  const f = await spentFixture(true);
+  f.loop.nativeLaunchCeiling = 64;
+  // The real composition writes the consumed spent reservation and its packet.
+  const old = await f.compose();
+  const terminalDirectory = old.stateDirectory;
+  const deliveryDirectory = resolve(terminalDirectory, "source", `refresh-${f.main}`);
+  await mkdir(deliveryDirectory, { recursive: true });
+  const history = [...f.later];
+  for (let ordinal = 9; ordinal <= 25; ordinal++)
+    history.push(participant(ordinal, `SYNTHETIC-${ordinal}:1`, "source", "author", "passed"));
+  history.push(participant(26, `${KEY}:2`, "refresh", "reviewer", "passed"));
+  const oldAttempt = JSON.parse(
+    await readFile(resolve(f.old.stateDirectory, "attempt.json"), "utf8"),
+  );
+  const failed = {
+    ...oldAttempt,
+    base: f.seed,
+    head: f.reviewed,
+    reviewId: history[25]!.id,
+    history,
+  };
+  await f.put(terminalDirectory, "attempt", failed);
+  for (const p of history) await f.put(terminalDirectory, `participant-${p.ordinal}-terminal`, p);
+  await f.put(resolve(terminalDirectory, "source"), "native-refresh", {
+    directory: deliveryDirectory,
+    main: f.main,
+    head: f.reviewed,
+    resolutionUsed: true,
+  });
+  await f.put(f.sourceDirectory, "gate-correction", { directory: "synthetic consumed correction" });
+  const priorPublication = {
+    number: 9001,
+    url: "https://github.com/fixture/repository/pull/9001",
+    sourceBranch: `codex/${KEY.toLowerCase()}-attempt-2`,
+    head: f.reviewed,
+    state: "OPEN" as const,
+    isDraft: true as const,
+  };
+  await f.put(deliveryDirectory, "publication", {
+    ...priorPublication,
+    repository: f.loop.repository,
+  });
+  const terminalSelection = {
+    cycle: 11,
+    key: KEY,
+    number: NUMBER,
+    base: f.main,
+    planningRevision: f.main,
+  };
+  const terminalMarker = `loop-stop:${RUN}:11:3`;
+  const terminalBody = `<!-- ${terminalMarker} --> Synthetic hosted failure after two attempts.`;
+  await f.put(f.runState, "cycle-11-stop-3", {
+    selection: terminalSelection,
+    stop: 3,
+    reason: "continuation-failed",
+    attempts: 2,
+    history,
+    marker: terminalMarker,
+    body: terminalBody,
+  });
+  await f.put(f.runState, "cycle-11-stop-3-complete", {
+    selection: terminalSelection,
+    stop: 3,
+    history,
+  });
+  await writeFile(
+    resolve(f.repository, "repaired-brief.txt"),
+    "Synthetic repaired current-main brief\n",
+  );
+  await f.git(["add", "."]);
+  await f.git(["commit", "-m", "synthetic new main and repaired brief"]);
+  const base = await f.git(["rev-parse", "HEAD"]);
+  await f.git(["push", "origin", "main"]);
+  const selected = { key: KEY, number: NUMBER, base, planningRevision: base };
+  const originalContext = f.policy.issueContext;
+  f.policy.issueContext = async (input) => ({
+    ...(await originalContext(input)),
+    body:
+      input.planningRevision === base
+        ? "Synthetic repaired current-main brief"
+        : "Synthetic old brief",
+    acceptanceCriteria: ["Implement the newly selected synthetic brief."],
+  });
+  const claim = `integration-continuation-${queueDigest({ repository: f.loop.repository, issue: KEY })}`;
+  const claimPath = resolve(f.loop.stateRoot, `${claim}.json`);
+  const hash = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
+  const authorityBody =
+    "SYNTHETIC delegation: admit exactly ordinary attempt three; no fourth attempt.";
+  const packet: TerminalAttemptAdmission = {
+    schemaVersion: "dogfood-terminal-attempt-admission/v1",
+    repository: f.loop.repository,
+    issueKey: KEY,
+    issueUrl: ISSUE,
+    run: RUN,
+    priorAbsoluteAttempt: 2,
+    nextAbsoluteAttempt: 3,
+    terminalMarker,
+    terminalReceiptUrl: `${ISSUE}#issuecomment-9002`,
+    claim,
+    claimSha256: hash(await readFile(claimPath)),
+    terminalHistoryDigest: queueDigest(history),
+    priorPublication,
+    authorityUrl: "https://github.com/fixture/synthetic-authority/issues/9003#issuecomment-9004",
+    authorityAuthor: "synthetic-delegator",
+    authorityBodySha256: hash(authorityBody),
+  };
+  const loop = { ...f.loop, terminalAttemptAdmission: packet };
+  const calls: string[] = [];
+  const authority = {
+    id: "9004",
+    url: packet.authorityUrl,
+    author: packet.authorityAuthor,
+    body: authorityBody,
+    capturedAt: "2026-01-01T00:00:00.000Z",
+  };
+  const receipt = {
+    id: "9002",
+    url: packet.terminalReceiptUrl,
+    author: "synthetic-loop",
+    body: terminalBody,
+    capturedAt: authority.capturedAt,
+  };
+  const observe = async (url: string) => {
+    calls.push(url);
+    return url === packet.authorityUrl ? authority : receipt;
+  };
+  const publication = { ...priorPublication };
+  const observePublication = async () => {
+    calls.push("synthetic-publication");
+    return publication;
+  };
+  const compose = (config: LoopConfig = loop, observer = observe, selection = selected) =>
+    queueConfigFromLoop(
+      config,
+      f.repository,
+      selection,
+      f.policy,
+      history,
+      undefined,
+      observer,
+      observePublication,
+    );
+  const retained = await snapshot(f.runState);
+  const claimBytes = await readFile(claimPath, "utf8");
+  const integrationWorktree = f.old.items[0]!.source.worktree;
+  const unchanged = async () => {
+    for (const [path, bytes] of retained) expect(await readFile(path, "utf8"), path).toBe(bytes);
+    expect(await readFile(claimPath, "utf8")).toBe(claimBytes);
+    const preserved = resolve(f.loop.worktreeRoot, `${KEY.toLowerCase()}-attempt-2-source`);
+    expect(await f.git(["rev-parse", "HEAD"], preserved)).toBe(f.reviewed);
+    expect(await f.git(["status", "--porcelain"], preserved)).toBe("");
+    expect(await f.git(["rev-parse", "HEAD"], integrationWorktree)).toBe(f.seed);
+    expect(await readFile(resolve(integrationWorktree, "overlap.txt"), "utf8")).toBe(
+      "failed partial work\n",
+    );
+  };
+  const reservation = resolve(
+    f.loop.stateRoot,
+    `terminal-attempt-admission-${queueDigest({ repository: f.loop.repository, issue: KEY })}.json`,
+  );
+  const { spentResolution, ...oldPacket } = f.packet;
+  return {
+    ...f,
+    loop,
+    packet,
+    selected,
+    history,
+    failed,
+    terminalDirectory,
+    deliveryDirectory,
+    terminalSelection,
+    terminalBody,
+    compose,
+    authority,
+    receipt,
+    publication,
+    calls,
+    observe,
+    reservation,
+    claimPath,
+    oldPacket: oldPacket as IntegrationContinuation,
+    spentPacket: f.packet,
+    unchanged,
+  };
+}
+
+it("ISS-215 production composition: red without delegation, green only for fresh attempt 3; interruption/restart is one reservation", async () => {
+  const f = await terminalAdmissionFixture();
+  const { terminalAttemptAdmission: omitted, ...without } = f.loop;
+  await expect(f.compose(without as typeof f.loop)).rejects.toMatchObject({
+    reason: "integration-continuation-required",
+  });
+  const queue = await f.compose();
+  expect(queue.initialHistory).toEqual(f.history);
+  expect(queue.initialHistory).toHaveLength(26);
+  const item = queue.items[0]!;
+  expect(item.implementationAttempt).toBe(3);
+  expect(item.implementationAttemptCeiling).toBe(4);
+  expect(queue.nativeLaunchCeiling).toBe(64);
+  expect(item.setup.base).toBe(f.selected.base);
+  expect(item.source.mainBase).toBe(f.selected.base);
+  expect(item.source.authorFailures).toEqual(f.failed.authorFailures);
+  expect(item.source.author.rung).toBe(2);
+  expect(item.source.inheritedWorkerRetry).toBe(true);
+  expect(item.terminalAttemptAdmission).toEqual({ correctionUsed: true, resolutionUsed: true });
+  expect(item.setup.sourceBranch).toBe(
+    `codex/run-${createHash("sha256").update(RUN).digest("hex")}/${KEY.toLowerCase()}-attempt-3`,
+  );
+  expect(item.delivery.policy).toMatchObject({
+    sourceBranch: `codex/${KEY.toLowerCase()}-attempt-3`,
+  });
+  expect(item.delivery.refresh).toBeUndefined();
+  expect(item.source.author.prompt).toContain("Read-only predecessor evidence");
+  expect(item.source.author.prompt).toContain("Synthetic repaired current-main brief");
+  expect(item.source.author.prompt).not.toContain("Synthetic old brief");
+  expect(item.source.author.prompt).not.toContain("Apply these reviewer-prescribed fixes");
+  expect(f.calls).toHaveLength(3);
+  const reservation = await readFile(f.reservation, "utf8");
+  // Interrupt immediately after reservation, before any setup/worker record exists.
+  await rm(queue.stateDirectory, { recursive: true });
+  const restarted = await f.compose(structuredClone(f.loop), async () => {
+    throw new Error("must not reobserve authority");
+  });
+  expect(restarted).toEqual(queue);
+  expect(await f.compose()).toEqual(queue);
+  expect(await readFile(f.reservation, "utf8")).toBe(reservation);
+  expect(f.calls).toHaveLength(3);
+  await f.unchanged();
+});
+
+it.each([
+  "author",
+  "body",
+  "id",
+  "url",
+  "claim-bytes",
+  "history",
+  "receipt",
+  "terminal",
+  "terminal-stop",
+  "terminal-cycle",
+  "attempt",
+  "publication-state",
+  "publication-draft",
+  "publication-head",
+  "publication-ref",
+  "publication-number",
+  "publication-url",
+  "later-attempt",
+  "later-terminal",
+  "old-pin",
+  "old-admission",
+])(
+  "ISS-215 independently rejects synthetic pinned mismatch %s before reservation",
+  async (fault) => {
+    const f = await terminalAdmissionFixture();
+    if (fault === "author") f.authority.author = "synthetic-other-author";
+    if (fault === "body") f.authority.body += " changed";
+    if (fault === "id") f.authority.id = "9005";
+    if (fault === "url") f.authority.url += "0";
+    if (fault === "claim-bytes") await appendFile(f.claimPath, " ");
+    if (fault === "history") f.packet.terminalHistoryDigest = "a".repeat(64);
+    if (fault === "receipt") f.receipt.body += " changed";
+    if (fault === "terminal")
+      await f.put(f.runState, "cycle-11-stop-3-complete", {
+        selection: f.terminalSelection,
+        stop: 2,
+        history: f.history,
+      });
+    if (fault === "terminal-stop" || fault === "terminal-cycle") {
+      const path = resolve(f.runState, "cycle-11-stop-3.json");
+      const stop = JSON.parse(await readFile(path, "utf8"));
+      if (fault === "terminal-stop") stop.stop = 2;
+      else stop.selection.cycle = 10;
+      await f.put(f.runState, "cycle-11-stop-3", stop);
+    }
+    if (fault === "attempt")
+      await f.put(f.terminalDirectory, "attempt", { ...f.failed, phase: "delivery" });
+    if (fault === "publication-state") Object.assign(f.publication, { state: "CLOSED" });
+    if (fault === "publication-draft") Object.assign(f.publication, { isDraft: false });
+    if (fault === "publication-head") f.publication.head = f.main;
+    if (fault === "publication-ref") f.publication.sourceBranch += "-moved";
+    if (fault === "publication-number") f.publication.number++;
+    if (fault === "publication-url") f.publication.url += "0";
+    if (fault === "later-attempt")
+      await mkdir(resolve(f.runState, `${KEY.toLowerCase()}-attempt-3`));
+    if (fault === "later-terminal")
+      await f.put(f.runState, "cycle-12-stop-1", {
+        selection: f.terminalSelection,
+        reason: "continuation-failed",
+        attempts: 2,
+        history: f.history,
+      });
+    if (fault === "old-admission") await writeFile(f.reservation, JSON.stringify({ binding: {} }));
+    const selection =
+      fault === "old-pin" ? { ...f.selected, base: f.main, planningRevision: f.main } : f.selected;
+    await expect(f.compose(f.loop, f.observe, selection)).rejects.toMatchObject({
+      reason: "terminal-attempt-admission-mismatch",
+    });
+    if (fault !== "old-admission")
+      await expect(readFile(f.reservation)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readdir(f.loop.worktreeRoot)).not.toContain(
+      `${KEY.toLowerCase()}-attempt-3-source`,
+    );
+  },
+);
+
+it.each([1, 2, 4])("ISS-215 rejects absolute successor %i", async (number) => {
+  const f = await terminalAdmissionFixture();
+  Object.assign(f.packet, { nextAbsoluteAttempt: number });
+  await expect(f.compose()).rejects.toMatchObject({
+    reason: "terminal-attempt-admission-mismatch",
+  });
+  await expect(readFile(f.reservation)).rejects.toMatchObject({ code: "ENOENT" });
+});
+
+// A queue adapter for steps that must stop before any setup, launch or delivery.
+function inertAdapter(
+  f: Awaited<ReturnType<typeof terminalAdmissionFixture>>,
+  queue: Awaited<ReturnType<typeof queueConfigFromLoop>>,
+) {
+  const refuse = (what: string) => async (): Promise<never> => {
+    throw new Error(`${what} must not run`);
+  };
+  const setup: SetupAdapter = {
+    assertExecutor: refuse("setup"),
+    observeWorktree: refuse("setup"),
+    createWorktree: refuse("setup"),
+    observeDependencies: refuse("setup"),
+    installDependencies: refuse("setup"),
+  };
+  return repositoryQueueAdapter(queue, f.repository, {
+    native: { launch: refuse("launch"), preflight: refuse("preflight") } as unknown as Adapter,
+    setup,
+    gitExecutable: f.gitExecutable,
+    repository: f.policy,
+    async assertExecutor() {},
+    deliveryPolicy: { plan: refuse("delivery") },
+  });
+}
+
+// AC1: each named non-authority input varies alone against the same retained state,
+// with no declaration. Only the persisted claim and terminal lineage refuse.
+it("ISS-215 no authority: a ready label through production selection retains the claim refusal", async () => {
+  const f = await terminalAdmissionFixture();
+  await completeTerminalCycles(f);
+  const { terminalAttemptAdmission: omitted, ...loop } = f.loop;
+  const comments: string[] = [];
+  let ready = true;
+  const supervisor: SupervisionAdapter = {
+    async currentMain() {
+      return f.selected.base;
+    },
+    async issue() {
+      return { state: "OPEN", key: KEY, labels: ready ? ["ready"] : [], comments };
+    },
+    async removeReady() {
+      ready = false;
+    },
+    async close() {
+      throw new Error("no issue closure");
+    },
+    async comment(_config, _number, body) {
+      comments.push(body);
+    },
+  };
+  const repository: RepositoryAdapter = {
+    ...f.policy,
+    selectCandidates: () => (ready ? [{ key: KEY, number: NUMBER }] : []),
+    park: () => {
+      ready = false;
+      return "synthetic planning repair required";
+    },
+  };
+  const selected = await nextCycle(loop, f.repository, supervisor, repository);
+  expect(selected?.selection).toEqual({ ...f.selected, cycle: 12 });
+  await persistCycle(loop, selected!);
+  await expect(f.compose(loop)).rejects.toMatchObject({
+    reason: "integration-continuation-required",
+  });
+  expect(f.calls).toEqual([]);
+  await expect(readFile(f.reservation)).rejects.toMatchObject({ code: "ENOENT" });
+  // The claim refusal is a host stop: the label survives and nothing parks.
+  expect(
+    await stopCycle(
+      loop,
+      selected!,
+      "integration-continuation-required",
+      2,
+      supervisor,
+      repository,
+    ),
+  ).toBe("run");
+  expect(ready).toBe(true);
+  expect(comments).toHaveLength(1);
+  expect(await readdir(f.runState)).not.toContain(`${KEY.toLowerCase()}-attempt-3`);
+  await f.unchanged();
+});
+
+it("ISS-215 no authority: the consumed integration packet alone replays attempt 2 as terminal", async () => {
+  const f = await terminalAdmissionFixture();
+  const { terminalAttemptAdmission: omitted, ...loop } = f.loop;
+  const queue = await f.compose({ ...loop, integrationContinuation: f.oldPacket });
+  const item = queue.items[0]!;
+  expect(item.implementationAttempt).toBe(2);
+  expect(item.integrationContinuation).toMatchObject({ reviewId: f.reviewId });
+  expect(item.terminalAttemptAdmission).toBeUndefined();
+  expect(queue.stateDirectory).toBe(f.old.stateDirectory);
+  await expect(queueStep(queue, inertAdapter(f, queue))).rejects.toMatchObject({
+    reason: "continuation-failed",
+  });
+  expect(f.calls).toEqual([]);
+  await expect(readFile(f.reservation)).rejects.toMatchObject({ code: "ENOENT" });
+  expect(await readdir(f.runState)).not.toContain(`${KEY.toLowerCase()}-attempt-3`);
+  await f.unchanged();
+});
+
+it("ISS-215 no authority: a renewed spent resolution alone is already consumed; its replay stays terminal", async () => {
+  const f = await terminalAdmissionFixture();
+  const { terminalAttemptAdmission: omitted, ...loop } = f.loop;
+  const spent = f.spentPacket.spentResolution!;
+  const renewed: IntegrationContinuation = {
+    ...f.spentPacket,
+    spentResolution: {
+      ...spent,
+      authorityUrl: "https://github.com/fixture/authority/issues/1#issuecomment-3",
+      authorityBody: `${spent.authorityBody} Synthetic renewal after the terminal stop.`,
+    },
+  };
+  let observations = 0;
+  await expect(
+    f.compose({ ...loop, integrationContinuation: renewed }, async () => {
+      observations++;
+      throw new Error("renewed authority must not be observed");
+    }),
+  ).rejects.toMatchObject({ reason: "integration-continuation-already-consumed" });
+  expect(observations).toBe(0);
+  const queue = await f.compose({ ...loop, integrationContinuation: f.spentPacket }, async () => {
+    throw new Error("consumed authority must not be observed again");
+  });
+  expect(queue.items[0]!.implementationAttempt).toBe(2);
+  expect(queue.stateDirectory).toBe(f.terminalDirectory);
+  await expect(queueStep(queue, inertAdapter(f, queue))).rejects.toMatchObject({
+    reason: "continuation-failed",
+  });
+  expect(f.calls).toEqual([]);
+  await expect(readFile(f.reservation)).rejects.toMatchObject({ code: "ENOENT" });
+  expect(await readdir(f.runState)).not.toContain(`${KEY.toLowerCase()}-attempt-3`);
+  await f.unchanged();
+});
+
+it("ISS-215 no authority: an unused reviewer-only grant alone retains the claim refusal", async () => {
+  const f = await terminalAdmissionFixture();
+  const { terminalAttemptAdmission: omitted, ...loop } = f.loop;
+  await f.put(f.terminalDirectory, "refresh-review-grant", {
+    unused: true,
+    authority: "synthetic old reviewer-only grant",
+  });
+  await expect(f.compose(loop)).rejects.toMatchObject({
+    reason: "integration-continuation-required",
+  });
+  expect(f.calls).toEqual([]);
+  await expect(readFile(f.reservation)).rejects.toMatchObject({ code: "ENOENT" });
+  await f.unchanged();
+});
+
+it.each([4, 3])(
+  "ISS-215 no authority: attempt headroom under ceiling %i alone retains the claim refusal",
+  async (attemptCeiling) => {
+    const f = await terminalAdmissionFixture();
+    const { terminalAttemptAdmission: omitted, ...loop } = f.loop;
+    // Two consumed attempts leave headroom under either ceiling; neither reaches the
+    // ordinary failed-attempt advancement or the ceiling stop.
+    await expect(f.compose({ ...loop, attemptCeiling })).rejects.toMatchObject({
+      reason: "integration-continuation-required",
+    });
+    expect(f.calls).toEqual([]);
+    await expect(readFile(f.reservation)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readdir(f.runState)).not.toContain(`${KEY.toLowerCase()}-attempt-3`);
+    await f.unchanged();
+  },
+);
+
+async function completeTerminalCycles(f: Awaited<ReturnType<typeof terminalAdmissionFixture>>) {
+  // Fill synthetic intervening completed cycles so the real caller selects cycle 12.
+  for (let cycle = 1; cycle <= 11; cycle++) {
+    const path = resolve(f.runState, `cycle-${cycle}-selected.json`);
+    const selection = await readFile(path, "utf8")
+      .then(JSON.parse)
+      .catch(() =>
+        cycle === 11
+          ? f.terminalSelection
+          : { cycle, key: `SYNTHETIC-${cycle}`, number: 9100 + cycle, base: f.main },
+      );
+    if (cycle > 3) await f.put(f.runState, `cycle-${cycle}-selected`, selection);
+    if (cycle !== 3)
+      await f.put(f.runState, `cycle-${cycle}-complete`, {
+        selection,
+        history: cycle < 3 ? f.history.slice(0, 5) : f.history,
+      });
+  }
+}
+
+it("ISS-215 production supervision retries an unavailable admission and parks successor failure without selecting attempt 4", async () => {
+  const f = await terminalAdmissionFixture();
+  await completeTerminalCycles(f);
+  const comments: string[] = [];
+  let parked = false;
+  const supervisor: SupervisionAdapter = {
+    async currentMain() {
+      return f.selected.base;
+    },
+    async issue() {
+      return { state: "OPEN", key: KEY, labels: parked ? [] : ["ready"], comments };
+    },
+    async removeReady() {},
+    async close() {
+      throw new Error("no issue closure");
+    },
+    async comment(_config, _number, body) {
+      comments.push(body);
+    },
+  };
+  const repository: RepositoryAdapter = {
+    ...f.policy,
+    selectCandidates: () => (parked ? [] : [{ key: KEY, number: NUMBER }]),
+    park: () => {
+      parked = true;
+      return "synthetic planning repair required";
+    },
+  };
+  const selected = await nextCycle(f.loop, f.repository, supervisor, repository);
+  expect(selected?.selection).toEqual({ ...f.selected, cycle: 12 });
+  expect(selected?.initialHistory).toEqual(f.history);
+  await persistCycle(f.loop, selected!);
+  await expect(
+    f.compose(f.loop, async () => {
+      throw new Error("synthetic unavailable authority");
+    }),
+  ).rejects.toMatchObject({ reason: "terminal-attempt-admission-authority-unavailable" });
+  expect(
+    await stopCycle(
+      f.loop,
+      selected!,
+      "terminal-attempt-admission-authority-unavailable",
+      2,
+      supervisor,
+      repository,
+    ),
+  ).toBe("run");
+  expect(parked).toBe(false);
+  const restarted = await nextCycle(f.loop, f.repository, supervisor, repository);
+  expect(restarted).toEqual(selected);
+  expect(await reconcilePendingStop(f.loop, restarted!, supervisor, repository)).toBeUndefined();
+  const queue = await f.compose();
+  expect(queue.items[0]!.implementationAttempt).toBe(3);
+  expect(
+    await stopCycle(f.loop, restarted!, "continuation-failed", 3, supervisor, repository),
+  ).toBe("item");
+  expect(await nextCycle(f.loop, f.repository, supervisor, repository)).toBeUndefined();
+  expect(await nextCycle(f.loop, f.repository, supervisor, repository)).toBeUndefined();
+  expect(comments).toHaveLength(2);
+  expect(await readdir(f.runState)).not.toContain(`${KEY.toLowerCase()}-attempt-4`);
+});
+
+it("ISS-215 real supervisor command retains attempt 2 on unavailable admission, resumes once and parks attempt 3", async () => {
+  const f = await terminalAdmissionFixture();
+  await completeTerminalCycles(f);
+  const entry = resolve(f.repository, "scripts/dogfood/supervise.mjs");
+  await mkdir(resolve(entry, ".."), { recursive: true });
+  await writeFile(
+    entry,
+    await readFile(resolve(import.meta.dirname, "../../scripts/dogfood/supervise.mjs")),
+  );
+  await f.git(["add", "."]);
+  await f.git(["commit", "-m", "synthetic canonical supervisor"]);
+  const request = resolve(f.root, "loop.json");
+  const controls = resolve(f.root, "command-controls.json");
+  await writeFile(request, JSON.stringify(f.loop));
+  await writeFile(
+    controls,
+    JSON.stringify({
+      number: NUMBER,
+      key: KEY,
+      ready: true,
+      comments: [],
+      launches: [],
+      observations: [],
+      unavailable: true,
+      authority: f.authority,
+      receipt: f.receipt,
+      publication: f.publication,
+    }),
+  );
+  const retained = await snapshot(f.runState);
+  let invocation = 0;
+  const invoke = async () => {
+    const outputPath = resolve(f.root, `command-${++invocation}.log`);
+    const output = await open(outputPath, "wx");
+    let code: number | null;
+    try {
+      code = await new Promise<number | null>((done, reject) => {
+        const child = spawn(
+          process.execPath,
+          [
+            "--import",
+            pathToFileURL(resolve(import.meta.dirname, "supervise-fixtures/terminal-admission.mjs"))
+              .href,
+            entry,
+            request,
+          ],
+          {
+            env: { ...process.env, TERMINAL_ADMISSION_FIXTURE: controls },
+            stdio: ["ignore", output.fd, output.fd],
+          },
+        );
+        child.on("error", reject);
+        child.on("close", done);
+      });
+    } finally {
+      await output.close();
+    }
+    return { code, output: await readFile(outputPath, "utf8") };
+  };
+  const unavailable = await invoke();
+  expect(unavailable.code).toBe(1);
+  expect(unavailable.output).toContain(
+    '"reason":"terminal-attempt-admission-authority-unavailable"',
+  );
+  const refused = JSON.parse(await readFile(resolve(f.runState, "cycle-12-stop-1.json"), "utf8"));
+  expect(refused).toMatchObject({ attempts: 2, history: f.history });
+  await expect(readFile(f.reservation)).rejects.toMatchObject({ code: "ENOENT" });
+  const control = JSON.parse(await readFile(controls, "utf8"));
+  expect(control.launches).toEqual([]);
+  expect(control.ready).toBe(true);
+  await writeFile(controls, JSON.stringify({ ...control, unavailable: false }));
+  const admitted = await invoke();
+  expect(admitted.code, admitted.output).toBe(0);
+  expect(admitted.output).toContain('"status":"idle"');
+  const parked = JSON.parse(await readFile(resolve(f.runState, "cycle-12-stop-2.json"), "utf8"));
+  expect(parked).toMatchObject({ reason: "continuation-failed", attempts: 3 });
+  expect(parked.history.slice(0, 26)).toEqual(f.history);
+  expect(parked.history).toHaveLength(27);
+  const done = JSON.parse(await readFile(controls, "utf8"));
+  expect(done.launches).toEqual(["author"]);
+  expect(done.ready).toBe(false);
+  const reservation = await readFile(f.reservation, "utf8");
+  const after = await snapshot(f.runState);
+  expect((await invoke()).code).toBe(0);
+  expect(await readFile(controls, "utf8")).toBe(JSON.stringify(done));
+  expect(await snapshot(f.runState)).toEqual(after);
+  expect(await readFile(f.reservation, "utf8")).toBe(reservation);
+  for (const [path, bytes] of retained) expect(after.get(path), path).toBe(bytes);
+  await f.unchanged();
+});
+
+it("ISS-215 real supervisor command: interruption after reservation, then a changed configuration parks attempt 3 without a launch", async () => {
+  const f = await terminalAdmissionFixture();
+  await completeTerminalCycles(f);
+  const entry = resolve(f.repository, "scripts/dogfood/supervise.mjs");
+  await mkdir(resolve(entry, ".."), { recursive: true });
+  await writeFile(
+    entry,
+    await readFile(resolve(import.meta.dirname, "../../scripts/dogfood/supervise.mjs")),
+  );
+  await f.git(["add", "."]);
+  await f.git(["commit", "-m", "synthetic canonical supervisor"]);
+  const request = resolve(f.root, "loop.json");
+  const controls = resolve(f.root, "command-controls.json");
+  await writeFile(request, JSON.stringify(f.loop));
+  await writeFile(
+    controls,
+    JSON.stringify({
+      number: NUMBER,
+      key: KEY,
+      ready: true,
+      comments: [],
+      launches: [],
+      observations: [],
+      unavailable: false,
+      interrupt: true,
+      authority: f.authority,
+      receipt: f.receipt,
+      publication: f.publication,
+    }),
+  );
+  const retained = await snapshot(f.runState);
+  let invocation = 0;
+  const invoke = async () => {
+    const outputPath = resolve(f.root, `command-${++invocation}.log`);
+    const output = await open(outputPath, "wx");
+    let code: number | null;
+    try {
+      code = await new Promise<number | null>((done, reject) => {
+        const child = spawn(
+          process.execPath,
+          [
+            "--import",
+            pathToFileURL(resolve(import.meta.dirname, "supervise-fixtures/terminal-admission.mjs"))
+              .href,
+            entry,
+            request,
+          ],
+          {
+            env: { ...process.env, TERMINAL_ADMISSION_FIXTURE: controls },
+            stdio: ["ignore", output.fd, output.fd],
+          },
+        );
+        child.on("error", reject);
+        child.on("close", done);
+      });
+    } finally {
+      await output.close();
+    }
+    return { code, output: await readFile(outputPath, "utf8") };
+  };
+  const interrupted = await invoke();
+  expect(interrupted.code).toBe(1);
+  expect(interrupted.output).toContain('"reason":"queue-internal-error"');
+  const reservation = await readFile(f.reservation, "utf8");
+  const control = JSON.parse(await readFile(controls, "utf8"));
+  expect(control.launches).toEqual([]);
+  expect(control.observations).toHaveLength(2);
+  expect(control.ready).toBe(true);
+  // The host changes the configuration after the successor was reserved.
+  await writeFile(controls, JSON.stringify({ ...control, interrupt: false }));
+  await writeFile(
+    request,
+    JSON.stringify({ ...f.loop, worktreeRoot: resolve(f.root, "renamed-worktrees") }),
+  );
+  const mismatched = await invoke();
+  expect(mismatched.code, mismatched.output).toBe(0);
+  expect(mismatched.output).toContain('"status":"idle"');
+  const parked = JSON.parse(await readFile(resolve(f.runState, "cycle-12-stop-2.json"), "utf8"));
+  expect(parked).toMatchObject({
+    reason: "terminal-attempt-admission-mismatch",
+    attempts: 3,
+    history: f.history,
+  });
+  const done = JSON.parse(await readFile(controls, "utf8"));
+  expect(done.launches).toEqual([]);
+  expect(done.observations).toHaveLength(2);
+  expect(done.ready).toBe(false);
+  expect(await readFile(f.reservation, "utf8")).toBe(reservation);
+  for (const [path, bytes] of retained) expect(await readFile(path, "utf8"), path).toBe(bytes);
+  await f.unchanged();
+});
+
+it("ISS-215 local record I/O failure during admission is a host error that spends nothing", async () => {
+  const f = await terminalAdmissionFixture();
+  // Replace the claim file by a directory of the same name: an unreadable record, not a
+  // contradiction. Restore it byte for byte afterwards.
+  const moved = `${f.claimPath}.moved`;
+  await rename(f.claimPath, moved);
+  await mkdir(f.claimPath);
+  await expect(f.compose()).rejects.toSatisfy(
+    (error: unknown) =>
+      !(error instanceof QueueBlocked) && typeof (error as NodeJS.ErrnoException).code === "string",
+  );
+  expect(f.calls).toEqual([]);
+  await expect(readFile(f.reservation)).rejects.toMatchObject({ code: "ENOENT" });
+  await rm(f.claimPath, { recursive: true });
+  await rename(moved, f.claimPath);
+  const queue = await f.compose();
+  expect(queue.items[0]!.implementationAttempt).toBe(3);
+  expect(f.calls).toHaveLength(3);
+  await f.unchanged();
+});
+
+it.each(["acceptedReplan", "integrationContinuation", "gateStopAuthorization"])(
+  "ISS-215 rejects coexistence with %s",
+  async (field) => {
+    const f = await terminalAdmissionFixture();
+    const packets = {
+      integrationContinuation: f.oldPacket,
+      gateStopAuthorization: {
+        stateDirectory: resolve(f.terminalDirectory, "source"),
+        candidateHead: f.reviewed,
+        repairSha: f.selected.base,
+        authorityUrl: f.packet.authorityUrl,
+      },
+      acceptedReplan: {
+        schemaVersion: "dogfood-accepted-replan/v1",
+        repository: f.loop.repository,
+        issueKey: KEY,
+        issueUrl: ISSUE,
+        priorRun: "synthetic-prior-run",
+        priorAttemptDirectory: resolve(
+          f.loop.stateRoot,
+          "synthetic-prior-run",
+          `${KEY.toLowerCase()}-attempt-4`,
+        ),
+        priorAbsoluteAttempt: 4,
+        priorHistoryDigest: "a".repeat(64),
+        candidateHead: f.reviewed,
+        targetRun: RUN,
+        attemptSlug: `${KEY.toLowerCase()}-attempt-5`,
+        nextAbsoluteAttempt: 5,
+        absoluteCeiling: 5,
+        authorityUrl: f.packet.authorityUrl,
+        scope: "Synthetic accepted correction",
+        allowedPaths: ["docs/loop.md"],
+        publication: null,
+        preReviewEvidence: null,
+      },
+    };
+    const other = packets[field as keyof typeof packets];
+    const { terminalAttemptAdmission: omitted, ...without } = f.loop;
+    expect(() => validateLoopConfig({ ...without, [field]: other })).not.toThrow();
+    expect(() => validateLoopConfig({ ...f.loop, [field]: other })).toThrow(
+      "terminal-attempt-admission-mismatch",
+    );
+    await expect(readFile(f.reservation)).rejects.toMatchObject({ code: "ENOENT" });
+  },
+);
+
+it("ISS-215 unavailable admission is retryable without spending; intervening attempt makes unchanged delegation stale", async () => {
+  const f = await terminalAdmissionFixture();
+  const unavailable = async () => {
+    throw new Error("synthetic transport unavailable");
+  };
+  await expect(f.compose(f.loop, unavailable)).rejects.toMatchObject({
+    reason: "terminal-attempt-admission-authority-unavailable",
+  });
+  await expect(readFile(f.reservation)).rejects.toMatchObject({ code: "ENOENT" });
+  await f.put(f.runState, "cycle-12-stop-1", {
+    selection: f.selected,
+    reason: "terminal-attempt-admission-authority-unavailable",
+    attempts: 2,
+    history: f.history,
+  });
+  const queue = await f.compose();
+  expect(queue.items[0]!.implementationAttempt).toBe(3);
+  const other = await terminalAdmissionFixture();
+  await expect(other.compose(other.loop, unavailable)).rejects.toMatchObject({
+    reason: "terminal-attempt-admission-authority-unavailable",
+  });
+  await mkdir(resolve(other.runState, `${KEY.toLowerCase()}-attempt-3`));
+  await expect(other.compose()).rejects.toMatchObject({
+    reason: "terminal-attempt-admission-mismatch",
+  });
+});
+
+it("ISS-215 cannot renew accounting with a new run, worktree root or removed declaration", async () => {
+  const f = await terminalAdmissionFixture();
+  await f.compose();
+  await expect(f.compose({ ...f.loop, run: "synthetic-renamed-run" })).rejects.toMatchObject({
+    reason: "terminal-attempt-admission-mismatch",
+  });
+  await expect(
+    f.compose({ ...f.loop, worktreeRoot: resolve(f.root, "new-worktrees") }),
+  ).rejects.toMatchObject({ reason: "terminal-attempt-admission-mismatch" });
+  const { terminalAttemptAdmission: omitted, ...without } = f.loop;
+  await expect(
+    f.compose({ ...without, run: "synthetic-renamed-run" } as typeof f.loop),
+  ).rejects.toMatchObject({ reason: "integration-continuation-required" });
+  await f.unchanged();
+});
+
+it.each(["pass", "author-fail", "review-fail", "host-unknown", "dead", "gate-fail", "conflict"])(
+  "ISS-215 ordinary native lifecycle and restarted caller: %s",
+  async (mode) => {
+    const f = await terminalAdmissionFixture();
+    const q = await f.compose();
+    const item = q.items[0]!;
+    const launches: string[] = [];
+    const effects: string[] = [];
+    let waiting = true;
+    let unknown = mode === "host-unknown";
+    const setup = gitSetupAdapter({
+      gitExecutable: f.gitExecutable,
+      async install(_launcher, _args, cwd) {
+        await mkdir(resolve(cwd, "node_modules"), { recursive: true });
+        await writeFile(resolve(cwd, "node_modules/.modules.yaml"), "synthetic: true\n");
+        return "succeeded";
+      },
+    });
+    const native: Adapter = {
+      async preflight() {},
+      git: (cwd, args) => f.git(args, cwd),
+      async launch(role, config, prompt) {
+        launches.push(role);
+        expect(config.worktree).toBe(item.source.worktree);
+        expect(prompt).toContain("Synthetic repaired current-main brief");
+        expect(prompt).not.toContain("Apply these reviewer-prescribed fixes");
+        if (role === "author") {
+          expect(await f.git(["rev-parse", "HEAD"], config.worktree)).toBe(f.selected.base);
+          await appendFile(
+            resolve(config.worktree, "docs/loop.md"),
+            "\nSynthetic attempt-three implementation.\n",
+          );
+        }
+        const trace = resolve(config.stateDirectory, `${role}.jsonl`);
+        await writeFile(trace, "synthetic execution evidence\n");
+        return { id: randomUUID(), pid: launches.length, trace, launchedAt: 1 };
+      },
+      async observe(role, config, attempt) {
+        if (waiting) return { id: attempt.id, status: "running" };
+        if (mode === "dead")
+          return {
+            id: attempt.id,
+            status: "dead",
+            summary: "Synthetic death with consumed retry.",
+          };
+        if (unknown) {
+          unknown = false;
+          throw new QueueBlocked("provider-unavailable");
+        }
+        const fail = mode === `${role === "reviewer" ? "review" : role}-fail`;
+        const head =
+          role === "author" ? config.base : await f.git(["rev-parse", "HEAD"], config.worktree);
+        if (mode === "conflict" && role === "reviewer")
+          await f.advanceMain(
+            "docs/loop.md",
+            `${await readFile(resolve(f.repository, "docs/loop.md"), "utf8")}\nSynthetic conflicting main.\n`,
+          );
+        return {
+          id: attempt.id,
+          status: fail ? "failed" : "passed",
+          head,
+          summary:
+            role === "author"
+              ? ""
+              : JSON.stringify({
+                  run: RUN,
+                  role,
+                  head,
+                  verdict: fail ? "FAIL" : "PASS",
+                  findings: fail
+                    ? [
+                        {
+                          file: "docs/loop.md",
+                          line: 5,
+                          severity: "blocking",
+                          text: "Synthetic source rejection.",
+                        },
+                      ]
+                    : [],
+                  g0: "No; this is the synthetic smallest implementation.",
+                }),
+        };
+      },
+      async checks() {
+        throw new Error("source must not publish");
+      },
+    };
+    const delivery = githubDeliveryAdapter();
+    delivery.verifyWorkspace = async (config, head) =>
+      (await f.git(["rev-parse", "HEAD"], config.worktree)) === head;
+    delivery.runGate = async (config, name, head) => {
+      effects.push(`gate:${name}`);
+      if (mode === "gate-fail" && name === "test")
+        return {
+          status: "failed",
+          output: "synthetic assertion",
+          evidence: {
+            head,
+            log: resolve(config.stateDirectory, "candidate.log"),
+            cause: "diagnostic",
+            diagnostics: ["docs/loop.md:5: synthetic assertion"],
+            command: { executable: process.execPath, argv: ["synthetic"], cwd: config.worktree },
+          },
+        };
+      return "passed";
+    };
+    delivery.attributeGate = async (config, _name, _evidence, main) => ({
+      cause: "candidate",
+      main,
+      log: resolve(config.stateDirectory, "synthetic-control.log"),
+    });
+    let publishedHead = "";
+    let merged = false;
+    let cleaned = false;
+    delivery.observePublication = async (config, plan, planDigest) =>
+      publishedHead
+        ? {
+            state: "confirmed",
+            value: {
+              number: 9006,
+              url: "https://github.com/fixture/repository/pull/9006",
+              head: publishedHead,
+              repository: config.repository,
+              sourceBranch: plan.sourceBranch,
+              baseBranch: plan.baseBranch,
+              title: plan.title,
+              body: plan.body,
+              planDigest,
+            },
+          }
+        : { state: "needs-mutation", target: "absent" };
+    delivery.publish = async (config, plan) => {
+      expect(config.refresh).toBeUndefined();
+      expect(plan.sourceBranch).toBe(`codex/${KEY.toLowerCase()}-attempt-3`);
+      effects.push("publish-new");
+      publishedHead = config.candidateHead;
+      throw new Error("synthetic lost publication response");
+    };
+    delivery.checks = async (config, publication) => {
+      expect(publication.number).toBe(9006);
+      return {
+        head: publishedHead,
+        checks: config.requiredChecks.map((name) => ({
+          name,
+          bucket: "pass",
+          link: "https://example.test/synthetic-check",
+        })),
+      };
+    };
+    delivery.observeMerge = async () =>
+      merged
+        ? {
+            state: "confirmed",
+            value: { number: 9006, head: publishedHead, mergeCommit: "e".repeat(40) },
+          }
+        : { state: "needs-mutation" };
+    delivery.merge = async () => {
+      effects.push("merge-new");
+      merged = true;
+      throw new Error("synthetic lost merge response");
+    };
+    delivery.observeCleanup = async (_config, plan) =>
+      cleaned ? { state: "confirmed", value: plan } : { state: "needs-mutation" };
+    delivery.cleanup = async () => {
+      effects.push("cleanup-new");
+      cleaned = true;
+    };
+    const adapter = (queue = q) =>
+      repositoryQueueAdapter(queue, f.repository, {
+        native,
+        setup,
+        delivery,
+        gitExecutable: f.gitExecutable,
+        repository: f.policy,
+        async assertExecutor() {},
+        deliveryPolicy: {
+          async plan(config) {
+            return {
+              gates: { beforeMirror: ["typecheck", "format:check", "test"], afterMirror: [] },
+              drafts: [],
+              publication: {
+                sourceBranch: `codex/${KEY.toLowerCase()}-attempt-3`,
+                baseBranch: "main",
+                title: "Synthetic new publication",
+                body: "Synthetic acceptance",
+                draft: true,
+              },
+              mergePolicy: {},
+              cleanup: {
+                worktrees: [config.worktree, config.reviewWorktree],
+                branch: config.localBranch!,
+              },
+            };
+          },
+        },
+      });
+    await expect(queueStep(q, adapter())).resolves.toMatchObject({ status: "observing-author" });
+    expect(launches).toEqual(["author"]);
+    const resumed = await f.compose();
+    await expect(queueStep(resumed, adapter(resumed))).resolves.toMatchObject({
+      status: "observing-author",
+    });
+    expect(launches).toEqual(["author"]);
+    waiting = false;
+    if (mode === "host-unknown")
+      await expect(queueStep(resumed, adapter(resumed))).rejects.toMatchObject({
+        reason: "provider-unavailable",
+      });
+    if (mode.endsWith("fail") || mode === "dead" || mode === "conflict") {
+      await expect(queueStep(resumed, adapter(resumed))).rejects.toMatchObject({
+        reason: "continuation-failed",
+      });
+      const failed = await readFile(resolve(q.stateDirectory, "attempt.json"), "utf8");
+      for (let replay = 0; replay < 2; replay++) {
+        const again = await f.compose();
+        await expect(queueStep(again, adapter(again))).rejects.toMatchObject({
+          reason: "continuation-failed",
+        });
+      }
+      expect(await readFile(resolve(q.stateDirectory, "attempt.json"), "utf8")).toBe(failed);
+      if (mode === "gate-fail")
+        expect(effects).toEqual(["gate:typecheck", "gate:format:check", "gate:test"]);
+      else expect(effects).toEqual([]);
+    } else {
+      await expect(queueStep(resumed, adapter(resumed))).resolves.toMatchObject({
+        status: "complete",
+        participants: 28,
+      });
+      const before = [...effects];
+      for (let replay = 0; replay < 2; replay++) {
+        const again = await f.compose();
+        await expect(queueStep(again, adapter(again))).resolves.toMatchObject({
+          status: "complete",
+          participants: 28,
+        });
+      }
+      expect(effects).toEqual(before);
+      expect(effects.filter((effect) => effect === "publish-new")).toHaveLength(1);
+    }
+    expect(launches).toEqual(
+      mode === "author-fail" || mode === "dead" ? ["author"] : ["author", "reviewer"],
+    );
+    expect(await readdir(f.runState)).not.toContain(`${KEY.toLowerCase()}-attempt-4`);
+    expect((await adapter().history()).slice(0, 26)).toEqual(f.history);
+    await f.unchanged();
+  },
+);
 
 async function spentFixture(spentRetry = false, autocrlf = false) {
   const f = await exhaustedFixture("overlap", spentRetry, autocrlf);
