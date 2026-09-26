@@ -135,7 +135,7 @@ export type Observation<T> =
   | { state: "confirmed"; value: T }
   | { state: "needs-mutation" }
   | { state: "pending" }
-  | { state: "unknown" };
+  | { state: "unknown"; diagnostics?: string };
 
 export type MergeObservation =
   | { state: "confirmed"; value: MergeEvidence }
@@ -479,6 +479,8 @@ async function confirmMutation<T>(
     return receipt;
   }
   let observation = await observe();
+  if (observation.state === "unknown")
+    throw new DeliveryBlocked(`${name}-state-unknown`, observation.diagnostics);
   if (observation.state === "confirmed") {
     const value = { head, ...project(observation.value) };
     validate(value);
@@ -491,7 +493,8 @@ async function confirmMutation<T>(
     await mutate();
   } catch {}
   observation = await observe();
-  demand(observation.state !== "unknown", `${name}-outcome-unknown`);
+  if (observation.state === "unknown")
+    throw new DeliveryBlocked(`${name}-outcome-unknown`, observation.diagnostics);
   demand(observation.state === "confirmed", `${name}-unconfirmed-reconcile-before-retry`);
   const value = { head, ...project(observation.value) };
   validate(value);

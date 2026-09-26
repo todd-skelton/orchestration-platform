@@ -49,6 +49,7 @@ import { pullRequest as chaseSetsPullRequest } from "../../adapters/chase-sets.m
 import { repositoryDeliveryPolicy } from "../../scripts/dogfood/repository-adapter.mjs";
 import { isItemStopReason } from "../../scripts/dogfood/supervision.js";
 import { MAX_TERMINAL_SUMMARY_LENGTH } from "../../scripts/dogfood/terminal-summary.mjs";
+import * as boardSnapshot from "../../scripts/planning/board-check.mjs";
 import {
   queueStep,
   queueUsage,
@@ -61,6 +62,148 @@ const head = "a".repeat(40);
 const authorId = "11111111-1111-1111-1111-111111111111";
 const reviewId = "22222222-2222-2222-2222-222222222222";
 const roots: string[] = [];
+
+function githubReadFailure(
+  stderr = 'Get "https://api.github.com/graphql": net/http: TLS handshake timeout',
+) {
+  return Object.assign(new Error("command echo must not escape: authorization Bearer SECRET"), {
+    code: 1,
+    stdout: "",
+    stderr,
+  });
+}
+
+it.each([
+  'Get "https://api.github.com/graphql": net/http: TLS handshake timeout',
+  'Post "https://api.github.com/graphql": dial tcp: lookup api.github.com: no such host',
+  'Post "https://api.github.com/graphql": dial tcp 140.82.112.6:443: connect: connection refused',
+  'Post "https://api.github.com/graphql": EOF',
+  "gh: Service Unavailable (HTTP 503)",
+  "HTTP 502: Bad Gateway (https://api.github.com/graphql)",
+])("ISS-211 draft read recovers classified transport: %s", async (stderr) => {
+  const draft = {
+    key: "ISS-074",
+    issue: 332,
+    title: "issue",
+    body: "body",
+    attributes: { milestone: null },
+  };
+  const ghJson = vi.fn().mockRejectedValueOnce(githubReadFailure(stderr)).mockResolvedValue({
+    number: 332,
+    title: "issue",
+    body: "body",
+    milestone: null,
+  });
+  const pause = vi.fn(async (_ms: number) => {});
+  const gh = vi.fn();
+  const adapter = githubDeliveryAdapter({ gh, ghJson }, "git", pause);
+  expect(await adapter.observeDraft(config("/unused"), draft)).toEqual({
+    state: "confirmed",
+    value: { issue: 332 },
+  });
+  expect(ghJson).toHaveBeenCalledTimes(2);
+  expect(pause.mock.calls).toEqual([[1000]]);
+  expect(gh).not.toHaveBeenCalled();
+});
+
+it.each([
+  ["parse", new SyntaxError("malformed JSON: TLS handshake timeout"), undefined],
+  ["unproven", new Error("net/http: TLS handshake timeout"), undefined],
+  ["partial data", Object.assign(githubReadFailure(), { stdout: "partial" }), undefined],
+  ["401", githubReadFailure("gh: Bad credentials (HTTP 401)"), undefined],
+  ["403", githubReadFailure("gh: Forbidden (HTTP 403)"), undefined],
+  ["wrong number", undefined, { number: 333 }],
+  ["wrong key", undefined, { body: "<!-- planning-key: ISS-999 -->" }],
+  ["foreign key", undefined, { body: "<!-- planning-key: OTHER-9999 -->" }],
+  ["malformed body", undefined, { body: null }],
+  ["malformed milestone", undefined, { milestone: {} }],
+])("ISS-211 draft %s refuses without retry", async (_name, error, patch) => {
+  const ghJson = vi.fn(async () => {
+    if (error) throw error;
+    return { number: 332, title: "issue", body: "body", milestone: null, ...(patch as object) };
+  });
+  const pause = vi.fn(async (_ms: number) => {});
+  const adapter = githubDeliveryAdapter({ gh: vi.fn(), ghJson }, "git", pause);
+  expect(
+    await adapter.observeDraft(config("/unused"), {
+      key: "ISS-074",
+      issue: 332,
+      title: "issue",
+      body: "body",
+      attributes: { milestone: null },
+    }),
+  ).toMatchObject({ state: "unknown" });
+  expect(ghJson).toHaveBeenCalledTimes(1);
+  expect(pause).not.toHaveBeenCalled();
+});
+
+it("ISS-211 draft transport exhaustion keeps bounded sanitized unknown evidence", async () => {
+  const ghJson = vi
+    .fn()
+    .mockRejectedValue(
+      githubReadFailure('Post "https://api.github.com/graphql?token=SECRET": EOF'),
+    );
+  const pause = vi.fn(async (_ms: number) => {});
+  const result = await githubDeliveryAdapter({ gh: vi.fn(), ghJson }, "git", pause).observeDraft(
+    config("/unused"),
+    {
+      key: "ISS-074",
+      issue: 332,
+      title: "issue",
+      body: "body",
+      attributes: { milestone: null },
+    },
+  );
+  expect(result).toEqual({
+    state: "unknown",
+    diagnostics: "GitHub transport response unavailable",
+  });
+  expect(JSON.stringify(result)).not.toMatch(/SECRET|authorization/i);
+  expect(ghJson).toHaveBeenCalledTimes(3);
+  expect(pause.mock.calls).toEqual([[1000], [2000]]);
+});
+
+it.each(["transport", "drift"])(
+  "ISS-211 sibling %s remains outside the retry boundary",
+  async (mode) => {
+    const board = vi.spyOn(boardSnapshot, "loadBoardSnapshot");
+    if (mode === "transport") board.mockRejectedValue(githubReadFailure());
+    else
+      board.mockResolvedValue({
+        issues: [
+          {
+            number: 333,
+            state: "OPEN",
+            title: "changed externally",
+            body: "<!-- planning-key: ISS-075 -->\nold",
+            milestone: null,
+          },
+        ],
+      } as never);
+    const pause = vi.fn(async (_ms: number) => {});
+    const gh = vi.fn();
+    const ghJson = vi.fn();
+    const adapter = githubDeliveryAdapter({ gh, ghJson }, "git", pause);
+    await expect(
+      adapter.observeDraft(config("/unused"), {
+        key: "ISS-075",
+        issue: 333,
+        title: "sibling",
+        body: "new",
+        attributes: {
+          baseBody: "<!-- planning-key: ISS-075 -->\nold",
+          milestone: null,
+          reopenedEvent: null,
+        },
+      }),
+    ).rejects.toThrow(mode === "transport" ? "command echo" : "self-sibling-refused:ISS-075");
+    expect(board).toHaveBeenCalledTimes(1);
+    expect(pause).not.toHaveBeenCalled();
+    expect(gh).not.toHaveBeenCalled();
+    expect(ghJson).not.toHaveBeenCalled();
+    board.mockRestore();
+  },
+);
 
 // Synthetic structured Actions response for the existing delivery lifecycle tests.
 function hostedResponse(
@@ -1954,6 +2097,102 @@ it.each(["squash", "queue"])(
     );
     expect(effects).toEqual([["pr", "ready", "44"]]);
     expect(effects.some((args) => args.includes("merge"))).toBe(false);
+  },
+);
+
+it("ISS-211 failing gh pr ready remains a single mutation", async () => {
+  const { current } = await repositoryFixture(
+    "https://github.com/todd-skelton/orchestration-platform.git",
+  );
+  const publication = publicationEvidence(current);
+  const gh = vi.fn().mockRejectedValue(githubReadFailure("gh: Service Unavailable (HTTP 503)"));
+  const pause = vi.fn(async (_ms: number) => {});
+  const adapter = githubDeliveryAdapter(
+    { gh, ghJson: async () => publicationRow(publication) },
+    "git",
+    pause,
+  );
+  await expect(adapter.merge(current, publication, { method: "squash" })).rejects.toThrow();
+  expect(gh.mock.calls.map((call) => call[1])).toEqual([["pr", "ready", "44"]]);
+  expect(pause).not.toHaveBeenCalled();
+});
+
+it.each(["before", "lost-edit"])(
+  "ISS-211 real draft mutation recovers %s transport once",
+  async (mode) => {
+    const { current } = await repositoryFixture(
+      "https://github.com/todd-skelton/orchestration-platform.git",
+    );
+    await writePilotEvidence(current);
+    const draft = {
+      key: "ISS-074",
+      issue: 332,
+      title: "issue",
+      body: "<!-- planning-key: ISS-074 -->\nnew",
+      attributes: { milestone: null },
+    };
+    const plan: DeliveryPlan = {
+      gates: { beforeMirror: [], afterMirror: [] },
+      drafts: [draft],
+      publication: {
+        sourceBranch: "codex/iss-074-delivery",
+        baseBranch: "main",
+        title: "fixture",
+        body: "fixture",
+        draft: true,
+      },
+      mergePolicy: { method: "squash" },
+      cleanup: {
+        worktrees: [current.worktree, current.reviewWorktree],
+        branch: "codex/iss-074-delivery",
+      },
+    };
+    let edited = false;
+    let interrupted = false;
+    const pause = vi.fn(async (_ms: number) => {});
+    const ghJson = vi.fn(async () => {
+      if (!interrupted && (mode === "before" || edited)) {
+        interrupted = true;
+        throw githubReadFailure();
+      }
+      return {
+        number: 332,
+        title: draft.title,
+        body: edited ? draft.body : "<!-- planning-key: ISS-074 -->\nold",
+        milestone: null,
+      };
+    });
+    const gh = vi.fn(async (_config, args: string[]) => {
+      expect(args.slice(0, 3)).toEqual(["issue", "edit", "332"]);
+      expect(
+        JSON.parse(
+          await readFile(resolve(current.stateDirectory, "draft-ISS-074-intent.json"), "utf8"),
+        ),
+      ).toMatchObject({ head: current.candidateHead });
+      expect(await readFile(args[args.indexOf("--body-file") + 1]!, "utf8")).toBe(draft.body);
+      edited = true;
+      if (mode === "lost-edit")
+        throw githubReadFailure('Post "https://api.github.com/graphql": EOF');
+      return "";
+    });
+    const adapter = githubDeliveryAdapter({ gh, ghJson }, "git", pause);
+    adapter.observePublication = async () => ({ state: "unknown" });
+    await expect(deliveryStep(current, adapter, { plan: async () => plan })).rejects.toThrow(
+      "publication-state-unknown",
+    );
+    expect(gh).toHaveBeenCalledTimes(1);
+    expect(ghJson).toHaveBeenCalledTimes(3);
+    expect(pause.mock.calls).toEqual([[1000]]);
+    const receipt = await readFile(resolve(current.stateDirectory, "draft-ISS-074.json"), "utf8");
+    expect(JSON.parse(receipt)).toEqual({ head: current.candidateHead, issue: 332 });
+    await expect(deliveryStep(current, adapter, { plan: async () => plan })).rejects.toThrow(
+      "publication-state-unknown",
+    );
+    expect(gh).toHaveBeenCalledTimes(1);
+    expect(ghJson).toHaveBeenCalledTimes(3);
+    expect(await readFile(resolve(current.stateDirectory, "draft-ISS-074.json"), "utf8")).toBe(
+      receipt,
+    );
   },
 );
 

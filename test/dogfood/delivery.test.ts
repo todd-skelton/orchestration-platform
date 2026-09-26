@@ -4,7 +4,7 @@ import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promi
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import { githubDeliveryAdapter } from "../../scripts/dogfood/delivery-adapter.mjs";
 import {
   aggregate as windowsAggregate,
@@ -37,6 +37,96 @@ const head = "a".repeat(40);
 const mergeCommit = "b".repeat(40);
 const roots: string[] = [];
 const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+
+it.each(["before", "after", "lost-edit", "no-op", "exhaust-before", "exhaust-after"])(
+  "ISS-211 delivery reconciles primary draft %s using real observation retries",
+  async (mode) => {
+    const f = await fixture();
+    f.plan.drafts = [f.plan.drafts[1]!];
+    const draft = f.plan.drafts[0]!;
+    let edited = mode === "no-op";
+    let writes = 0;
+    let reads = 0;
+    let failures = 0;
+    const pause = vi.fn(async (_ms: number) => {});
+    const native = githubDeliveryAdapter(
+      {
+        gh: async () => {
+          throw new Error("no other native command expected");
+        },
+        ghJson: async () => {
+          reads++;
+          const phase = edited ? "after" : "before";
+          if (
+            (mode.includes(phase) || (mode === "lost-edit" && edited)) &&
+            (mode.startsWith("exhaust") || failures++ === 0)
+          ) {
+            throw Object.assign(new Error("failed gh read"), {
+              code: 1,
+              stdout: "",
+              stderr: 'Post "https://api.github.com/graphql": net/http: TLS handshake timeout',
+            });
+          }
+          return {
+            number: draft.issue,
+            title: draft.title,
+            body: edited ? draft.body : "old",
+            milestone: { title: "M2" },
+          };
+        },
+      },
+      "git",
+      pause,
+    );
+    f.adapter.observeDraft = native.observeDraft;
+    f.adapter.applyDraft = async () => {
+      // The initial authoritative observation and saved intent precede edit.
+      expect(reads).toBe(mode === "before" ? 2 : 1);
+      expect(
+        JSON.parse(
+          await readFile(resolve(f.config.stateDirectory, "draft-ISS-074-intent.json"), "utf8"),
+        ),
+      ).toMatchObject({ head });
+      writes++;
+      edited = true;
+      if (mode === "lost-edit") throw new Error("lost successful edit response");
+    };
+    // Stop at the next boundary, leaving the draft's real receipts available.
+    f.adapter.observePublication = async () => ({ state: "unknown" });
+    const reason =
+      mode === "exhaust-before"
+        ? "draft-ISS-074-state-unknown"
+        : mode === "exhaust-after"
+          ? "draft-ISS-074-outcome-unknown"
+          : "publication-state-unknown";
+    await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toThrow(reason);
+    expect(isItemStopReason(reason)).toBe(false);
+    expect(writes).toBe(mode === "no-op" || mode === "exhaust-before" ? 0 : 1);
+    expect(reads).toBe(mode === "no-op" ? 1 : mode === "exhaust-after" ? 4 : 3);
+    expect(pause.mock.calls).toEqual(
+      mode.startsWith("exhaust") ? [[1000], [2000]] : mode === "no-op" ? [] : [[1000]],
+    );
+    const receipt = resolve(f.config.stateDirectory, "draft-ISS-074.json");
+    if (mode.startsWith("exhaust")) {
+      await expect(readFile(receipt)).rejects.toMatchObject({ code: "ENOENT" });
+    } else {
+      expect(JSON.parse(await readFile(receipt, "utf8"))).toEqual({ head, issue: 332 });
+      await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toThrow(
+        "publication-state-unknown",
+      );
+      expect(writes).toBe(mode === "no-op" ? 0 : 1);
+    }
+    if (mode === "no-op" || mode === "exhaust-before")
+      await expect(
+        readFile(resolve(f.config.stateDirectory, "draft-ISS-074-intent.json")),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+    expect(f.config.retries).toBe(0);
+    expect(f.calls).not.toContain("publish");
+    await expect(readFile(resolve(f.config.stateDirectory, "complete.json"))).rejects.toMatchObject(
+      { code: "ENOENT" },
+    );
+  },
+);
 
 async function fixture(candidate = head) {
   const head = candidate;
