@@ -585,7 +585,11 @@ it.each(["startup", "log-io"])(
         evidence: {
           cause: "host",
           head: current.candidateHead,
-          command: { executable, argv: ["run", "typecheck"], cwd: current.worktree },
+          command: {
+            executable,
+            argv: ["install", "--offline", "--frozen-lockfile", "--ignore-scripts"],
+            cwd: expect.stringContaining("candidate-"),
+          },
         },
       });
       if (typeof result !== "object" || result.status !== "failed" || !result.evidence)
@@ -605,6 +609,9 @@ it.each([
   ["install", "host"],
   ["cleanup", "host"],
   ["base-drift", "host"],
+  ["candidate-install", "candidate-host"],
+  ["candidate-cleanup", "candidate-host"],
+  ["candidate-install-drift", "candidate-host"],
   ["timeout", "unknown"],
   ["mixed", "unknown"],
   ["unrecognized", "unknown"],
@@ -647,13 +654,21 @@ it.each([
       launcher,
       `
     import { readFileSync, writeFileSync } from "node:fs";
+    import { execFile } from "node:child_process";
+    import { promisify } from "node:util";
+    import assert from "node:assert/strict";
     const mode = ${JSON.stringify(mode)};
-    if (process.argv[2] === "install") {
-      if (mode === "base-drift") writeFileSync("feature.ts", "uncommitted change");
-      process.exit(mode === "install" ? 1 : 0);
-    }
     const candidate = readFileSync("feature.ts", "utf8").includes("candidate");
+    assert.notEqual(process.cwd(), ${JSON.stringify(current.worktree)});
+    const head = (await promisify(execFile)("git", ["rev-parse", "HEAD"], { windowsHide: true })).stdout.trim();
+    assert.equal(head, candidate ? ${JSON.stringify(current.candidateHead)} : ${JSON.stringify(main)});
+    console.log("Executed head: " + head);
+    if (process.argv[2] === "install") {
+      if ((!candidate && mode === "base-drift") || mode === "candidate-install-drift") writeFileSync("feature.ts", "uncommitted change");
+      process.exit((!candidate && mode === "install") || mode === "candidate-install" ? 1 : 0);
+    }
     if (!candidate && mode !== "base") { console.log("base passed"); process.exit(0); }
+    if (mode === "candidate-cleanup") { console.log("candidate passed before cleanup"); process.exit(0); }
     if (mode === "drift") writeFileSync("feature.ts", "drift");
     if (mode === "timeout") console.log("Test timed out in 30000ms");
     else if (mode === "unrecognized") console.log("nonzero exit alone");
@@ -664,7 +679,7 @@ it.each([
   `,
     );
     vi.stubEnv("npm_execpath", launcher);
-    gateFaults.cleanup = mode === "cleanup";
+    gateFaults.cleanup = mode === "candidate-cleanup";
     const adapter = githubDeliveryAdapter();
     if (expected === "drift") {
       await expect(adapter.runGate(current, "typecheck", current.candidateHead)).rejects.toThrow(
@@ -677,16 +692,40 @@ it.each([
     if (typeof result !== "object" || result.status !== "failed" || !result.evidence)
       throw new Error("missing gate evidence");
     const failure = result.evidence;
-    expect(failure.command).toEqual({
+    const bytes = await readFile(failure.log, "utf8");
+    if (expected === "candidate-host") {
+      expect(failure.cause).toBe("host");
+      expect(bytes).toContain(`Executed head: ${current.candidateHead}`);
+      expect(failure.command.argv).toEqual([
+        launcher,
+        ...(mode === "candidate-cleanup"
+          ? ["run", "typecheck"]
+          : ["install", "--offline", "--frozen-lockfile", "--ignore-scripts"]),
+      ]);
+      if (mode === "candidate-cleanup") {
+        expect(bytes).toContain("candidate passed before cleanup");
+        expect(bytes).toContain("Cleanup failed: Error: fixture control cleanup failed");
+      } else if (mode === "candidate-install-drift") {
+        expect(bytes).toContain("Dependency install changed gate checkout:");
+      } else expect(bytes).toContain('Exit: {"code":1,"signal":null}');
+      expect(await git(["status", "--porcelain"], current.worktree)).toBe("");
+      await expect(adapter.runGate(current, "typecheck", current.candidateHead)).resolves.toEqual(
+        result,
+      );
+      return;
+    }
+    expect(failure.command, bytes).toEqual({
       executable: process.execPath,
       argv: [launcher, "run", "typecheck"],
-      cwd: current.worktree,
+      cwd: expect.stringContaining("candidate-"),
     });
-    const bytes = await readFile(failure.log, "utf8");
+    expect(failure.command.cwd).not.toBe(current.worktree);
+    expect(bytes).toContain(`Executed head: ${current.candidateHead}`);
     expect(bytes.length).toBeGreaterThan(4000);
     if (expected === "unknown") expect(failure.cause).toBe("unknown");
     else {
       expect(failure.cause).toBe("diagnostic");
+      gateFaults.cleanup = mode === "cleanup";
       const control = await adapter.attributeGate!(current, "typecheck", failure, main);
       expect(control).toMatchObject({ cause: expected, main });
       if (!["install", "base-drift"].includes(mode)) {
@@ -942,11 +981,16 @@ it.each([
     expect(failure.command).toEqual({
       executable: process.execPath,
       argv: [launcher, "run", "verify:static:scoped"],
-      cwd: current.worktree,
+      cwd: expect.stringContaining("candidate-"),
     });
+    expect(failure.command.cwd).not.toBe(current.worktree);
     const bytes = await readFile(failure.log, "utf8");
     expect(bytes.length).toBeGreaterThan(4000);
     expect(bytes).toContain("source=git merge-base.");
+    // The executor's own footer follows the runner's final block in the retained log.
+    expect(bytes).toMatch(
+      /\[ELIFECYCLE\] Command failed with exit code 1\.\n(?:unexpected trailing runner text\n)?\nExit: \{"code":1,"signal":null\}\n\nCleanup: \[.*,"worktree","remove","--force",.*\]\n$/,
+    );
     if (expected === "unknown" && mode !== "vacuous") {
       expect(failure.cause).toBe("unknown");
       expect(failure.diagnostics).toEqual(
@@ -969,6 +1013,7 @@ it.each([
         signal: null,
       });
       expect(terminal.command.cwd).not.toBe(current.worktree);
+      expect(terminal.command.cwd).not.toBe(failure.command.cwd);
       const base = await readFile(control.log, "utf8");
       if (mode === "vacuous") {
         expect(base).toContain(
@@ -1184,6 +1229,238 @@ async function repositoryFixture(remote: string) {
   current.candidateHead = current.controllerRevision;
   return { current, git };
 }
+
+async function structureGateFixture(committedFailure = false, mutatesSource = false) {
+  const f = await repositoryFixture("https://github.com/todd-skelton/orchestration-platform.git");
+  const { current, git } = f;
+  // Keep package acquisition out of this Git/structure regression. The launcher
+  // checks the install contract, then executes the committed script in its cwd.
+  const launcher = resolve(current.stateDirectory, "..", "fixture-pnpm.mjs");
+  await writeFile(
+    launcher,
+    `
+import assert from 'node:assert/strict';
+import { resolve } from 'node:path';
+import { pathToFileURL } from 'node:url';
+const args = process.argv.slice(2);
+if (args[0] === 'install') assert.deepEqual(args, ['install', '--offline', '--frozen-lockfile', '--ignore-scripts']);
+else {
+  assert.deepEqual(args, ['run', 'check:structure']);
+  await import(pathToFileURL(resolve('structure.mjs')));
+}
+`,
+  );
+  vi.stubEnv("npm_execpath", launcher);
+  const scratch = "bounded-contexts/marketplace/artifacts/jpeg-corrective";
+  await writeFile(resolve(current.worktree, ".gitignore"), "artifacts/\nnode_modules/\n");
+  await writeFile(
+    resolve(current.worktree, "package.json"),
+    JSON.stringify({
+      name: "gate-fixture",
+      private: true,
+      scripts: { "check:structure": "node structure.mjs" },
+    }),
+  );
+  await writeFile(
+    resolve(current.worktree, "pnpm-lock.yaml"),
+    "lockfileVersion: '9.0'\nsettings:\n  autoInstallPeers: true\n  excludeLinksFromLockfile: false\nimporters:\n  .: {}\n",
+  );
+  await writeFile(
+    resolve(current.worktree, "structure.mjs"),
+    `
+import { existsSync, writeFileSync } from 'node:fs';
+${mutatesSource ? "writeFileSync('stable.txt', 'gate changed source');" : ""}
+if (existsSync(${JSON.stringify(scratch)})) {
+  writeFileSync(1, 'static preamble\\n' + 'x'.repeat(33 * 1024 * 1024));
+  writeFileSync(2, '\\ncheck:structure rejected ${scratch}\\nEND-OF-DIAGNOSTIC\\n');
+  process.exitCode = 1;
+}
+`,
+  );
+  if (committedFailure) {
+    await mkdir(resolve(current.worktree, scratch), { recursive: true });
+    await writeFile(resolve(current.worktree, scratch, "committed.txt"), "actual product defect\n");
+    await git(["add", "-f", `${scratch}/committed.txt`], current.worktree);
+  }
+  await git(["add", "."], current.worktree);
+  await git(
+    [
+      "-c",
+      "user.name=fixture",
+      "-c",
+      "user.email=fixture@example.test",
+      "commit",
+      "-m",
+      "structure gate",
+    ],
+    current.worktree,
+  );
+  current.candidateHead = await git(["rev-parse", "HEAD"], current.worktree);
+  await git(["checkout", "--detach", current.candidateHead], current.reviewWorktree);
+  return { ...f, scratch: resolve(current.worktree, scratch) };
+}
+
+it.each(["clean", "empty ignored", "nonempty ignored"])(
+  "runs committed structure validation with %s source scratch and preserves the source",
+  async (contamination) => {
+    const f = await structureGateFixture();
+    if (contamination !== "clean") await mkdir(f.scratch, { recursive: true });
+    if (contamination === "nonempty ignored")
+      await writeFile(resolve(f.scratch, "evidence.txt"), "preserve me");
+    const adapter = githubDeliveryAdapter();
+    expect(await adapter.runGate(f.current, "check:structure", f.current.candidateHead)).toEqual({
+      status: "passed",
+    });
+    if (contamination === "empty ignored") expect(await readdir(f.scratch)).toEqual([]);
+    if (contamination === "nonempty ignored")
+      expect(await readFile(resolve(f.scratch, "evidence.txt"), "utf8")).toBe("preserve me");
+    expect(await f.git(["status", "--porcelain"], f.current.worktree)).toBe("");
+    expect(await f.git(["rev-parse", "HEAD"], f.current.worktree)).toBe(f.current.candidateHead);
+    const directory = resolve(
+      f.current.stateDirectory,
+      `gate-${createHash("sha256").update("check:structure").digest("hex")}`,
+    );
+    const terminal = JSON.parse(
+      await readFile(resolve(directory, "candidate-terminal.json"), "utf8"),
+    );
+    expect(terminal).toMatchObject({ head: f.current.candidateHead, code: 0 });
+    expect(terminal.command.cwd).not.toBe(f.current.worktree);
+    await expect(readFile(resolve(terminal.command.cwd, "structure.mjs"))).rejects.toThrow();
+    expect((await readdir(directory)).sort()).toEqual(["candidate-terminal.json", "candidate.log"]);
+  },
+);
+
+it("retains complete committed structure failures beyond the old buffer and excerpt limits on resume", async () => {
+  const f = await structureGateFixture(true);
+  await writePilotEvidence(f.current);
+  const before = await stateSnapshot(f.current.stateDirectory);
+  const adapter = githubDeliveryAdapter();
+  let retained;
+  for (let resume = 0; resume < 2; resume++) {
+    const result = await adapter.runGate(f.current, "check:structure", f.current.candidateHead);
+    expect(result).toMatchObject({ status: "failed" });
+    if (typeof result !== "object" || result.status !== "failed")
+      throw new Error("expected failure");
+    const path = JSON.parse(result.output.slice(result.output.indexOf('"')));
+    const log = await readFile(path, "utf8");
+    expect(log).toContain(`Candidate: ${f.current.candidateHead}`);
+    expect(log).toContain('"run","check:structure"');
+    expect(log).toContain('"install","--offline","--frozen-lockfile","--ignore-scripts"');
+    expect(log).toContain('Exit: {"code":1,"signal":null}');
+    expect(log.length).toBeGreaterThan(33 * 1024 * 1024);
+    expect(log).toContain("END-OF-DIAGNOSTIC");
+    if (resume === 0) retained = result;
+    else expect(result).toEqual(retained);
+  }
+  const runGate = vi.spyOn(adapter, "runGate");
+  const publication = publicationEvidence(f.current);
+  const policy = {
+    plan: async (): Promise<DeliveryPlan> => ({
+      gates: { beforeMirror: ["check:structure"], afterMirror: [] },
+      drafts: [],
+      publication: {
+        sourceBranch: publication.sourceBranch,
+        baseBranch: "main",
+        title: publication.title,
+        body: publication.body,
+        draft: true,
+      },
+      mergePolicy: { method: "squash" },
+      cleanup: {
+        worktrees: [f.current.worktree, f.current.reviewWorktree],
+        branch: publication.sourceBranch,
+      },
+    }),
+  };
+  for (let resume = 0; resume < 2; resume++) {
+    await expect(deliveryStep(f.current, adapter, policy)).rejects.toMatchObject({
+      reason: "gate-attribution-unknown:check:structure",
+      diagnostics: expect.stringContaining("candidate.log"),
+    });
+  }
+  expect(runGate).toHaveBeenCalledTimes(1);
+  const savedFailure = JSON.parse(
+    await readFile(resolve(f.current.stateDirectory, "gate-1-failure.json"), "utf8"),
+  );
+  expect(savedFailure).toMatchObject({
+    head: f.current.candidateHead,
+    evidence: { cause: "unknown", head: f.current.candidateHead },
+  });
+  for (const [name, contents] of Object.entries(before))
+    expect(await readFile(resolve(f.current.stateDirectory, name), "utf8")).toBe(contents);
+  expect(
+    (await readdir(f.current.stateDirectory)).filter((name) => /^gate-[a-f0-9]{64}$/.test(name)),
+  ).toHaveLength(1);
+  expect(await readFile(resolve(f.scratch, "committed.txt"), "utf8")).toBe(
+    "actual product defect\n",
+  );
+});
+
+it("does not reuse a gate terminal or review for a different candidate head", async () => {
+  const f = await structureGateFixture();
+  const adapter = githubDeliveryAdapter();
+  await writePilotEvidence(f.current);
+  await expect(
+    adapter.runGate(f.current, "check:structure", f.current.candidateHead),
+  ).resolves.toEqual({ status: "passed" });
+  const directory = resolve(
+    f.current.stateDirectory,
+    `gate-${createHash("sha256").update("check:structure").digest("hex")}`,
+  );
+  const before = await stateSnapshot(directory);
+  const candidate = await commitCandidate(f.current, f.git);
+  // Both workspaces now have the new head; only the old review/terminal are stale.
+  await expect(adapter.verifyWorkspace(f.current, candidate)).resolves.toBe(true);
+  await expect(adapter.source(f.current)).rejects.toThrow("unreviewed-delivery-source");
+  await expect(adapter.runGate(f.current, "check:structure", candidate)).rejects.toThrow(
+    "gate-failure-head-drift",
+  );
+  expect(await stateSnapshot(directory)).toEqual(before);
+});
+
+it("does not treat a retained log without a terminal as a completed gate", async () => {
+  const f = await structureGateFixture();
+  const directory = resolve(
+    f.current.stateDirectory,
+    `gate-${createHash("sha256").update("check:structure").digest("hex")}`,
+  );
+  await mkdir(directory);
+  const path = resolve(directory, "candidate.log");
+  await writeFile(path, "partial diagnostic, not completion\n");
+  await expect(
+    githubDeliveryAdapter().runGate(f.current, "check:structure", f.current.candidateHead),
+  ).rejects.toThrow("gate-attribution-unknown:check:structure");
+  expect(await readFile(path, "utf8")).toBe("partial diagnostic, not completion\n");
+  expect(await readdir(directory)).toEqual(["candidate.log"]);
+});
+
+it("refuses tracked and untracked edits without cleaning source paths", async () => {
+  const f = await structureGateFixture();
+  await writeFile(resolve(f.current.worktree, "stable.txt"), "tracked edit\n");
+  await writeFile(resolve(f.current.worktree, "untracked.txt"), "untracked evidence\n");
+  await expect(
+    githubDeliveryAdapter().runGate(f.current, "check:structure", f.current.candidateHead),
+  ).rejects.toThrow("candidate-workspace-drift");
+  expect(await readFile(resolve(f.current.worktree, "stable.txt"), "utf8")).toBe("tracked edit\n");
+  expect(await readFile(resolve(f.current.worktree, "untracked.txt"), "utf8")).toBe(
+    "untracked evidence\n",
+  );
+  expect(await readdir(f.current.stateDirectory)).toEqual([]);
+});
+
+it("rejects a gate that changes its committed checkout even when its command exits zero", async () => {
+  const f = await structureGateFixture(false, true);
+  await expect(
+    githubDeliveryAdapter().runGate(f.current, "check:structure", f.current.candidateHead),
+  ).rejects.toThrow("candidate-workspace-drift");
+  const path = resolve(
+    f.current.stateDirectory,
+    `gate-${createHash("sha256").update("check:structure").digest("hex")}`,
+    "candidate.log",
+  );
+  expect(await readFile(path, "utf8")).toContain("M stable.txt");
+  expect(await readFile(resolve(f.current.worktree, "stable.txt"), "utf8")).toBe("stable\n");
+});
 
 async function localRemoteRepositoryFixture() {
   const root = await realpath(await mkdtemp(resolve(tmpdir(), "delivery-cleanup-")));

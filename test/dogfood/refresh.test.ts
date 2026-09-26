@@ -2128,6 +2128,45 @@ it.each([false, true])(
   },
 );
 
+it("resumes saved delivery with ignored scratch without another worker or implementation attempt", async () => {
+  const f = await fixture();
+  await writeFile(resolve(f.repo, ".git/info/exclude"), "artifacts/\n");
+  const scratch = resolve(f.sourceTree, "bounded-contexts/marketplace/artifacts/jpeg-corrective");
+  await mkdir(scratch, { recursive: true });
+  await f.saveAttempt();
+  const history = await f.adapter().history();
+  const oldRecords = Object.fromEntries(
+    await Promise.all(
+      [
+        "author-attempt",
+        "author-terminal",
+        "reviewer-attempt",
+        "reviewer-terminal",
+        "candidate",
+        "config",
+      ].map(async (name) => [name, await readFile(resolve(f.sourceState, `${name}.json`), "utf8")]),
+    ),
+  );
+  const step = () => queueStep(f.config, { ...f.adapter(), async assertExecutor() {} });
+  for (let resume = 0; resume < 2; resume++) {
+    await expect(step()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+    const attempt = JSON.parse(await readFile(resolve(f.state, "attempt.json"), "utf8"));
+    expect(attempt).toMatchObject({
+      candidateAttempt: 1,
+      head: f.head,
+      reviewId: f.reviewer.id,
+      retries: 0,
+      phase: "delivery",
+    });
+    expect(await f.adapter().history()).toEqual(history);
+  }
+  expect(f.prompts).toEqual([]);
+  expect(f.gateHeads).toEqual([f.head]);
+  for (const [name, contents] of Object.entries(oldRecords))
+    expect(await readFile(resolve(f.sourceState, `${name}.json`), "utf8")).toBe(contents);
+  expect(await readdir(scratch)).toEqual([]);
+});
+
 it("reconciles a completed rebase whose response was lost without repeating it", async () => {
   const f = await fixture();
   await f.advanceMain();

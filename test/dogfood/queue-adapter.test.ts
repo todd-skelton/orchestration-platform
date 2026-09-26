@@ -1587,6 +1587,17 @@ it.each([false, true])(
           }
         }
         const selected = correction ? `gate-${role}` : role;
+        if (role === "author") {
+          expect(prompt).toContain(
+            JSON.stringify(resolve(selectedConfig.stateDirectory, "author-temp")),
+          );
+          expect(prompt).toContain("do not create scratch directories in the source tree");
+        }
+        if (correction) {
+          expect(prompt).toContain(resolve(current.source.stateDirectory, "typecheck.log"));
+          expect(prompt).toContain("Full diagnostic artifact:");
+          expect(prompt).toContain("Exact failed command:");
+        }
         const deadAuthor = selected === "author" && launches.length === 0;
         launches.push(selected);
         return {
@@ -1713,6 +1724,11 @@ it.each([false, true])(
       },
       async runGate(config) {
         gateCalls += 1;
+        if (gateCalls === 1)
+          await writeFile(
+            resolve(config.stateDirectory, "delivery-gate-fixture.log"),
+            "pnpm run typecheck\nComplete diagnostic\n",
+          );
         if (sourceHead !== config.candidateHead || reviewHead !== config.candidateHead)
           return { status: "failed", output: "candidate workspace drifted before gate" };
         if (gateCalls !== 1) return "passed";
