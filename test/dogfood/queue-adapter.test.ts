@@ -3,7 +3,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { relative, resolve } from "node:path";
 import { PassThrough } from "node:stream";
 import { promisify } from "node:util";
 import { afterEach, expect, it, vi } from "vitest";
@@ -164,9 +164,12 @@ it.each(["source2", "probe", "source4", "ceiling"])(
     f.native.observe = async (role, config, attempt) => {
       const result = await observe(role, config, attempt);
       if (role === "author") return { ...result, status: "passed", summary: "" };
+      // Name the attempt directory itself: a temporary root such as an author
+      // sandbox's `.../iss-214-attempt-4/source/author-temp` must not match.
       const fail =
         ["source4", "ceiling"].includes(scenario) &&
-        (scenario === "ceiling" || !config.stateDirectory.includes("attempt-4"));
+        (scenario === "ceiling" ||
+          !relative(f.loop.stateRoot, config.stateDirectory).includes("attempt-4"));
       return {
         ...result,
         status: fail ? "failed" : "passed",

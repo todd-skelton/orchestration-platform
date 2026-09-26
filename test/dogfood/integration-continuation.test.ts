@@ -1062,10 +1062,14 @@ it.each(["ordinary", "spent", "removed"])(
 
 type Mode =
   | "published-allowance"
+  | "published-allowance-declaration-faults"
+  | "published-allowance-record-faults"
+  | "published-allowance-authority-faults"
   | "published-allowance-retry"
   | "published-allowance-nonpass"
   | "published-allowance-lost-launch"
   | "published-allowance-refusal"
+  | "published-allowance-second-refresh"
   | "published-allowance-second-conflict"
   | "published-reentry"
   | "published-single-reentry"
@@ -1167,10 +1171,14 @@ it.each([
       "review-interruption",
       "gates-moved-main",
       "published-allowance",
+      "published-allowance-declaration-faults",
+      "published-allowance-record-faults",
+      "published-allowance-authority-faults",
       "published-allowance-retry",
       "published-allowance-nonpass",
       "published-allowance-lost-launch",
       "published-allowance-refusal",
+      "published-allowance-second-refresh",
       "published-allowance-second-conflict",
     ])
     .map((mode) => ({ mode, spent: true })),
@@ -1741,19 +1749,9 @@ it.each([
   // Main moving after the resolution review is an observation stop; the next replay
   // refreshes onto that main, and a second conflict is exhausted without renewal.
   if (
-    [
-      "second-conflict",
-      "moved-main",
-      "retry-moved-main",
-      "spent-moved-main",
-      "published-reentry",
-      "published-allowance",
-      "published-allowance-retry",
-      "published-allowance-nonpass",
-      "published-allowance-lost-launch",
-      "published-allowance-refusal",
-      "published-allowance-second-conflict",
-    ].includes(mode)
+    ["second-conflict", "moved-main", "retry-moved-main", "spent-moved-main"].includes(mode) ||
+    mode === "published-reentry" ||
+    allowanceMode
   ) {
     await f.advanceMain(
       mode === "second-conflict" ? "docs/loop.md" : "main.txt",
@@ -1782,15 +1780,25 @@ it.each([
       previousHead: intermediate.head,
     });
     expect(current.previousReview).not.toBe(f.reviewId);
-    const inProcess = adapter();
-    await expect(queueStep(q, inProcess)).resolves.toMatchObject({
-      status: "observing-hosted-checks",
-    });
     const accepted = await integrationAttempt();
     expect(accepted).toMatchObject({ phase: "delivery", head: publishedHead, candidateAttempt: 2 });
     expect(accepted.reviewId).not.toBe(current.previousReview);
     expect(accepted.reviewId).not.toBe(f.reviewId);
     expect(accepted.history).toHaveLength(26);
+    if (allowanceMode) {
+      // The allowance modes start from this same persisted publication and carry
+      // only their own post-publication work. The AC1/AC2 re-entry replays and
+      // binding faults below stay with `published-reentry`: the hosted Windows
+      // bootstrap spends roughly 45ms per real Git spawn, and one case that
+      // repeated them (982 spawns) exceeded the fixed 30-second test timeout.
+      await publishedAllowance(current, accepted);
+      return;
+    }
+    const inProcess = adapter();
+    await expect(queueStep(q, inProcess)).resolves.toMatchObject({
+      status: "observing-hosted-checks",
+    });
+    expect(await integrationAttempt()).toEqual(accepted);
     const before = await snapshot(q.stateDirectory);
     const calls = [...effects];
     const checks = hostedObservations;
@@ -2050,220 +2058,242 @@ it.each([
       await writeFile(attemptPath, attemptBytes);
     }
     expect(await snapshot(q.stateDirectory)).toEqual(before);
-    if (allowanceMode) {
-      const digestFile = async (path: string) =>
-        createHash("sha256")
-          .update(await readFile(path))
-          .digest("hex");
-      const stopName = "cycle-6-stop-2";
-      const stopMarker = `loop-stop:${RUN}:6:2`;
-      const selection = { cycle: 6, key: KEY, number: NUMBER, base: current.main };
-      await f.put(f.runState, stopName, {
-        selection,
-        stop: 2,
-        marker: stopMarker,
-        reason: "unreviewed-delivery-source",
-        attempts: 2,
-        history: accepted.history,
-      });
-      await f.put(f.runState, `${stopName}-complete`, {
-        selection,
-        stop: 2,
-        history: accepted.history,
-      });
-      const reservationPath = resolve(q.stateDirectory, "../spent-resolution.json");
-      const reservationBytes = await readFile(reservationPath, "utf8");
-      const granted = {
-        run: RUN,
-        issue: ISSUE,
-        item: item.id,
-        stopMarker,
-        authority: {
-          id: authority.id,
-          url: authority.url,
-          author: authority.author,
-          bodySha256: createHash("sha256").update(authority.body).digest("hex"),
-        },
-        reservationSha256: await digestFile(reservationPath),
-        claimSha256: await digestFile(f.packet.spentResolution!.claim),
-        stopSha256: await digestFile(resolve(f.runState, `${stopName}.json`)),
-        publicationSha256: await digestFile(resolve(current.directory, "publication.json")),
-      };
-      allowance = granted;
-      const grantPath = resolve(q.stateDirectory, "refresh-review-grant.json");
-      await expect(readFile(grantPath)).rejects.toMatchObject({ code: "ENOENT" });
-      expect(authorityReads).toBe(0); // No observation at composition, re-entry or unchanged main.
-      await f.advanceMain("post-publication.txt", "new main after publication\n");
-      publishedConflict = true;
-      await expect(run()).resolves.toMatchObject({ status: "observing-hosted-checks" });
-      expect(
-        JSON.parse(await readFile(resolve(current.directory, "publication-conflict.json"), "utf8")),
-      ).toEqual({ head: accepted.head });
-      expect(authorityReads).toBe(0);
+    await f.unchanged();
+    return;
+  }
+  async function publishedAllowance(current: any, accepted: any) {
+    const digestFile = async (path: string) =>
+      createHash("sha256")
+        .update(await readFile(path))
+        .digest("hex");
+    const stopName = "cycle-6-stop-2";
+    const stopMarker = `loop-stop:${RUN}:6:2`;
+    const selection = { cycle: 6, key: KEY, number: NUMBER, base: current.main };
+    await f.put(f.runState, stopName, {
+      selection,
+      stop: 2,
+      marker: stopMarker,
+      reason: "unreviewed-delivery-source",
+      attempts: 2,
+      history: accepted.history,
+    });
+    await f.put(f.runState, `${stopName}-complete`, {
+      selection,
+      stop: 2,
+      history: accepted.history,
+    });
+    const reservationPath = resolve(q.stateDirectory, "../spent-resolution.json");
+    const reservationBytes = await readFile(reservationPath, "utf8");
+    const granted = {
+      run: RUN,
+      issue: ISSUE,
+      item: item.id,
+      stopMarker,
+      authority: {
+        id: authority.id,
+        url: authority.url,
+        author: authority.author,
+        bodySha256: createHash("sha256").update(authority.body).digest("hex"),
+      },
+      reservationSha256: await digestFile(reservationPath),
+      claimSha256: await digestFile(f.packet.spentResolution!.claim),
+      stopSha256: await digestFile(resolve(f.runState, `${stopName}.json`)),
+      publicationSha256: await digestFile(resolve(current.directory, "publication.json")),
+    };
+    allowance = granted;
+    const grantPath = resolve(q.stateDirectory, "refresh-review-grant.json");
+    await expect(readFile(grantPath)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(authorityReads).toBe(0); // No observation at composition, re-entry or unchanged main.
+    await f.advanceMain("post-publication.txt", "new main after publication\n");
+    publishedConflict = true;
+    await expect(run()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+    expect(
+      JSON.parse(await readFile(resolve(current.directory, "publication-conflict.json"), "utf8")),
+    ).toEqual({ head: accepted.head });
+    expect(authorityReads).toBe(0);
 
-      if (mode === "published-allowance") {
-        // Every negative reaches the same native launch boundary. Restore only
-        // synthetic fixture state between independent faults, never live records.
-        const faults = [
-          "missing-declaration",
-          "wrong-run",
-          "wrong-issue",
-          "wrong-attempt",
-          "wrong-stop",
-          "reservation",
-          "claim",
-          "stop",
-          "publication",
-          "participant",
-          "missing-stop-completion",
-          "absent",
-          "unreadable",
-          "id",
-          "url",
-          "author",
-          "body",
-        ];
-        for (const fault of faults) {
-          const restores: (() => Promise<unknown>)[] = [];
-          allowance = structuredClone(granted);
-          authorityFault = ["absent", "unreadable", "id", "url", "author", "body"].includes(fault)
-            ? fault
-            : "";
-          const change = async (path: string, update: (value: any) => any) => {
-            const bytes = await readFile(path, "utf8");
-            restores.push(() => writeFile(path, bytes));
-            const value = update(JSON.parse(bytes));
-            if (value === undefined) await rm(path);
-            else await writeFile(path, JSON.stringify(value));
-          };
-          if (fault === "missing-declaration") allowance = null;
-          if (fault === "wrong-run") allowance!.run = "synthetic-fresh-run";
-          if (fault === "wrong-issue")
-            allowance!.issue = "https://github.com/fixture/repository/issues/999";
-          if (fault === "wrong-attempt") allowance!.item = "ISS-104:3";
-          if (fault === "wrong-stop") allowance!.stopMarker = `loop-stop:${RUN}:7:1`;
-          if (fault === "reservation")
-            await change(reservationPath, (r) => ({ ...r, launchLimit: 4 }));
-          if (fault === "claim")
-            await change(f.packet.spentResolution!.claim, (r) => ({
-              ...r,
-              authorityUrl: authority.url,
-            }));
-          if (fault === "stop")
-            await change(resolve(f.runState, `${stopName}.json`), (r) => ({
-              ...r,
-              marker: `loop-stop:${RUN}:7:1`,
-            }));
-          if (fault === "publication")
-            await change(resolve(current.directory, "publication.json"), (r) => ({
-              ...r,
-              number: 401,
-            }));
-          if (fault === "participant")
-            await change(resolve(q.stateDirectory, "participant-24-terminal.json"), (r) => ({
-              ...r,
-              usage: usage(999),
-            }));
-          if (fault === "missing-stop-completion")
-            await change(resolve(f.runState, `${stopName}-complete.json`), () => undefined);
-          const reads = authorityReads;
-          await expect(run(), fault).rejects.toMatchObject({
-            reason: "continuation-failed",
-            diagnostics: expect.stringContaining("integration-continuation-launch-exhausted"),
-          });
-          expect(authorityReads - reads, fault).toBe(authorityFault ? 1 : 0);
-          expect(launches, fault).toEqual(["author", "reviewer", "reviewer"]);
-          await expect(readFile(grantPath)).rejects.toMatchObject({ code: "ENOENT" });
-          for (const restore of restores) await restore();
-          await f.put(q.stateDirectory, "attempt", accepted);
-          const pending = await refresh();
-          await rm(resolve(pending.directory, "reviewer-intent.json"), { force: true });
-        }
-      }
-      allowance = granted;
-      authorityFault = "";
-      const reads = authorityReads;
-      reviewerWaiting = true;
-      if (mode === "published-allowance-refusal") {
-        await expect(run()).rejects.toMatchObject({
+    // Every negative reaches the same native launch boundary. Restore only
+    // synthetic fixture state between independent faults, never live records.
+    // Each group is one case: a fault costs one full delivery pass through Git.
+    const admissionFaults: Partial<Record<Mode, string[]>> = {
+      "published-allowance-declaration-faults": [
+        "missing-declaration",
+        "wrong-run",
+        "wrong-issue",
+        "wrong-attempt",
+        "wrong-stop",
+      ],
+      "published-allowance-record-faults": [
+        "reservation",
+        "claim",
+        "stop",
+        "publication",
+        "participant",
+        "missing-stop-completion",
+      ],
+      "published-allowance-authority-faults": [
+        "absent",
+        "unreadable",
+        "id",
+        "url",
+        "author",
+        "body",
+      ],
+    };
+    const faults = admissionFaults[mode];
+    if (faults) {
+      for (const fault of faults) {
+        const restores: (() => Promise<unknown>)[] = [];
+        allowance = structuredClone(granted);
+        authorityFault = ["absent", "unreadable", "id", "url", "author", "body"].includes(fault)
+          ? fault
+          : "";
+        const change = async (path: string, update: (value: any) => any) => {
+          const bytes = await readFile(path, "utf8");
+          restores.push(() => writeFile(path, bytes));
+          const value = update(JSON.parse(bytes));
+          if (value === undefined) await rm(path);
+          else await writeFile(path, JSON.stringify(value));
+        };
+        if (fault === "missing-declaration") allowance = null;
+        if (fault === "wrong-run") allowance!.run = "synthetic-fresh-run";
+        if (fault === "wrong-issue")
+          allowance!.issue = "https://github.com/fixture/repository/issues/999";
+        if (fault === "wrong-attempt") allowance!.item = "ISS-104:3";
+        if (fault === "wrong-stop") allowance!.stopMarker = `loop-stop:${RUN}:7:1`;
+        if (fault === "reservation")
+          await change(reservationPath, (r) => ({ ...r, launchLimit: 4 }));
+        if (fault === "claim")
+          await change(f.packet.spentResolution!.claim, (r) => ({
+            ...r,
+            authorityUrl: authority.url,
+          }));
+        if (fault === "stop")
+          await change(resolve(f.runState, `${stopName}.json`), (r) => ({
+            ...r,
+            marker: `loop-stop:${RUN}:7:1`,
+          }));
+        if (fault === "publication")
+          await change(resolve(current.directory, "publication.json"), (r) => ({
+            ...r,
+            number: 401,
+          }));
+        if (fault === "participant")
+          await change(resolve(q.stateDirectory, "participant-24-terminal.json"), (r) => ({
+            ...r,
+            usage: usage(999),
+          }));
+        if (fault === "missing-stop-completion")
+          await change(resolve(f.runState, `${stopName}-complete.json`), () => undefined);
+        const reads = authorityReads;
+        await expect(run(), fault).rejects.toMatchObject({
           reason: "continuation-failed",
           diagnostics: expect.stringContaining("integration-continuation-launch-exhausted"),
         });
-        const consumed = await readFile(grantPath, "utf8");
-        for (let replay = 0; replay < 2; replay++)
-          await expect(run(await f.compose())).rejects.toMatchObject({
-            reason: "continuation-failed",
-          });
-        expect(authorityReads).toBe(reads + 1);
-        expect(launches).toEqual(["author", "reviewer", "reviewer", "reviewer"]);
-        expect(await adapter().history()).toHaveLength(26); // pre-worker refusal has no terminal
-        expect(await readFile(grantPath, "utf8")).toBe(consumed);
-        expect(await readFile(reservationPath, "utf8")).toBe(reservationBytes);
-        await f.unchanged();
-        return;
+        expect(authorityReads - reads, fault).toBe(authorityFault ? 1 : 0);
+        expect(launches, fault).toEqual(["author", "reviewer", "reviewer"]);
+        await expect(readFile(grantPath)).rejects.toMatchObject({ code: "ENOENT" });
+        for (const restore of restores) await restore();
+        await f.put(q.stateDirectory, "attempt", accepted);
+        const pending = await refresh();
+        await rm(resolve(pending.directory, "reviewer-intent.json"), { force: true });
       }
-      if (mode === "published-allowance-lost-launch") {
-        await expect(run()).rejects.toThrow("synthetic lost additional launch response");
-        const consumed = await readFile(grantPath, "utf8");
-        for (let replay = 0; replay < 2; replay++)
-          await expect(run(await f.compose())).rejects.toThrow(
-            "reviewer-launch-identity-unknown-reconcile",
-          );
-        expect(await readFile(grantPath, "utf8")).toBe(consumed);
-        expect(authorityReads).toBe(reads + 1);
-        expect(launches).toEqual(["author", "reviewer", "reviewer", "reviewer"]);
-        expect(await adapter().history()).toHaveLength(26); // no invented terminal
-        await f.unchanged();
-        return;
-      }
-      await expect(run()).resolves.toMatchObject({ status: "observing-reviewer" });
-      expect(authorityReads).toBe(reads + 1);
+    }
+    allowance = granted;
+    authorityFault = "";
+    const reads = authorityReads;
+    reviewerWaiting = true;
+    if (mode === "published-allowance-refusal") {
+      await expect(run()).rejects.toMatchObject({
+        reason: "continuation-failed",
+        diagnostics: expect.stringContaining("integration-continuation-launch-exhausted"),
+      });
       const consumed = await readFile(grantPath, "utf8");
-      expect(JSON.parse(consumed)).toMatchObject({ grant: granted, authority });
-      expect(await adapter().history()).toHaveLength(26);
       for (let replay = 0; replay < 2; replay++)
-        await expect(run(await f.compose())).resolves.toMatchObject({
-          status: "observing-reviewer",
+        await expect(run(await f.compose())).rejects.toMatchObject({
+          reason: "continuation-failed",
         });
+      expect(authorityReads).toBe(reads + 1);
+      expect(launches).toEqual(["author", "reviewer", "reviewer", "reviewer"]);
+      expect(await adapter().history()).toHaveLength(26); // pre-worker refusal has no terminal
+      expect(await readFile(grantPath, "utf8")).toBe(consumed);
+      expect(await readFile(reservationPath, "utf8")).toBe(reservationBytes);
+      await f.unchanged();
+      return;
+    }
+    if (mode === "published-allowance-lost-launch") {
+      await expect(run()).rejects.toThrow("synthetic lost additional launch response");
+      const consumed = await readFile(grantPath, "utf8");
+      for (let replay = 0; replay < 2; replay++)
+        await expect(run(await f.compose())).rejects.toThrow(
+          "reviewer-launch-identity-unknown-reconcile",
+        );
       expect(await readFile(grantPath, "utf8")).toBe(consumed);
       expect(authorityReads).toBe(reads + 1);
-      reviewerWaiting = false;
-      if (["published-allowance-retry", "published-allowance-nonpass"].includes(mode)) {
-        await expect(run()).rejects.toMatchObject({
+      expect(launches).toEqual(["author", "reviewer", "reviewer", "reviewer"]);
+      expect(await adapter().history()).toHaveLength(26); // no invented terminal
+      await f.unchanged();
+      return;
+    }
+    await expect(run()).resolves.toMatchObject({ status: "observing-reviewer" });
+    expect(authorityReads).toBe(reads + 1);
+    const consumed = await readFile(grantPath, "utf8");
+    expect(JSON.parse(consumed)).toMatchObject({ grant: granted, authority });
+    expect(await adapter().history()).toHaveLength(26);
+    expect(launches).toEqual(["author", "reviewer", "reviewer", "reviewer"]);
+    if (faults) {
+      // The control: with every fault restored, the same inputs admit once.
+      expect(await readFile(reservationPath, "utf8")).toBe(reservationBytes);
+      await f.unchanged();
+      return;
+    }
+    // The second-movement modes carry the longest chain, so the steady-state
+    // replays of the admitted reviewer and its publication stay with the others.
+    const chainReplays = mode.startsWith("published-allowance-second") ? 0 : 2;
+    for (let replay = 0; replay < chainReplays; replay++)
+      await expect(run(await f.compose())).resolves.toMatchObject({
+        status: "observing-reviewer",
+      });
+    expect(await readFile(grantPath, "utf8")).toBe(consumed);
+    expect(authorityReads).toBe(reads + 1);
+    reviewerWaiting = false;
+    if (["published-allowance-retry", "published-allowance-nonpass"].includes(mode)) {
+      await expect(run()).rejects.toMatchObject({
+        reason: "continuation-failed",
+        diagnostics: expect.stringContaining(
+          mode.endsWith("retry")
+            ? "integration-continuation-launch-exhausted"
+            : "refresh-review-failed",
+        ),
+      });
+      const failed = await integrationAttempt();
+      expect(failed).toMatchObject({ phase: "failed", candidateAttempt: 2 });
+      expect(failed.history).toHaveLength(27);
+      for (let replay = 0; replay < 2; replay++)
+        await expect(run(await f.compose())).rejects.toMatchObject({
           reason: "continuation-failed",
-          diagnostics: expect.stringContaining(
-            mode.endsWith("retry")
-              ? "integration-continuation-launch-exhausted"
-              : "refresh-review-failed",
-          ),
         });
-        const failed = await integrationAttempt();
-        expect(failed).toMatchObject({ phase: "failed", candidateAttempt: 2 });
-        expect(failed.history).toHaveLength(27);
-        for (let replay = 0; replay < 2; replay++)
-          await expect(run(await f.compose())).rejects.toMatchObject({
-            reason: "continuation-failed",
-          });
-      } else {
-        await expect(run()).resolves.toMatchObject({ status: "observing-hosted-checks" });
-        const advanced = await integrationAttempt();
-        expect(advanced).toMatchObject({
-          phase: "delivery",
-          candidateAttempt: 2,
-          retries: accepted.retries,
+    } else {
+      await expect(run()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+      const advanced = await integrationAttempt();
+      expect(advanced).toMatchObject({
+        phase: "delivery",
+        candidateAttempt: 2,
+        retries: accepted.retries,
+      });
+      expect(advanced.head).not.toBe(accepted.head);
+      expect(advanced.reviewId).not.toBe(accepted.reviewId);
+      expect(advanced.history.slice(0, 26)).toEqual(accepted.history);
+      expect(advanced.history).toHaveLength(27);
+      expect(effects.filter((e) => e === "publish")).toHaveLength(2);
+      expect(
+        effects.filter((e) => e.startsWith("gate:") && e.endsWith(advanced.head)),
+      ).toHaveLength(4);
+      for (let replay = 0; replay < chainReplays; replay++)
+        await expect(run(await f.compose())).resolves.toMatchObject({
+          status: "observing-hosted-checks",
         });
-        expect(advanced.head).not.toBe(accepted.head);
-        expect(advanced.reviewId).not.toBe(accepted.reviewId);
-        expect(advanced.history.slice(0, 26)).toEqual(accepted.history);
-        expect(advanced.history).toHaveLength(27);
-        expect(effects.filter((e) => e === "publish")).toHaveLength(2);
-        expect(
-          effects.filter((e) => e.startsWith("gate:") && e.endsWith(advanced.head)),
-        ).toHaveLength(4);
-        for (let replay = 0; replay < 2; replay++)
-          await expect(run(await f.compose())).resolves.toMatchObject({
-            status: "observing-hosted-checks",
-          });
+      if (mode.startsWith("published-allowance-second")) {
         // Another main movement needs another review, or conflicts with the spent
         // resolution. Neither can consume this decision a second time.
         await f.advanceMain(
@@ -2284,16 +2314,13 @@ it.each([
           reason: "continuation-failed",
         });
       }
-      expect(publicationObservations).toBeGreaterThan(0);
-      expect(authorityReads).toBe(reads + 1);
-      expect(launches).toEqual(["author", "reviewer", "reviewer", "reviewer"]);
-      expect(await readFile(grantPath, "utf8")).toBe(consumed);
-      expect(await readFile(reservationPath, "utf8")).toBe(reservationBytes);
-      await f.unchanged();
-      return;
     }
+    expect(publicationObservations).toBeGreaterThan(0);
+    expect(authorityReads).toBe(reads + 1);
+    expect(launches).toEqual(["author", "reviewer", "reviewer", "reviewer"]);
+    expect(await readFile(grantPath, "utf8")).toBe(consumed);
+    expect(await readFile(reservationPath, "utf8")).toBe(reservationBytes);
     await f.unchanged();
-    return;
   }
   if (mode === "lost-commit") {
     await expect(run()).rejects.toThrow("lost commit response");
