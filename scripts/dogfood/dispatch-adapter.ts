@@ -1,6 +1,6 @@
 import { execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -586,6 +586,9 @@ export function codexAdapter(gitExecutable = "git", now = Date.now): Adapter {
         check(help.includes(flag), "incompatible-codex-cli");
     },
     async launch(role, config, prompt) {
+      // ISS-146: every launch (including correction/retry) needs the existing
+      // external scratch path. Reuse its contents; never reset it on resume.
+      if (role === "author") await mkdir(authorTemporaryRoot(config), { recursive: true });
       await admitLaunch(config, role);
       const launch = randomUUID();
       await writeFile(artifact(config, role, launch, "prompt.txt"), prompt, { flag: "wx" });
