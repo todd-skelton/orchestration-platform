@@ -3004,11 +3004,7 @@ export function repositoryQueueAdapter(
       const attempt = await native.launch(
         role,
         current,
-<<<<<<< HEAD
-        `${repairCompatiblePrompt}${gateEvidence}${await correctiveEvidence(item)}`,
-=======
-        `${repairCompatiblePrompt}${await priorAttemptRecords(item, role)}${await correctiveEvidence(item)}`,
->>>>>>> 7ad17d138806810ff1a5804e099147d65d2d98ca
+        `${repairCompatiblePrompt}${gateEvidence}${await priorAttemptRecords(item, role)}${await correctiveEvidence(item)}`,
       );
       demand(
         typeof attempt.id === "string" && /^[A-Za-z0-9._:-]{1,128}$/.test(attempt.id),

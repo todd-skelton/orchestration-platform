@@ -586,19 +586,10 @@ export function codexAdapter(gitExecutable = "git", now = Date.now): Adapter {
         check(help.includes(flag), "incompatible-codex-cli");
     },
     async launch(role, config, prompt) {
-<<<<<<< HEAD
       // ISS-146: every launch (including correction/retry) needs the existing
       // external scratch path. Reuse its contents; never reset it on resume.
       if (role === "author") await mkdir(authorTemporaryRoot(config), { recursive: true });
-      const baseUrl = process.env.CODEX_PROVIDER_BASE_URL;
-      const authCommand = process.env.CODEX_PROVIDER_AUTH_COMMAND;
-      if (baseUrl && authCommand)
-        await waitForProvider(config, (signal) =>
-          probeProvider(baseUrl, authCommand, signal, fetch, config[role].model),
-        );
-=======
       await admitLaunch(config, role);
->>>>>>> 7ad17d138806810ff1a5804e099147d65d2d98ca
       const launch = randomUUID();
       await writeFile(artifact(config, role, launch, "prompt.txt"), prompt, { flag: "wx" });
       await writeFile(

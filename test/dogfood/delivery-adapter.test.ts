@@ -764,11 +764,16 @@ it.each([
     expect(failure.command).toEqual({
       executable: process.execPath,
       argv: [launcher, "run", "verify:static:scoped"],
-      cwd: current.worktree,
+      cwd: expect.stringContaining("candidate-"),
     });
+    expect(failure.command.cwd).not.toBe(current.worktree);
     const bytes = await readFile(failure.log, "utf8");
     expect(bytes.length).toBeGreaterThan(4000);
     expect(bytes).toContain("source=git merge-base.");
+    // The executor's own footer follows the runner's final block in the retained log.
+    expect(bytes).toMatch(
+      /\[ELIFECYCLE\] Command failed with exit code 1\.\n(?:unexpected trailing runner text\n)?\nExit: \{"code":1,"signal":null\}\n\nCleanup: \[.*,"worktree","remove","--force",.*\]\n$/,
+    );
     if (expected === "unknown" && mode !== "vacuous") {
       expect(failure.cause).toBe("unknown");
       expect(failure.diagnostics).toEqual(
@@ -791,6 +796,7 @@ it.each([
         signal: null,
       });
       expect(terminal.command.cwd).not.toBe(current.worktree);
+      expect(terminal.command.cwd).not.toBe(failure.command.cwd);
       const base = await readFile(control.log, "utf8");
       if (mode === "vacuous") {
         expect(base).toContain(

@@ -1483,12 +1483,8 @@ describe("supervised sequential pilot (fake attempts, never live acceptance)", (
     expect(workerPrompt(f.config, "author", base, "Improve the selected issue.")).toBe(
       `Improve the selected issue.\n\nPilot run one-trial; role author; exact base: ${base}.\n` +
         'Allowed author paths: ["scripts/repair.mjs"]. Author may edit source only: do not stage, commit, or change Git metadata; leave HEAD at the exact base. Reviewer must leave its worktree unchanged. Never push, publish, merge, or change credentials.\n' +
-<<<<<<< HEAD
         `Write all scratch, temporary fixtures, command captures and execution evidence under the existing attempt temp root ${JSON.stringify(resolve(f.config.stateDirectory, "author-temp"))}, outside the source tree. Reuse that path on correction and resume; do not create scratch directories in the source tree, even if ignored or empty. Product source and committed test fixtures still belong in the allowed author paths.\n` +
-        `Explain substantive findings in progress messages before the final response; these remain in the captured trace. Final response must be ONLY JSON: {"run":"one-trial","role":"author","head":"${base}","verdict":"PASS","summary":""} (or verdict FAIL), with a short "summary" string of at most 2000 characters; use an empty string when there are no findings. Review every changed assertion independently. Before reporting, run \`pnpm typecheck\`, \`pnpm format:check\` and \`pnpm test\` in this worktree, and fix what fails.\n`,
-=======
         `Explain substantive findings in progress messages before the final response; these remain in the captured trace. Final response must be ONLY JSON: {"run":"one-trial","role":"author","head":"${base}","verdict":"PASS","summary":""} (or verdict FAIL), with a short "summary" string of at most ${MAX_TERMINAL_SUMMARY_LENGTH} characters; use an empty string when there are no findings. Review every changed assertion independently. Before reporting, run \`pnpm typecheck\`, \`pnpm format:check\` and \`pnpm test\` in this worktree, and fix what fails.\n`,
->>>>>>> 7ad17d138806810ff1a5804e099147d65d2d98ca
     );
     expect(workerPrompt(f.config, "reviewer", head, "Improve the selected issue.")).toBe(
       `Improve the selected issue.\n\nPilot run one-trial; role reviewer; exact review head: ${head}.\n` +

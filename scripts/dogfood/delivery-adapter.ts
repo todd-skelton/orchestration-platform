@@ -61,13 +61,29 @@ function staticScopedFailingLink(output: string): string | undefined {
   return [...output.matchAll(STATIC_RUN_MARKER)].at(-1)?.[1];
 }
 
+// ISS-146: committedGate appends its own `Exit:` line, then `Cleanup:` after the
+// runner has exited. Only that executor-authored tail, in that order and shape,
+// is outside the final block; any other trailing line keeps the failure unknown.
+const EXECUTOR_FOOTER = [
+  /^Cleanup: \["(?:[^"\\]|\\.)*"(?:,"(?:[^"\\]|\\.)*")*\]$/,
+  /^Exit: \{"code":(?:-?\d+|null),"signal":(?:"[A-Z0-9]+"|null)\}$/,
+];
+function withoutExecutorFooter(lines: string[]): string[] {
+  const kept = [...lines];
+  for (const footer of EXECUTOR_FOOTER) {
+    while (kept.length > 0 && kept.at(-1)!.trim() === "") kept.pop();
+    if (kept.length > 0 && footer.test(kept.at(-1)!)) kept.pop();
+  }
+  return kept;
+}
+
 // Recognize only a final block wholly made of `<path> is stale|missing` throws
 // from a `generate-*.mjs --check` producer: its command echo, Node's uncaught
 // throw frame and the pnpm lifecycle tail. Any other line keeps the failure unknown.
 function staticArtifactDiagnostics(output: string): string[] {
   const block = output.split(/^(?=\[VERIFY_STATIC_RUN\] )/m);
   if (block.length < 2) return [];
-  const lines = block.at(-1)!.split(/\r?\n/);
+  const lines = withoutExecutorFooter(block.at(-1)!.split(/\r?\n/));
   const diagnostics: string[] = [];
   let producer = false;
   for (let index = 1; index < lines.length; index++) {
@@ -226,6 +242,8 @@ async function committedGate(
             .filter(Boolean)
             .join("\n") + "\n",
         );
+        // The board failure also keeps its own staged log beside the complete gate log.
+        await stagedFile(config, "board-failure.log", String(error));
       }
       await log.write(`\nReturn: ${JSON.stringify(result)}\n`);
     } else {
