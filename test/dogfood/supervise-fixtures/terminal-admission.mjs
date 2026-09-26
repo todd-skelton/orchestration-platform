@@ -28,7 +28,7 @@ const git = async (executable, tree, args) =>
   (await execute(executable, ["-C", tree, ...args])).stdout.trim();
 
 export async function queueConfigFromLoop(...args) {
-  return compose(
+  const queue = await compose(
     ...args,
     async (url) => {
       const value = await update((v) => v.observations.push(url));
@@ -37,6 +37,9 @@ export async function queueConfigFromLoop(...args) {
     },
     async () => (await read()).publication,
   );
+  // A host interruption between the written reservation and the first setup step.
+  if ((await read()).interrupt) throw new Error("synthetic host interruption after reservation");
+  return queue;
 }
 
 export function repositorySupervisionAdapter() {

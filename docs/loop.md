@@ -1134,10 +1134,16 @@ terminal history uses `queueDigest`. Captures retain UTC observation instants.
 An unavailable external read stops as
 `terminal-attempt-admission-authority-unavailable`, without parking or spending
 admission. A contradictory or stale binding stops as
-`terminal-attempt-admission-mismatch` and parks. A pre-admission refusal
+`terminal-attempt-admission-mismatch` and parks; a local record read or write
+failure stays an ordinary host error. A pre-admission refusal
 at attempt 2 adds no charge and does not supersede the implementation
-terminal; a later attempt or admission does. No declaration retains the
-`integration-continuation-required` ordinary-composition exclusion.
+terminal; a later attempt or admission does, and a stop after the successor
+reservation reports three attempts. No declaration retains the
+`integration-continuation-required` ordinary-composition exclusion: the
+consumed integration packet or its spent resolution replays attempt 2 as
+terminal, a renewed spent resolution is already consumed, and a `ready`
+label, an unused reviewer-only grant or attempt headroom under the ceiling
+admits nothing.
 
 One exclusive-create `terminal-attempt-admission-<lineage digest>.json` under
 `stateRoot` binds the declaration, selection, observations and inherited

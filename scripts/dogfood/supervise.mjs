@@ -1,5 +1,5 @@
 import { realpathSync, writeFileSync } from "node:fs";
-import { readFile, realpath } from "node:fs/promises";
+import { access, readFile, realpath } from "node:fs/promises";
 import { delimiter, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
@@ -382,6 +382,15 @@ function blocked(error, lifecycleReason) {
   process.exitCode = 1;
 }
 
+// ISS-215: attempts consumed by the declared lineage when a stop precedes queue
+// configuration. The successor directory exists once admission has reserved attempt 3.
+function terminalAdmissionAttempts(loop, key) {
+  return access(resolve(loop.stateRoot, loop.run, `${key.toLowerCase()}-attempt-3`)).then(
+    () => 3,
+    () => 2,
+  );
+}
+
 async function stop(error, retainedAttempts) {
   const reason = error instanceof QueueBlocked ? error.reason : "queue-internal-error";
   const diagnostics = error instanceof QueueBlocked ? error.diagnostics : undefined;
@@ -392,7 +401,7 @@ async function stop(error, retainedAttempts) {
       ? await currentCandidateAttempt(config)
       : reason.startsWith("terminal-attempt-admission-") &&
           loop.terminalAttemptAdmission?.issueKey === active.selection.key
-        ? 2
+        ? await terminalAdmissionAttempts(loop, active.selection.key)
         : 0);
   try {
     const history = queueAdapter ? await queueAdapter.history() : active.initialHistory;

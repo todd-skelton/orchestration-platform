@@ -780,9 +780,17 @@ async function admitTerminalAttempt(
       retainHistory((await optionalRecord(runState, entry.name.slice(0, -5))).history);
     }
   }
-  const claimBytes = await readFile(resolve(config.stateRoot, `${claim}.json`));
-  check(createHash("sha256").update(claimBytes).digest("hex") === packet.claimSha256);
-  const retainedClaim = JSON.parse(claimBytes.toString("utf8"));
+  const claimBytes = await readFile(resolve(config.stateRoot, `${claim}.json`)).catch(
+    (error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return undefined;
+      throw error;
+    },
+  );
+  check(
+    claimBytes !== undefined &&
+      createHash("sha256").update(claimBytes).digest("hex") === packet.claimSha256,
+  );
+  const retainedClaim = JSON.parse(claimBytes!.toString("utf8"));
   const priorDirectory = resolve(runState, `${selected.key.toLowerCase()}-attempt-2`);
   check(
     retainedClaim.repository === config.repository &&
@@ -1045,12 +1053,12 @@ export async function queueConfigFromLoop(
           observeAuthority,
           observePublication,
         ).catch((error: unknown) => {
-          if (
-            error instanceof QueueBlocked &&
-            error.reason.startsWith("terminal-attempt-admission-")
-          )
-            throw error;
-          throw new QueueBlocked("terminal-attempt-admission-mismatch");
+          // Record and history checks contradict the declaration; local I/O failures
+          // stay host errors rather than parking the item.
+          if (!(error instanceof QueueBlocked)) throw error;
+          throw error.reason.startsWith("terminal-attempt-admission-")
+            ? error
+            : new QueueBlocked("terminal-attempt-admission-mismatch");
         })
       : undefined;
   if (!config.acceptedReplan) {

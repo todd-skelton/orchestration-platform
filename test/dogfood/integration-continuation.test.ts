@@ -38,6 +38,7 @@ import {
 import type { RepositoryAdapter } from "../../scripts/dogfood/repository-adapter.js";
 import { SELF_ROUTING } from "../../scripts/dogfood/routing.mjs";
 import { gitSetupAdapter } from "../../scripts/dogfood/setup-adapter.js";
+import type { SetupAdapter } from "../../scripts/dogfood/setup.js";
 import {
   nextCycle,
   persistCycle,
@@ -430,34 +431,32 @@ async function exhaustedFixture(shape: Shape = "conflict", spentRetry = false, a
 
 // All ISS-215 IDs, repositories, comments, timestamps and bodies below are synthetic.
 // No real external-authority observation is replaced or reinterpreted by this fixture.
+// The persisted shape follows the run: a failed ISS-167 integration whose consumed ISS-200
+// spent resolution failed again after publication, then the completed cycle-11 stop.
 async function terminalAdmissionFixture() {
-  const f = await exhaustedFixture("clean", true);
+  const f = await spentFixture(true);
   f.loop.nativeLaunchCeiling = 64;
+  // The real composition writes the consumed spent reservation and its packet.
   const old = await f.compose();
-  const terminalDirectory = resolve(old.stateDirectory, "spent-resolution");
+  const terminalDirectory = old.stateDirectory;
   const deliveryDirectory = resolve(terminalDirectory, "source", `refresh-${f.main}`);
   await mkdir(deliveryDirectory, { recursive: true });
-  const failedAuthor = participant(8, `${KEY}:2`, "refresh", "author", "failed");
-  const history = [...f.later, failedAuthor];
+  const history = [...f.later];
   for (let ordinal = 9; ordinal <= 25; ordinal++)
     history.push(participant(ordinal, `SYNTHETIC-${ordinal}:1`, "source", "author", "passed"));
   history.push(participant(26, `${KEY}:2`, "refresh", "reviewer", "passed"));
   const oldAttempt = JSON.parse(
-    await readFile(resolve(f.attemptDirectory, "attempt.json"), "utf8"),
+    await readFile(resolve(f.old.stateDirectory, "attempt.json"), "utf8"),
   );
   const failed = {
     ...oldAttempt,
+    base: f.seed,
     head: f.reviewed,
+    reviewId: history[25]!.id,
     history,
-    authorFailures: { count: 2, ids: [f.history[2]!.id, failedAuthor.id] },
   };
   await f.put(terminalDirectory, "attempt", failed);
-  await f.put(old.stateDirectory, "spent-resolution", {
-    directory: terminalDirectory,
-    initialHistory: history.slice(0, 23),
-    inheritedWorkerRetry: true,
-    launchLimit: 3,
-  });
+  for (const p of history) await f.put(terminalDirectory, `participant-${p.ordinal}-terminal`, p);
   await f.put(resolve(terminalDirectory, "source"), "native-refresh", {
     directory: deliveryDirectory,
     main: f.main,
@@ -566,7 +565,7 @@ async function terminalAdmissionFixture() {
     calls.push("synthetic-publication");
     return publication;
   };
-  const compose = (config = loop, observer = observe, selection = selected) =>
+  const compose = (config: LoopConfig = loop, observer = observe, selection = selected) =>
     queueConfigFromLoop(
       config,
       f.repository,
@@ -579,17 +578,23 @@ async function terminalAdmissionFixture() {
     );
   const retained = await snapshot(f.runState);
   const claimBytes = await readFile(claimPath, "utf8");
+  const integrationWorktree = f.old.items[0]!.source.worktree;
   const unchanged = async () => {
     for (const [path, bytes] of retained) expect(await readFile(path, "utf8"), path).toBe(bytes);
     expect(await readFile(claimPath, "utf8")).toBe(claimBytes);
     const preserved = resolve(f.loop.worktreeRoot, `${KEY.toLowerCase()}-attempt-2-source`);
     expect(await f.git(["rev-parse", "HEAD"], preserved)).toBe(f.reviewed);
     expect(await f.git(["status", "--porcelain"], preserved)).toBe("");
+    expect(await f.git(["rev-parse", "HEAD"], integrationWorktree)).toBe(f.seed);
+    expect(await readFile(resolve(integrationWorktree, "overlap.txt"), "utf8")).toBe(
+      "failed partial work\n",
+    );
   };
   const reservation = resolve(
     f.loop.stateRoot,
     `terminal-attempt-admission-${queueDigest({ repository: f.loop.repository, issue: KEY })}.json`,
   );
+  const { spentResolution, ...oldPacket } = f.packet;
   return {
     ...f,
     loop,
@@ -609,7 +614,8 @@ async function terminalAdmissionFixture() {
     observe,
     reservation,
     claimPath,
-    oldPacket: f.packet,
+    oldPacket: oldPacket as IntegrationContinuation,
+    spentPacket: f.packet,
     unchanged,
   };
 }
@@ -744,34 +750,169 @@ it.each([1, 2, 4])("ISS-215 rejects absolute successor %i", async (number) => {
   await expect(readFile(f.reservation)).rejects.toMatchObject({ code: "ENOENT" });
 });
 
-it.each(["ready", "spent-resolution", "reviewer-only-grant", "ceiling-four"])(
-  "ISS-215 no authority: %s alone retains the production claim refusal",
-  async (control) => {
+// A queue adapter for steps that must stop before any setup, launch or delivery.
+function inertAdapter(
+  f: Awaited<ReturnType<typeof terminalAdmissionFixture>>,
+  queue: Awaited<ReturnType<typeof queueConfigFromLoop>>,
+) {
+  const refuse = (what: string) => async (): Promise<never> => {
+    throw new Error(`${what} must not run`);
+  };
+  const setup: SetupAdapter = {
+    assertExecutor: refuse("setup"),
+    observeWorktree: refuse("setup"),
+    createWorktree: refuse("setup"),
+    observeDependencies: refuse("setup"),
+    installDependencies: refuse("setup"),
+  };
+  return repositoryQueueAdapter(queue, f.repository, {
+    native: { launch: refuse("launch"), preflight: refuse("preflight") } as unknown as Adapter,
+    setup,
+    gitExecutable: f.gitExecutable,
+    repository: f.policy,
+    async assertExecutor() {},
+    deliveryPolicy: { plan: refuse("delivery") },
+  });
+}
+
+// AC1: each named non-authority input varies alone against the same retained state,
+// with no declaration. Only the persisted claim and terminal lineage refuse.
+it("ISS-215 no authority: a ready label through production selection retains the claim refusal", async () => {
+  const f = await terminalAdmissionFixture();
+  await completeTerminalCycles(f);
+  const { terminalAttemptAdmission: omitted, ...loop } = f.loop;
+  const comments: string[] = [];
+  let ready = true;
+  const supervisor: SupervisionAdapter = {
+    async currentMain() {
+      return f.selected.base;
+    },
+    async issue() {
+      return { state: "OPEN", key: KEY, labels: ready ? ["ready"] : [], comments };
+    },
+    async removeReady() {
+      ready = false;
+    },
+    async close() {
+      throw new Error("no issue closure");
+    },
+    async comment(_config, _number, body) {
+      comments.push(body);
+    },
+  };
+  const repository: RepositoryAdapter = {
+    ...f.policy,
+    selectCandidates: () => (ready ? [{ key: KEY, number: NUMBER }] : []),
+    park: () => {
+      ready = false;
+      return "synthetic planning repair required";
+    },
+  };
+  const selected = await nextCycle(loop, f.repository, supervisor, repository);
+  expect(selected?.selection).toEqual({ ...f.selected, cycle: 12 });
+  await persistCycle(loop, selected!);
+  await expect(f.compose(loop)).rejects.toMatchObject({
+    reason: "integration-continuation-required",
+  });
+  expect(f.calls).toEqual([]);
+  await expect(readFile(f.reservation)).rejects.toMatchObject({ code: "ENOENT" });
+  // The claim refusal is a host stop: the label survives and nothing parks.
+  expect(
+    await stopCycle(
+      loop,
+      selected!,
+      "integration-continuation-required",
+      2,
+      supervisor,
+      repository,
+    ),
+  ).toBe("run");
+  expect(ready).toBe(true);
+  expect(comments).toHaveLength(1);
+  expect(await readdir(f.runState)).not.toContain(`${KEY.toLowerCase()}-attempt-3`);
+  await f.unchanged();
+});
+
+it("ISS-215 no authority: the consumed integration packet alone replays attempt 2 as terminal", async () => {
+  const f = await terminalAdmissionFixture();
+  const { terminalAttemptAdmission: omitted, ...loop } = f.loop;
+  const queue = await f.compose({ ...loop, integrationContinuation: f.oldPacket });
+  const item = queue.items[0]!;
+  expect(item.implementationAttempt).toBe(2);
+  expect(item.integrationContinuation).toMatchObject({ reviewId: f.reviewId });
+  expect(item.terminalAttemptAdmission).toBeUndefined();
+  expect(queue.stateDirectory).toBe(f.old.stateDirectory);
+  await expect(queueStep(queue, inertAdapter(f, queue))).rejects.toMatchObject({
+    reason: "continuation-failed",
+  });
+  expect(f.calls).toEqual([]);
+  await expect(readFile(f.reservation)).rejects.toMatchObject({ code: "ENOENT" });
+  expect(await readdir(f.runState)).not.toContain(`${KEY.toLowerCase()}-attempt-3`);
+  await f.unchanged();
+});
+
+it("ISS-215 no authority: a renewed spent resolution alone is already consumed; its replay stays terminal", async () => {
+  const f = await terminalAdmissionFixture();
+  const { terminalAttemptAdmission: omitted, ...loop } = f.loop;
+  const spent = f.spentPacket.spentResolution!;
+  const renewed: IntegrationContinuation = {
+    ...f.spentPacket,
+    spentResolution: {
+      ...spent,
+      authorityUrl: "https://github.com/fixture/authority/issues/1#issuecomment-3",
+      authorityBody: `${spent.authorityBody} Synthetic renewal after the terminal stop.`,
+    },
+  };
+  let observations = 0;
+  await expect(
+    f.compose({ ...loop, integrationContinuation: renewed }, async () => {
+      observations++;
+      throw new Error("renewed authority must not be observed");
+    }),
+  ).rejects.toMatchObject({ reason: "integration-continuation-already-consumed" });
+  expect(observations).toBe(0);
+  const queue = await f.compose({ ...loop, integrationContinuation: f.spentPacket }, async () => {
+    throw new Error("consumed authority must not be observed again");
+  });
+  expect(queue.items[0]!.implementationAttempt).toBe(2);
+  expect(queue.stateDirectory).toBe(f.terminalDirectory);
+  await expect(queueStep(queue, inertAdapter(f, queue))).rejects.toMatchObject({
+    reason: "continuation-failed",
+  });
+  expect(f.calls).toEqual([]);
+  await expect(readFile(f.reservation)).rejects.toMatchObject({ code: "ENOENT" });
+  expect(await readdir(f.runState)).not.toContain(`${KEY.toLowerCase()}-attempt-3`);
+  await f.unchanged();
+});
+
+it("ISS-215 no authority: an unused reviewer-only grant alone retains the claim refusal", async () => {
+  const f = await terminalAdmissionFixture();
+  const { terminalAttemptAdmission: omitted, ...loop } = f.loop;
+  await f.put(f.terminalDirectory, "refresh-review-grant", {
+    unused: true,
+    authority: "synthetic old reviewer-only grant",
+  });
+  await expect(f.compose(loop)).rejects.toMatchObject({
+    reason: "integration-continuation-required",
+  });
+  expect(f.calls).toEqual([]);
+  await expect(readFile(f.reservation)).rejects.toMatchObject({ code: "ENOENT" });
+  await f.unchanged();
+});
+
+it.each([4, 3])(
+  "ISS-215 no authority: attempt headroom under ceiling %i alone retains the claim refusal",
+  async (attemptCeiling) => {
     const f = await terminalAdmissionFixture();
     const { terminalAttemptAdmission: omitted, ...loop } = f.loop;
-    if (control === "ready") {
-      const context = await f.policy.issueContext({
-        repository: loop.repository,
-        key: KEY,
-        number: NUMBER,
-        executorRoot: f.repository,
-      });
-      f.policy.issueContext = async () => ({
-        ...context,
-        body: `${context.body}\nSynthetic ready label present.`,
-      });
-    }
-    if (control === "reviewer-only-grant")
-      await f.put(f.terminalDirectory, "refresh-review-grant", {
-        unused: true,
-        authority: "synthetic old reviewer-only grant",
-      });
-    // The same valid spent reservation and ceiling four are present in every case.
-    await expect(f.compose(loop as typeof f.loop)).rejects.toMatchObject({
+    // Two consumed attempts leave headroom under either ceiling; neither reaches the
+    // ordinary failed-attempt advancement or the ceiling stop.
+    await expect(f.compose({ ...loop, attemptCeiling })).rejects.toMatchObject({
       reason: "integration-continuation-required",
     });
     expect(f.calls).toEqual([]);
     await expect(readFile(f.reservation)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readdir(f.runState)).not.toContain(`${KEY.toLowerCase()}-attempt-3`);
     await f.unchanged();
   },
 );
@@ -946,6 +1087,119 @@ it("ISS-215 real supervisor command retains attempt 2 on unavailable admission, 
   expect(await snapshot(f.runState)).toEqual(after);
   expect(await readFile(f.reservation, "utf8")).toBe(reservation);
   for (const [path, bytes] of retained) expect(after.get(path), path).toBe(bytes);
+  await f.unchanged();
+});
+
+it("ISS-215 real supervisor command: interruption after reservation, then a changed configuration parks attempt 3 without a launch", async () => {
+  const f = await terminalAdmissionFixture();
+  await completeTerminalCycles(f);
+  const entry = resolve(f.repository, "scripts/dogfood/supervise.mjs");
+  await mkdir(resolve(entry, ".."), { recursive: true });
+  await writeFile(
+    entry,
+    await readFile(resolve(import.meta.dirname, "../../scripts/dogfood/supervise.mjs")),
+  );
+  await f.git(["add", "."]);
+  await f.git(["commit", "-m", "synthetic canonical supervisor"]);
+  const request = resolve(f.root, "loop.json");
+  const controls = resolve(f.root, "command-controls.json");
+  await writeFile(request, JSON.stringify(f.loop));
+  await writeFile(
+    controls,
+    JSON.stringify({
+      number: NUMBER,
+      key: KEY,
+      ready: true,
+      comments: [],
+      launches: [],
+      observations: [],
+      unavailable: false,
+      interrupt: true,
+      authority: f.authority,
+      receipt: f.receipt,
+      publication: f.publication,
+    }),
+  );
+  const retained = await snapshot(f.runState);
+  let invocation = 0;
+  const invoke = async () => {
+    const outputPath = resolve(f.root, `command-${++invocation}.log`);
+    const output = await open(outputPath, "wx");
+    let code: number | null;
+    try {
+      code = await new Promise<number | null>((done, reject) => {
+        const child = spawn(
+          process.execPath,
+          [
+            "--import",
+            pathToFileURL(resolve(import.meta.dirname, "supervise-fixtures/terminal-admission.mjs"))
+              .href,
+            entry,
+            request,
+          ],
+          {
+            env: { ...process.env, TERMINAL_ADMISSION_FIXTURE: controls },
+            stdio: ["ignore", output.fd, output.fd],
+          },
+        );
+        child.on("error", reject);
+        child.on("close", done);
+      });
+    } finally {
+      await output.close();
+    }
+    return { code, output: await readFile(outputPath, "utf8") };
+  };
+  const interrupted = await invoke();
+  expect(interrupted.code).toBe(1);
+  expect(interrupted.output).toContain('"reason":"queue-internal-error"');
+  const reservation = await readFile(f.reservation, "utf8");
+  const control = JSON.parse(await readFile(controls, "utf8"));
+  expect(control.launches).toEqual([]);
+  expect(control.observations).toHaveLength(2);
+  expect(control.ready).toBe(true);
+  // The host changes the configuration after the successor was reserved.
+  await writeFile(controls, JSON.stringify({ ...control, interrupt: false }));
+  await writeFile(
+    request,
+    JSON.stringify({ ...f.loop, worktreeRoot: resolve(f.root, "renamed-worktrees") }),
+  );
+  const mismatched = await invoke();
+  expect(mismatched.code, mismatched.output).toBe(0);
+  expect(mismatched.output).toContain('"status":"idle"');
+  const parked = JSON.parse(await readFile(resolve(f.runState, "cycle-12-stop-2.json"), "utf8"));
+  expect(parked).toMatchObject({
+    reason: "terminal-attempt-admission-mismatch",
+    attempts: 3,
+    history: f.history,
+  });
+  const done = JSON.parse(await readFile(controls, "utf8"));
+  expect(done.launches).toEqual([]);
+  expect(done.observations).toHaveLength(2);
+  expect(done.ready).toBe(false);
+  expect(await readFile(f.reservation, "utf8")).toBe(reservation);
+  for (const [path, bytes] of retained) expect(await readFile(path, "utf8"), path).toBe(bytes);
+  await f.unchanged();
+});
+
+it("ISS-215 local record I/O failure during admission is a host error that spends nothing", async () => {
+  const f = await terminalAdmissionFixture();
+  // Replace the claim file by a directory of the same name: an unreadable record, not a
+  // contradiction. Restore it byte for byte afterwards.
+  const moved = `${f.claimPath}.moved`;
+  await rename(f.claimPath, moved);
+  await mkdir(f.claimPath);
+  await expect(f.compose()).rejects.toSatisfy(
+    (error: unknown) =>
+      !(error instanceof QueueBlocked) && typeof (error as NodeJS.ErrnoException).code === "string",
+  );
+  expect(f.calls).toEqual([]);
+  await expect(readFile(f.reservation)).rejects.toMatchObject({ code: "ENOENT" });
+  await rm(f.claimPath, { recursive: true });
+  await rename(moved, f.claimPath);
+  const queue = await f.compose();
+  expect(queue.items[0]!.implementationAttempt).toBe(3);
+  expect(f.calls).toHaveLength(3);
   await f.unchanged();
 });
 
