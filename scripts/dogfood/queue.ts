@@ -3206,6 +3206,26 @@ function sameParticipantIdentity(left: QueueParticipant, right: QueueParticipant
   );
 }
 
+// ISS-214's delegated C1/C5 decision is deliberately not a loop-config field or
+// part of the consumed ISS-200 packet. These immutable incident records identify
+// the one lineage authorized by the decision, not a general budget extension.
+export const ISS214_REFRESH_REVIEW_ALLOWANCE = {
+  run: "m1-iss146-147-20260914T2325",
+  issue: "https://github.com/todd-skelton/orchestration-platform/issues/457",
+  item: "ISS-146:2",
+  stopMarker: "loop-stop:m1-iss146-147-20260914T2325:11:2",
+  authority: {
+    id: "5843781301",
+    url: "https://github.com/chase-sets/chase-sets/issues/4388#issuecomment-5843781301",
+    author: "todd-skelton",
+    bodySha256: "e5e7da4c1906db76e7fda992adeea569dc1e04bdfc90b81d0d515ef7d601400b",
+  },
+  reservationSha256: "b99fae683e1761e43fc9d7435d05b0a96fe03de32b6ed4254b54b89d7b1c60b7",
+  claimSha256: "9454103dc2741a5a6cf2172d71676cb21dcea6d9f80a3e468c0ef4e2aa3bfc9a",
+  stopSha256: "c892e9b43f867e3b7eb029655c97d0b9269ca229557a9b42c20359ad9b145d30",
+  publicationSha256: "5347c936c2363b1218a1fcf251b990697f036d19d0dad40f7125876ab73b314d",
+};
+
 export interface RepositoryQueueAdapterOptions {
   gitExecutable?: string;
   repository?: RepositoryAdapter;
@@ -3214,6 +3234,8 @@ export interface RepositoryQueueAdapterOptions {
   repair?: RepairAdapter;
   delivery?: DeliveryAdapter;
   deliveryPolicy?: DeliveryPolicyAdapter;
+  refreshReviewAllowance?: typeof ISS214_REFRESH_REVIEW_ALLOWANCE | null;
+  observeAuthority?: typeof observeIntegrationAuthority;
   assertExecutor?: (
     config: DeliveryConfig,
     executingRoot: string,
@@ -3243,6 +3265,143 @@ export function repositoryQueueAdapter(
   const state = config.stateDirectory;
 
   const readHistory = () => readQueueHistory(config);
+
+  const refreshReviewAllowance =
+    options.refreshReviewAllowance === undefined
+      ? ISS214_REFRESH_REVIEW_ALLOWANCE
+      : options.refreshReviewAllowance;
+  const exhausted = "integration-continuation-launch-exhausted";
+  // Read the incident's existing authorities in place. No backfill, rewritten
+  // reservation, source fingerprint change or runtime migration is involved.
+  const refreshReviewLineage = async (item: QueueItem, history: QueueParticipant[]) => {
+    try {
+      const grant = refreshReviewAllowance;
+      demand(
+        grant &&
+          config.run === grant.run &&
+          item.issue === grant.issue &&
+          item.id === grant.item &&
+          item.implementationAttempt === 2 &&
+          item.implementationAttemptCeiling === 4 &&
+          config.nativeLaunchCeiling === 64 &&
+          item.integrationContinuation?.spent?.launchLimit === 3,
+        exhausted,
+      );
+      const bound = async (path: string, digest: string) => {
+        const bytes = await readFile(path);
+        demand(createHash("sha256").update(bytes).digest("hex") === digest, exhausted);
+        return JSON.parse(bytes.toString("utf8"));
+      };
+      const reservation = await bound(
+        resolve(state, "../spent-resolution.json"),
+        grant.reservationSha256,
+      );
+      const packet = reservation.packet;
+      await bound(packet.spentResolution.claim, grant.claimSha256);
+      const stopParts = grant.stopMarker.split(":");
+      const runState = resolve(packet.attemptDirectory, "..");
+      const stopName = `cycle-${stopParts[2]}-stop-${stopParts[3]}`;
+      const stop = await bound(resolve(runState, `${stopName}.json`), grant.stopSha256);
+      const completed = await json(runState, `${stopName}-complete`);
+      demand(
+        reservation.directory === state &&
+          state === resolve(packet.attemptDirectory, "integration/spent-resolution") &&
+          item.source.stateDirectory === resolve(state, "source") &&
+          packet.run === grant.run &&
+          packet.issueUrl === grant.issue &&
+          packet.absoluteAttempt === 2 &&
+          packet.spentResolution.seed === item.base &&
+          reservation.launchLimit === 3 &&
+          reservation.initialHistory.length === 23 &&
+          queueDigest(config.initialHistory) === queueDigest(reservation.initialHistory) &&
+          stop.marker === grant.stopMarker &&
+          stop.reason === "unreviewed-delivery-source" &&
+          stop.attempts === 2 &&
+          stop.history.length === 26 &&
+          stop.selection.key === packet.issueKey &&
+          queueDigest(completed.selection) === queueDigest(stop.selection) &&
+          completed.stop === stop.stop &&
+          queueDigest(completed.history) === queueDigest(stop.history) &&
+          history.length >= 26 &&
+          queueDigest(history.slice(0, 26)) === queueDigest(stop.history),
+        exhausted,
+      );
+      const directory = resolve(item.source.stateDirectory, `refresh-${stop.selection.base}`);
+      const publication = await bound(
+        resolve(directory, "publication.json"),
+        grant.publicationSha256,
+      );
+      const source = await json(directory, "delivery-source");
+      demand(source.head === publication.head && source.reviewId === history[25]!.id, exhausted);
+      return { grant, directory, publication, source };
+    } catch {
+      throw new QueueBlocked(exhausted);
+    }
+  };
+
+  const admitRefreshReviewer = async (
+    item: QueueItem,
+    stage: QueueParticipant["stage"],
+    role: Role,
+    current: SourceConfig,
+    history: QueueParticipant[],
+  ) => {
+    demand(stage === "refresh" && role === "reviewer" && history.length === 26, exhausted);
+    // A launch call is a spend, even if its response is lost. Ordinary worker
+    // records resume observation; neither restart nor a mechanical retry relaunches.
+    demand((await optionalRecord(state, "refresh-review-grant")) === ABSENT, exhausted);
+    const { grant, directory, publication, source } = await refreshReviewLineage(item, history);
+    const active = await json(item.source.stateDirectory, "native-refresh");
+    const attempt = await json(state, "attempt");
+    const conflict = await optionalRecord(directory, "publication-conflict");
+    demand(
+      attempt.phase === "delivery" &&
+        attempt.head === publication.head &&
+        attempt.reviewId === source.reviewId &&
+        conflict !== ABSENT &&
+        conflict.head === publication.head &&
+        active.previousDirectory === directory &&
+        active.previousHead === publication.head &&
+        active.previousReview === source.reviewId &&
+        active.resolutionUsed === true &&
+        !active.conflict &&
+        SHA.test(active.head) &&
+        active.head !== publication.head &&
+        active.directory === resolve(item.source.stateDirectory, `refresh-${active.main}`) &&
+        current.stateDirectory === active.directory &&
+        current.mainBase === active.main &&
+        active.publicationRefresh?.head === publication.head &&
+        active.publicationRefresh.number === publication.number &&
+        active.publicationRefresh.url === publication.url,
+      exhausted,
+    );
+    let authority;
+    try {
+      authority = await (options.observeAuthority ?? observeIntegrationAuthority)(
+        grant.authority.url,
+      );
+    } catch {
+      throw new QueueBlocked(exhausted);
+    }
+    demand(
+      authority?.id === grant.authority.id &&
+        authority.url === grant.authority.url &&
+        authority.author === grant.authority.author &&
+        typeof authority.body === "string" &&
+        createHash("sha256").update(authority.body).digest("hex") === grant.authority.bodySha256,
+      exhausted,
+    );
+    await writeFile(
+      resolve(state, "refresh-review-grant.json"),
+      JSON.stringify({
+        grant,
+        authority,
+        directory: current.stateDirectory,
+        head: active.head,
+      }),
+      { flag: "wx", flush: true },
+    );
+  };
 
   const failAuthor = async (id: string, diagnostics?: string) => {
     const attempt = await json(state, "attempt");
@@ -3370,13 +3529,13 @@ export function repositoryQueueAdapter(
         "continuation-repair-not-authorized",
       );
       const priorHistory = await readHistory();
-      if (item.integrationContinuation?.spent)
-        demand(
-          priorHistory.length - config.initialHistory.length <
-            item.integrationContinuation.spent.launchLimit,
-          "integration-continuation-launch-exhausted",
-        );
       demand(priorHistory.length < config.nativeLaunchCeiling, "native-launch-ceiling-exhausted");
+      if (
+        item.integrationContinuation?.spent &&
+        priorHistory.length - config.initialHistory.length >=
+          item.integrationContinuation.spent.launchLimit
+      )
+        await admitRefreshReviewer(item, stage, role, current, priorHistory);
       const repairCompatiblePrompt =
         stage === "source" && role === "reviewer"
           ? `${prompt}\n\n${sourceReviewerReportPrompt(
@@ -3975,11 +4134,113 @@ export function repositoryQueueAdapter(
       });
       demand(
         !integrating ||
-          (originalCandidate.head === (integrating.spent?.candidate ?? accepted.head) &&
-            originalEvidence.reviewId === accepted.reviewId &&
+          (originalCandidate.head === (integrating.spent?.candidate ?? item.base) &&
             originalEvidence.reviewId === integrating.reviewId),
         "unreviewed-delivery-source",
       );
+      if (integrating) {
+        const reason = "unreviewed-delivery-source";
+        const consumed = await optionalRecord(state, "refresh-review-grant");
+        if (consumed !== ABSENT) {
+          const { grant } = await refreshReviewLineage(item, await readHistory());
+          demand(queueDigest(consumed.grant) === queueDigest(grant), exhausted);
+        }
+        if (accepted.reviewId === integrating.reviewId) demand(accepted.head === item.base, reason);
+        else {
+          // ISS-214: source provenance remains immutable while delivery accepts a
+          // newer DELTA. Only this continuation's selected refresh binds that review.
+          demand(
+            accepted.stateDirectory === item.source.stateDirectory &&
+              previousRefresh !== ABSENT &&
+              previousRefresh.directory ===
+                resolve(item.source.stateDirectory, `refresh-${previousRefresh.main}`),
+            reason,
+          );
+          const history = await readHistory();
+          const checkRefreshReview = async (directory: string, head: string, reviewId: string) => {
+            const pinned = await json(directory, "config");
+            const pair = await passingReview(item, directory, reason);
+            demand(
+              pinned.config?.run === item.source.run &&
+                pinned.config.issue === item.issue &&
+                pinned.config.repository === item.source.repository &&
+                pinned.config.stateDirectory === directory &&
+                directory ===
+                  resolve(item.source.stateDirectory, `refresh-${pinned.config.mainBase}`) &&
+                pair.candidate.head === head &&
+                pair.selected.attempt.id === reviewId &&
+                history.some(
+                  (p) =>
+                    p.id === reviewId &&
+                    p.item === item.id &&
+                    p.stage === "refresh" &&
+                    p.role === "reviewer" &&
+                    p.outcome === "passed",
+                ),
+              reason,
+            );
+          };
+          let directory = previousRefresh.directory;
+          if (previousRefresh.head === accepted.head) {
+            // The first ordinary integration records its empty continuation root;
+            // spent resolution records the inherited source directory instead.
+            if (
+              previousRefresh.previousDirectory === integrating.sourceDirectory ||
+              previousRefresh.previousDirectory === item.source.stateDirectory
+            )
+              demand(
+                previousRefresh.previousHead === originalCandidate.head &&
+                  previousRefresh.previousReview === integrating.reviewId,
+                reason,
+              );
+            else {
+              demand(typeof previousRefresh.previousDirectory === "string", reason);
+              await checkRefreshReview(
+                previousRefresh.previousDirectory,
+                previousRefresh.previousHead,
+                previousRefresh.previousReview,
+              );
+            }
+            demand(
+              (await native.git(delivery.worktree, [
+                "merge-base",
+                previousRefresh.previousHead,
+                accepted.head,
+              ])) === previousRefresh.previousHead,
+              reason,
+            );
+          } else {
+            // A later post-publication refresh may already be in flight on restart.
+            // The accepted publication remains its predecessor until the new PASS.
+            demand(
+              previousRefresh.previousHead === accepted.head &&
+                previousRefresh.previousReview === accepted.reviewId &&
+                previousRefresh.publicationRefresh?.head === accepted.head &&
+                typeof previousRefresh.previousDirectory === "string",
+              reason,
+            );
+            directory = previousRefresh.previousDirectory;
+          }
+          await checkRefreshReview(directory, accepted.head, accepted.reviewId);
+          const retained = await json(directory, "delivery-source");
+          demand(
+            retained.head === accepted.head &&
+              retained.reviewId === accepted.reviewId &&
+              retained.stateDirectory === directory &&
+              retained.run === delivery.run &&
+              retained.issue === delivery.issue &&
+              retained.repository === delivery.repository &&
+              retained.worktree === delivery.worktree &&
+              retained.reviewWorktree === delivery.reviewWorktree &&
+              (await native.git(delivery.worktree, [
+                "merge-base",
+                originalCandidate.head,
+                accepted.head,
+              ])) === originalCandidate.head,
+            reason,
+          );
+        }
+      }
       let sourceConfig: SourceConfig = integrating ? item.source : originalConfig.config;
       if (item.conflictContinuation || integrating)
         sourceConfig = { ...sourceConfig, inheritedWorkerRetry: !!flowRetries };

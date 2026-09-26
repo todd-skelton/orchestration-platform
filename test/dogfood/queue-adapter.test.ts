@@ -1,5 +1,5 @@
 import { execFile, spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -10,6 +10,7 @@ import { afterEach, expect, it, vi } from "vitest";
 import * as boardLoader from "../../scripts/planning/board-check.mjs";
 import { planningSelectionFixture, retainedFiles } from "./fixtures/planning-selection.js";
 import {
+  ISS214_REFRESH_REVIEW_ALLOWANCE,
   QueueBlocked,
   queueStep,
   queueUsage,
@@ -62,6 +63,29 @@ import {
 
 const roots: string[] = [];
 let timing: CaseTiming | undefined;
+
+it("ISS-214 binds native admission to the captured FINAL decision, without a live author probe", async () => {
+  const body = await readFile(
+    new URL("../../planning/evidence/ISS-214/authority-5843781301.md", import.meta.url),
+  );
+  const identity = JSON.parse(
+    await readFile(
+      new URL("../../planning/evidence/ISS-214/authority-5843781301.json", import.meta.url),
+      "utf8",
+    ),
+  );
+  expect(body.byteLength).toBe(identity.body_utf8_bytes);
+  const digest = createHash("sha256").update(body).digest("hex");
+  expect(digest).toBe(identity.body_sha256);
+  expect(ISS214_REFRESH_REVIEW_ALLOWANCE.authority).toEqual({
+    id: String(identity.id),
+    url: identity.html_url,
+    author: identity.author,
+    bodySha256: digest,
+  });
+  expect(body.toString("utf8")).toContain(`run \`${ISS214_REFRESH_REVIEW_ALLOWANCE.run}\``);
+  expect(body.toString("utf8")).toContain(ISS214_REFRESH_REVIEW_ALLOWANCE.stopMarker);
+});
 
 it("ISS-187 retains a saved run's source failure through native absolute-2 entry and replay", async () => {
   const f = await prerequisiteFixture();
