@@ -65,8 +65,16 @@ const roots: string[] = [];
 let timing: CaseTiming | undefined;
 
 it("ISS-214 binds native admission to the captured FINAL decision, without a live author probe", async () => {
-  const body = await readFile(
-    new URL("../../planning/evidence/ISS-214/authority-5843781301.md", import.meta.url),
+  // The pinned capture is LF; a core.autocrlf=true checkout (hosted Windows) reads CRLF.
+  // Production admission hashes the live API body, so only the fixture read normalizes.
+  const body = Buffer.from(
+    (
+      await readFile(
+        new URL("../../planning/evidence/ISS-214/authority-5843781301.md", import.meta.url),
+        "utf8",
+      )
+    ).replaceAll("\r\n", "\n"),
+    "utf8",
   );
   const identity = JSON.parse(
     await readFile(
