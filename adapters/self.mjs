@@ -104,7 +104,7 @@ function pinnedPlanning(executorRoot, planningRevision, gitExecutable = "git") {
   };
 }
 
-export async function selectCandidates({
+export async function previewWork({
   repository,
   executorRoot,
   planningRevision,
@@ -129,19 +129,28 @@ export async function selectCandidates({
       (issue) => issue.milestone === milestone.key && observed.open.has(issue.key),
     ),
   );
-  if (!earliest) return [];
-  return planning.roadmap.issues
+  if (!earliest) return { candidates: [], outstanding: [], scope: null };
+  const outstanding = [];
+  const candidates = planning.roadmap.issues
     .filter((candidate) => candidate.milestone === earliest.key)
     .sort((left, right) => left.key.localeCompare(right.key))
     .flatMap((issue) => {
       const item = observed.open.get(issue.key);
-      if (!item?.labels?.includes("ready")) return [];
+      if (!item) return [];
       const frontmatter = parseFrontmatter(planning.issueDrafts[issue.key], issue.file);
       const blockers = frontmatter.blocked_by ?? [];
-      return blockers.every((key) => observed.closed.has(key) && !observed.open.has(key))
-        ? [{ key: issue.key, number: item.number }]
-        : [];
+      const reasons = blockers
+        .filter((key) => !observed.closed.has(key) || observed.open.has(key))
+        .map((key) => `blocked-by:${key}`);
+      if (!item.labels?.includes("ready")) reasons.push("not-ready");
+      outstanding.push({ key: issue.key, number: item.number, title: item.title, reasons });
+      return reasons.length ? [] : [{ key: issue.key, number: item.number }];
     });
+  return { candidates, outstanding, scope: earliest };
+}
+
+export async function selectCandidates(input) {
+  return (await previewWork(input)).candidates;
 }
 
 export async function issueContext({

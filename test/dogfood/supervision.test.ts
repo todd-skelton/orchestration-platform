@@ -17,7 +17,7 @@ import {
 import { prerequisiteFixture, prerequisiteProof } from "./fixtures/prerequisite.js";
 import { ACCEPTED_REPLAN, replanPacket } from "./fixtures/continuation.js";
 import { sourceFailureFixture, historicalStops, snapshot } from "./fixtures/source-failure.js";
-import { selectCandidates } from "../../adapters/self.mjs";
+import { previewWork, selectCandidates } from "../../adapters/self.mjs";
 import * as boardLoader from "../../scripts/planning/board-check.mjs";
 import { planningSelectionFixture, retainedFiles } from "./fixtures/planning-selection.js";
 import {
@@ -1177,6 +1177,16 @@ describe("ready issue selection", () => {
     ).toEqual({ key: "ISS-106", number: 3 });
 
     snapshot.issues[0]!.state = "OPEN";
+    const preview = await previewWork({
+      repository: source.roadmap.repository,
+      planning: source,
+      board: snapshot,
+    });
+    expect(preview.candidates).toEqual([]);
+    expect(preview.outstanding.find((row) => row.key === "ISS-105")?.reasons).toContain(
+      "not-ready",
+    );
+    expect(preview.outstanding.some((row) => row.key === "ISS-200")).toBe(false);
     expect(
       await selectCandidates({
         repository: source.roadmap.repository,

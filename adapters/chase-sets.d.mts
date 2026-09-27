@@ -1,6 +1,9 @@
 import type { RepositoryAdapter } from "../scripts/dogfood/repository-adapter.js";
 
 export const selectCandidates: RepositoryAdapter["selectCandidates"];
+export function previewWork(
+  input: Parameters<RepositoryAdapter["selectCandidates"]>[0],
+): Promise<import("../scripts/dogfood/status.mjs").WorkPreview>;
 export const issueContext: RepositoryAdapter["issueContext"];
 export const branchName: RepositoryAdapter["branchName"];
 export const pullRequest: RepositoryAdapter["pullRequest"];

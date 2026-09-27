@@ -291,6 +291,12 @@ it("runs one selected issue through observation, completion and the next selecti
       .split(/\r?\n/)
       .map((row) => JSON.parse(row)),
   ).toMatchObject([
+    {
+      status: "supervisor-started",
+      run: "synthetic-command-run",
+      pid: expect.any(Number),
+      observedAt: expect.any(String),
+    },
     { status: "observing-author", cursor: 0 },
     { status: "complete", cursor: 1, participants: 2 },
     { status: "idle", run: "synthetic-command-run" },
@@ -457,7 +463,10 @@ it.each(["stale", "missing"] as const)(
 
     const resumed = await run(current.request);
     expect(resumed).toMatchObject({ code: 0, stderr: "" });
-    expect(JSON.parse(resumed.stdout)).toEqual({ status: "idle", run: "synthetic-command-run" });
+    expect(JSON.parse(resumed.stdout.trim().split("\n").at(-1)!)).toMatchObject({
+      status: "idle",
+      run: "synthetic-command-run",
+    });
     expect(await readFile(completionPath, "utf8")).toBe(completion);
     expect(await readFile(resolve(current.runState, "command-calls.log"), "utf8")).toBe(calls);
   },
@@ -468,7 +477,10 @@ it("reconciles external closure directly to exhausted idle without source or del
   for (let resume = 0; resume < 2; resume += 1) {
     const result = await run(current.request);
     expect(result).toMatchObject({ code: 0, stderr: "" });
-    expect(JSON.parse(result.stdout)).toEqual({ status: "idle", run: "synthetic-command-run" });
+    expect(JSON.parse(result.stdout.trim().split("\n").at(-1)!)).toMatchObject({
+      status: "idle",
+      run: "synthetic-command-run",
+    });
   }
   expect(await readFile(resolve(current.runState, "command-calls.log"), "utf8")).toBe(
     "issue:421\n",
@@ -707,6 +719,7 @@ it("production main offers the channel through the attached parent and never req
   expect(record.stderr).toBe("");
   expect(code).toBe(0);
   expect(record.lines).toMatchObject([
+    { status: "supervisor-started", run: "synthetic-command-run" },
     { status: "observing-author", cursor: 0 },
     { status: "complete", cursor: 1, participants: 2 },
     { status: "idle", run: "synthetic-command-run" },
@@ -775,6 +788,7 @@ it("production main composes the channel onto the queue's native adapter for a b
   expect(record.stderr).toBe("");
   expect(code).toBe(0);
   expect(record.lines).toMatchObject([
+    { status: "supervisor-started", run: "synthetic-command-run" },
     { status: "observing-author", cursor: 0 },
     { status: "complete", cursor: 1, participants: 2 },
     { status: "idle", run: "synthetic-command-run" },
