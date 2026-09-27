@@ -5,6 +5,8 @@ import { dirname, resolve } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, expect, it } from "vitest";
 import { formatStatus, observeStatus, observeSupervisor } from "../../scripts/dogfood/status.mjs";
+import { controlLoop } from "../../scripts/dogfood/control.mjs";
+import { requestPause, pauseBeforeSelection } from "../../scripts/dogfood/pause.mjs";
 
 const roots: string[] = [];
 const now = Date.parse("2026-09-27T12:00:00Z");
@@ -118,6 +120,31 @@ it("observes an active author without mutation and does not count polling/log gr
     progress: { event: "author-launched", ageSeconds: 60 },
     progressMeaning: expect.stringContaining("truncated"),
   });
+});
+
+it("reports pending and acknowledged operator pause separately from process suspension", async () => {
+  const f = await fixture();
+  const loop = JSON.parse(await readFile(f.config, "utf8"));
+  await requestPause(loop);
+  const pending = await f.observe();
+  expect(pending.status).toBe("running");
+  expect(pending.pause.requestedAt).toEqual(expect.any(String));
+  expect(pending.pause.acknowledgedAt).toBeNull();
+  expect(formatStatus(pending)).toContain("pending (current issue continues)");
+  await expect(pauseBeforeSelection(loop)).rejects.toThrow("pause-after-current");
+  await f.events({ status: "paused", run, pid: 10 });
+  const supervisor = async () => ({ status: "exited", pid: null });
+  const paused = await f.observe({ supervisor });
+  expect(paused.status).toBe("paused");
+  expect(paused.pause.acknowledgedAt).toEqual(expect.any(String));
+  await controlLoop(f.config, "resume", supervisor);
+  expect((await f.observe({ supervisor })).pause).toMatchObject({
+    requestedAt: null,
+    acknowledgedAt: null,
+  });
+  // A new request cannot inherit the preceding acknowledgement.
+  await requestPause(loop);
+  expect((await f.observe({ supervisor })).pause.acknowledgedAt).toBeNull();
 });
 
 it("observes reviewer and check waits, retaining PR/check/deploy links without claiming green", async () => {
@@ -425,11 +452,20 @@ it.skipIf(process.platform === "win32")(
     await symlink(f.root, resolve(pid, "cwd"));
     await writeFile(resolve(pid, "stat"), "100 (node) T 1 2 3");
     expect(await observeSupervisor(f.config, proc)).toEqual({ status: "paused", pid: 100 });
+    const alias = resolve(f.root, "alias.json");
+    await writeFile(alias, await readFile(f.config));
+    await writeFile(resolve(pid, "cmdline"), `node\0scripts/dogfood/supervise.mjs\0${alias}\0`);
+    expect(await observeSupervisor(f.config, proc)).toEqual({ status: "paused", pid: 100 });
+    await expect(
+      controlLoop(f.config, "start", (path) => observeSupervisor(path, proc)),
+    ).rejects.toThrow("supervisor-paused");
+    await put(alias, { run: "other-run", stateRoot: f.root });
+    expect(await observeSupervisor(f.config, proc)).toEqual({ status: "exited", pid: null });
     await writeFile(
       resolve(pid, "cmdline"),
       "node\0scripts/dogfood/supervise.mjs\0/another/config\0",
     );
-    expect(await observeSupervisor(f.config, proc)).toEqual({ status: "exited", pid: null });
+    expect(await observeSupervisor(f.config, proc)).toEqual({ status: "unavailable", pid: null });
     expect(await observeSupervisor(f.config, resolve(proc, "missing"))).toMatchObject({
       status: "unavailable",
     });

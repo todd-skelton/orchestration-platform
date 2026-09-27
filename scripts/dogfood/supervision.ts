@@ -7,6 +7,7 @@ import * as queue from "./queue.ts";
 import type { RepositoryAdapter } from "./repository-adapter.js";
 import { postedStopBody } from "./repository-adapter.mjs";
 import { resolveRouting } from "./routing.mjs";
+import { pauseBeforeSelection } from "./pause.mjs";
 // @ts-expect-error Node 24 executes this private TypeScript module directly.
 import { GithubCommandFailure } from "./github-command-failure.ts";
 
@@ -607,6 +608,7 @@ export async function nextCycle(
     }
 
     if (declaration) throw new QueueBlocked("prerequisite-not-admitted");
+    await pauseBeforeSelection(config);
     const readMain = async () => {
       try {
         const main = await adapter.currentMain(config, config.stableExecutorRoot);
@@ -630,6 +632,7 @@ export async function nextCycle(
       ...(config.opsAdmission === undefined ? {} : { opsAdmission: config.opsAdmission }),
     });
     if (!Array.isArray(candidates)) throw new QueueBlocked("malformed-repository-candidates");
+    await pauseBeforeSelection(config);
     const issue = candidates[0];
     if (!issue) return undefined;
     if (
@@ -656,6 +659,9 @@ export async function nextCycle(
       );
       throw error;
     }
+    // Selection reads can take time. Honor intent received during those reads
+    // before the new selection can be persisted or any successor dispatched.
+    await pauseBeforeSelection(config);
     return {
       selection: {
         cycle,

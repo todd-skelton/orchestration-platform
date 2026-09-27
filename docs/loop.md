@@ -951,8 +951,10 @@ The command reads the config, retained runtime records, the adjacent
 nor runtime or GitHub state. Human and JSON renderings use the same observation.
 
 `running` means an identified supervisor process exists, not that a worker is
-healthy. `paused` means Linux reports that process stopped (T/t), not an inferred
-operator pause. `exited` with saved work needs inspection before any separately
+healthy. `supervisor.status: paused` means Linux reports that process stopped (T/t).
+The top-level `paused` can also mean an acknowledged pause-after-current with
+an exited supervisor; the separate `pause` observation identifies that request.
+`exited` with saved work needs inspection before any separately
 authorized resume. `stopped` names the recorded stop and its operator action.
 If parking leaves no cycle completion and later selection goes idle, the retained
 stop stays visible as `stopped`; the historical last-log observation reports idle.
@@ -1010,6 +1012,76 @@ replace only process launch with argument capture and cover human/JSON flags and
 literal paths with spaces and shell metacharacters; they skip where `pwsh` is
 absent, including this worker. This observation supplies no host installation or
 live-start authority.
+
+### Pause after current work and change priorities
+
+ISS-137 addresses ISS-135's successor dispatch and ISS-110's manual same-run
+recovery. One operator can request a stop at the next issue boundary, without
+interrupting a worker. From Windows PowerShell 7, with the reviewed executor
+installed and the ordinary host authorization for this run:
+
+1. Inspect `./scripts/executor/status-loop.ps1 -Config <config> -Json`.
+   Read current work, supervisor liveness, retained stops and the current
+   selection preview; preview is not a reservation.
+2. Request `./scripts/executor/start-loop.ps1 -Config <config> -PauseAfterCurrent`.
+   This writes only operator intent; it starts neither bridges nor supervisors.
+   Repeat status until `pause.acknowledgedAt` is present and
+   `supervisor.status` is `exited`. While pending, current work continues through
+   ordinary delivery or item-stop handling. No active selection means immediate
+   pause at the next supervisor boundary. If already exited, an ordinary
+   authorized start observes the request and acknowledges at that boundary;
+   requesting pause alone does not start a stopped run. A host failure stays
+   `blocked` with a nonzero exit and leaves the request pending, not acknowledged.
+3. With the supervisor exited, make authorized changes to existing GitHub
+   priorities or readiness. Chase Sets orders eligible work in the selected
+   executable outcome by `priority:p0`, `p1`, `p2`, then `p3`, with lower issue
+   numbers first on ties. Refinement, routing, dependency, needs-label, ops
+   admission and configured target-milestone constraints still apply. Self uses
+   the earliest open milestone, open `ready` issues whose dependencies are
+   closed, then issue-key lexical order. Board card order and self priority
+   labels do not schedule work. Self draft/body, roadmap and project agreement
+   still have to pass the ordinary board gate.
+4. Run status again to preview the next eligible issue under current authority.
+   Unavailable GitHub or planning evidence is not a selection prediction. New
+   selections read current authority; priority edits never preempt active work.
+5. Explicitly resume with `./scripts/executor/start-loop.ps1 -Config <config> -Resume`
+   (with the usual `-VerifierWorktree` if needed). It first requires an observed
+   absent supervisor, clears only the operator request, then uses the existing
+   bridge, attached launcher and recovery path. A live or suspended supervisor,
+   or unknown liveness, refuses before clearing the request or starting another
+   supervisor. An ordinary start performs the same liveness check but never
+   clears a pause. One operator issues these commands sequentially; this is not
+   a concurrent-launch lock.
+
+The request is `<stateRoot>/<run>/operator/pause.json`; the supervisor writes
+`pause-acknowledgement.json` beside its scheduling records, bound to that request.
+Both are outside the checkout. Status shows pending intent and acknowledgement
+in human and JSON output without advancing progress timestamps. Restart keeps
+intent until explicit resume: saved active work resumes to its boundary, and
+completed or parked work does not dispatch a successor while paused. Resume
+does not edit selections, worker results, receipts, history, attempts, routing
+progress or spent allowances. A subsequent request has its own acknowledgement.
+No automatic restart follows idle, failure or pause. From the installed WSL
+checkout, `node scripts/dogfood/control.mjs <config> pause` provides the same
+request; its `start` and `resume` actions are launcher preflight only, not a
+second launch path.
+
+Target or other configuration changes require a stopped supervisor and an
+authorized restart, and remain subject to existing configuration compatibility
+checks. A saved selection is resumed or produces the existing typed scope stop;
+pause/resume never discards it to apply new priorities or a target change.
+Urgent interruption remains explicit host intervention: inspect both supervisor
+and child processes and preserve their work before the existing recovery path.
+An acknowledgement is not delivery, milestone-exit, installation or unpark
+authority, and a pending pause does not override a host stop's recovery rules.
+
+Disposable tests exercise the actual supervisor entry for pre-selection pause,
+requests during work, item and host stops, restart, explicit resume and retained
+history. Adapter fixtures change Chase Sets priorities between pause and resume
+while keeping ineligible and other-target issues excluded. PowerShell-gated
+tests capture the wrapper's process arguments; they skip when `pwsh` is absent.
+These tests change no live priorities or executor and do not exercise a live
+Windows/WSL start.
 
 ### Private request stream
 

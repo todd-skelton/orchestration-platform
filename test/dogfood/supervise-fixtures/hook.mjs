@@ -8,6 +8,7 @@ registerHooks({
       [
         "./queue.ts",
         "./supervision.ts",
+        "./pause.mjs",
         "./repository-adapter.mjs",
         "./dispatch-adapter.ts",
       ].includes(specifier) &&

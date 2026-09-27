@@ -10,7 +10,9 @@ param(
   [string]$Config = "/root/orchestration-m1/loop.json",
   # Clean Windows worktree contained in the incumbent ROOT container. Absent
   # means every native-db request is refused as unsupported.
-  [string]$VerifierWorktree = ""
+  [string]$VerifierWorktree = "",
+  [switch]$PauseAfterCurrent,
+  [switch]$Resume
 )
 
 $ErrorActionPreference = "Stop"
@@ -253,6 +255,23 @@ function Start-AttachedSupervisor {
 
 # Dot-sourced by tests for its functions only; the canonical start runs below.
 if ($MyInvocation.InvocationName -eq ".") { return }
+
+if ($PauseAfterCurrent -and $Resume) { throw "Choose pause or resume, not both" }
+# One operator on one host: observe before clearing intent or launching. Unknown
+# liveness refuses. No lock, scheduling-record edits or worker signals.
+$action = if ($PauseAfterCurrent) { "pause" } elseif ($Resume) { "resume" } else { "start" }
+$control = [System.Diagnostics.ProcessStartInfo]::new("C:\Windows\System32\wsl.exe")
+$control.UseShellExecute = $false
+$control.Environment["WSLENV"] = ""
+foreach ($argument in @("-d", "Ubuntu", "--exec",
+  "/root/orchestration-m1/tools/node-v24.15.0-linux-x64/bin/node",
+  "/root/orchestration-m1/repo/scripts/dogfood/control.mjs", $Config, $action)) {
+  $control.ArgumentList.Add($argument)
+}
+$check = [System.Diagnostics.Process]::Start($control)
+$check.WaitForExit()
+if ($check.ExitCode -ne 0) { exit $check.ExitCode }
+if ($PauseAfterCurrent) { exit 0 }
 
 Start-PoolBridges -Bridge (Join-Path $PSScriptRoot "pool-bridge.mjs")
 $code = Start-AttachedSupervisor `

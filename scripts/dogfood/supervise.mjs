@@ -25,6 +25,7 @@ import {
 } from "./supervision.ts";
 import { loadRepositoryAdapter } from "./repository-adapter.mjs";
 import { codexAdapter } from "./dispatch-adapter.ts";
+import { PauseRequested } from "./pause.mjs";
 
 // ISS-164: the private request stream between the attached Windows parent and
 // this supervisor. stdout carries status lines and requests; stdin carries
@@ -529,6 +530,12 @@ async function main() {
         queueAdapter = undefined;
         validatedExecutor = undefined;
       } catch (error) {
+        if (error instanceof PauseRequested) {
+          process.stdout.write(
+            `${JSON.stringify({ status: "paused", run: loop.run, pid: process.pid, observedAt: new Date().toISOString(), pause: error.pause })}\n`,
+          );
+          break;
+        }
         const outcome = await stop(error, retained?.attempts);
         if (outcome.scope === "item" && !loop.acceptedReplan && !active?.prerequisite) {
           active = undefined;
