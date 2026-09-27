@@ -238,9 +238,10 @@ export async function observeStatus(configPath, options = {}) {
         attempts.push({ ...value, path });
     }
   attempts.sort((a, b) => a.candidateAttempt - b.candidateAttempt);
-  const attempt = attempts.at(-1);
+  const attempt =
+    (completed && attempts.findLast((row) => row.phase === "complete")) || attempts.at(-1);
   const historicalPublications = [];
-  for (const prior of attempts.slice(0, -1)) {
+  for (const prior of attempts.filter((row) => row !== attempt)) {
     for (const stage of ["source", "repair"]) {
       const retained = await read(resolve(dirname(prior.path), stage, "publication.json"));
       if (retained)
@@ -439,7 +440,7 @@ export async function observeStatus(configPath, options = {}) {
 
 export function formatStatus(value) {
   const lines = [
-    `${value.run} — ${value.status}; ${value.phase}`,
+    `${value.run} - ${value.status}; ${value.phase}`,
     `${value.repository}; scope ${value.scope.targetMilestone ?? "adapter default"}; ${value.completeness}`,
     `Observed ${value.observedAt}; supervisor ${value.supervisor.status} (PID ${value.supervisor.pid ?? "unknown"}; worker health unknown)`,
     `Current ${value.current ? `${value.current.key} attempt ${value.current.attempt ?? "unknown"} ${value.current.url}` : "none evidenced"}`,
@@ -470,7 +471,7 @@ export function formatStatus(value) {
   for (const row of value.links.deploy)
     lines.push(`  Deploy ${row.status}/${row.conclusion ?? "unknown"} ${row.url}`);
   for (const row of value.historicalPublications)
-    lines.push(`Prior attempt ${row.attempt} PR ${row.url} (historical)`);
+    lines.push(`Other attempt ${row.attempt} PR ${row.url} (historical)`);
   lines.push(
     `Log ${value.paths.log}`,
     `Trace ${value.paths.workerTrace ?? "unknown"}`,

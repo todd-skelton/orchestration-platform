@@ -942,8 +942,10 @@ From Windows PowerShell 7, using this repository's read-only wrapper:
 
 `-ExecutorRoot` optionally selects the WSL checkout containing the status command;
 it defaults to `/root/orchestration-m1/repo`. The wrapper uses Ubuntu and the
-existing executor tool paths. It does not start the pool bridge, source the
-mutating launch script, install code, dispatch workers or restart a run.
+existing executor tool paths. WSL `--exec` invokes `/usr/bin/env` with a literal
+tool PATH and the absolute Node executable, script, config and optional `--json`
+as separate arguments; no shell reparses them. It does not start the pool bridge,
+source the mutating launch script, install code, dispatch workers or restart a run.
 The command reads the config, retained runtime records, the adjacent
 `supervisor.log`, the process table and GitHub. It writes neither Git metadata
 nor runtime or GitHub state. Human and JSON renderings use the same observation.
@@ -952,6 +954,8 @@ nor runtime or GitHub state. Human and JSON renderings use the same observation.
 healthy. `paused` means Linux reports that process stopped (T/t), not an inferred
 operator pause. `exited` with saved work needs inspection before any separately
 authorized resume. `stopped` names the recorded stop and its operator action.
+If parking leaves no cycle completion and later selection goes idle, the retained
+stop stays visible as `stopped`; the historical last-log observation reports idle.
 `idle/exited` needs both an absent supervisor and a matching run's idle evidence;
 idle is not milestone completion. An inaccessible process table, private worker
 PID namespace, missing records or unavailable WSL/GitHub remain unavailable.
@@ -969,7 +973,9 @@ Repeated delivery-result identities retain their first
 timestamp; when the log is truncated, progress uses retained launch timestamps
 only because the first result observation may be outside the read window. Worker trace
 paths and historical PRs remain useful even when their process or GitHub cannot
-be observed. Check and deploy links are observations, not required-green or
+be observed. A completed cycle prefers its completed attempt for PR, trace and
+launch-time evidence, even if a later unfinished attempt remains on disk.
+Check and deploy links are observations, not required-green or
 verified-deployment verdicts.
 
 The preview is current, never reserved: each adapter reads one authority snapshot
@@ -982,23 +988,28 @@ stale planning. Operator-blocked admitted work makes an idle run `incomplete`,
 with issue links and reasons. No outstanding work alone does not prove milestone
 exit, so the command never manufactures `complete`.
 
-Observed read-only check, 2026-09-27T12:36:11.641Z: from the ISS-136 author
-checkout, `node scripts/dogfood/status.mjs
+Observed read-only check, 2026-09-27T13:16:30.208Z: from the ISS-136 corrective
+author checkout, using the wrapper's tool PATH and absolute Node executable,
+`node scripts/dogfood/status.mjs
 /root/orchestration-m2/loop-replanned.json --json` read the preserved detached
 `m2-payout-fees-replanned-20260913` run, repository `chase-sets/chase-sets`, target
 155. It found a completed saved cycle and a matching legacy `idle` log line with
 no timestamp. Supervisor liveness was **unavailable** because this sandbox has
 a private PID namespace. GitHub preview failed with `error connecting to
 api.github.com`; completeness, current checks and deploy were therefore unknown.
-The timestamped evidence reported was the attempt-2 author launch at
-2026-09-13T15:21:42.182Z (age 1199669 seconds at observation), not a delivery
+The timestamped evidence reported was the completed attempt-1 reviewer launch at
+2026-09-13T14:40:26.891Z (age 1204563 seconds at observation), not a delivery
 completion time. Its trace was under
-`/root/orchestration-m2/runtime/m2-payout-fees-replanned-20260913/cs-7821-attempt-2/source/author-74b8f6a5-307b-4988-983e-7fe20df875e6.jsonl`;
-the log was `/root/orchestration-m2/supervisor.log`. Historical attempt 1 retained
-[PR #7973](https://github.com/chase-sets/chase-sets/pull/7973). No active M2
-validation was interrupted and no preserved bytes were changed. The Windows
-wrapper was not executed from this Linux worker; this observation supplies no
-host installation or live-start authority.
+`/root/orchestration-m2/runtime/m2-payout-fees-replanned-20260913/cs-7821-attempt-1/source/reviewer-2d363840-702f-4e53-a925-f3e45f7834d0.jsonl`;
+the log was `/root/orchestration-m2/supervisor.log`. The completed attempt retained
+[PR #7973](https://github.com/chase-sets/chase-sets/pull/7973) and its saved
+PR Required check link; those saved results do not establish current GitHub state.
+No active M2 validation was interrupted and no preserved bytes were changed. The Windows
+wrapper was not executed from this Linux worker. The PowerShell-gated argv tests
+replace only process launch with argument capture and cover human/JSON flags and
+literal paths with spaces and shell metacharacters; they skip where `pwsh` is
+absent, including this worker. This observation supplies no host installation or
+live-start authority.
 
 ### Private request stream
 

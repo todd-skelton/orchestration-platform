@@ -1,6 +1,8 @@
+import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
+import { promisify } from "node:util";
 import { afterEach, expect, it } from "vitest";
 import { formatStatus, observeStatus, observeSupervisor } from "../../scripts/dogfood/status.mjs";
 
@@ -172,6 +174,22 @@ it("shows a dead supervisor with saved work and a stop's recorded action", async
       operatorAction: "Restore provider access, then authorize resume.",
     },
   });
+  // A parked item need not have a cycle completion. Keep its stop visible
+  // even after selection finds no more work, alongside the historical idle.
+  await put(resolve(f.state, "cycle-1-stop-1.json"), {
+    reason: "continuation-failed",
+    body: "Inspect the failed continuation and explicitly unpark.",
+  });
+  await put(resolve(f.state, "cycle-1-stop-1-complete.json"), { stop: 1 });
+  await f.events({ run, status: "idle" });
+  const parked = await f.observe({ supervisor });
+  expect(parked).toMatchObject({
+    status: "stopped",
+    current: { key: "cs-7820" },
+    stop: { reason: "continuation-failed" },
+    lastLogObservation: { status: "idle", observedAt: null },
+  });
+  expect(formatStatus(parked)).toContain("Last run log: idle at unknown time");
 });
 
 it("reports provider waiting and OS suspension, not healthy delivery progress", async () => {
@@ -229,6 +247,133 @@ it("keeps scoped idle incomplete when current admitted work needs an operator", 
     await f.observe({ supervisor: async () => ({ status: "exited", pid: null }) }),
   ).toMatchObject({ status: "stopped", stop: { reason: "current-main-unavailable" } });
 });
+
+it("uses the completed attempt's publication and trace after cycle completion", async () => {
+  const f = await fixture();
+  const attemptPath = resolve(f.source, "../attempt.json");
+  await put(attemptPath, {
+    ...JSON.parse(await readFile(attemptPath, "utf8")),
+    phase: "complete",
+    stateDirectory: f.source,
+  });
+  await put(resolve(f.source, "publication.json"), { number: 12, url: "delivered-pr" });
+  const later = resolve(f.state, "cs-7820-attempt-2/source");
+  await put(resolve(later, "../attempt.json"), {
+    run,
+    issue,
+    candidateAttempt: 2,
+    phase: "source",
+  });
+  await put(resolve(later, "author-attempt.json"), {
+    trace: "unfinished.jsonl",
+    launchedAt: now - 5_000,
+  });
+  await put(resolve(later, "publication.json"), { number: 13, url: "other-pr" });
+  const publication = async (_loop: unknown, saved: { url: string }) => ({
+    status: "observed",
+    pr: saved.url,
+    checks: [],
+    deploy: [],
+  });
+  expect(await f.observe({ publication })).toMatchObject({
+    current: { attempt: 2 },
+    paths: { workerTrace: "unfinished.jsonl" },
+  });
+  await put(resolve(f.state, "cycle-1-complete.json"), { selection: { cycle: 1 } });
+  const before = await snapshot(f.root);
+  const result = await f.observe({ publication });
+  expect(result).toMatchObject({
+    current: null,
+    phase: "cycle-complete",
+    paths: { attempt: attemptPath, workerTrace: resolve(f.source, "author.jsonl") },
+    progress: { ageSeconds: 60 },
+    links: { pr: "delivered-pr" },
+    historicalPublications: [{ attempt: 2, url: "other-pr" }],
+  });
+  expect(formatStatus(result).split("\n")[0]).toBe(`${run} - running; cycle-complete`);
+  expect(formatStatus(result)).toContain("Other attempt 2 PR other-pr (historical)");
+  expect(await snapshot(f.root)).toEqual(before);
+});
+
+it.for([false, true])(
+  "passes literal WSL argv without a shell through PowerShell (JSON: %s)",
+  async (json, context) => {
+    const exec = promisify(execFile);
+    try {
+      await exec("pwsh", [
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        "$PSVersionTable.PSVersion.Major",
+      ]);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return context.skip();
+      throw error;
+    }
+    const root = await mkdtemp(resolve(tmpdir(), "status-powershell-"));
+    roots.push(root);
+    const source = await readFile(
+      resolve(import.meta.dirname, "../../scripts/executor/status-loop.ps1"),
+      "utf8",
+    );
+    const launch = "$child = [System.Diagnostics.Process]::Start($info)";
+    expect(source).toContain(launch);
+    // Stop only at the process boundary: exercise the wrapper's actual
+    // PowerShell argument construction without starting WSL or a live run.
+    const script = resolve(root, "capture.ps1");
+    await writeFile(
+      script,
+      source.replace(
+        launch,
+        `
+        [pscustomobject]@{
+          executable = $info.FileName
+          arguments = @($info.ArgumentList)
+          shell = $info.UseShellExecute
+          stdout = $info.RedirectStandardOutput
+          wslenv = $info.Environment["WSLENV"]
+        } | ConvertTo-Json -Compress
+        exit 0
+      `,
+      ),
+    );
+    const config = '/root/status fixtures/loop;$PATH "quoted".json';
+    const executor = '/root/executor fixtures/with;$@ "quotes"';
+    const { stdout, stderr } = await exec(
+      "pwsh",
+      [
+        "-NoProfile",
+        "-NonInteractive",
+        "-File",
+        script,
+        "-Config",
+        config,
+        "-ExecutorRoot",
+        executor,
+        ...(json ? ["-Json"] : []),
+      ],
+      { windowsHide: true, env: { ...process.env, WSLENV: "STATUS_FIXTURE" } },
+    );
+    expect(stderr).toBe("");
+    expect(JSON.parse(stdout)).toEqual({
+      executable: "C:\\Windows\\System32\\wsl.exe",
+      arguments: [
+        "-d",
+        "Ubuntu",
+        "--exec",
+        "/usr/bin/env",
+        "PATH=/root/orchestration-m1/tools/git/bin:/root/orchestration-m1/tools/node-v24.15.0-linux-x64/bin:/root/orchestration-m1/tools/gh_2.93.0_linux_amd64/bin:/usr/local/bin:/usr/bin:/bin",
+        "/root/orchestration-m1/tools/node-v24.15.0-linux-x64/bin/node",
+        `${executor}/scripts/dogfood/status.mjs`,
+        config,
+        ...(json ? ["--json"] : []),
+      ],
+      shell: false,
+      stdout: true,
+      wslenv: "",
+    });
+  },
+);
 
 it("keeps inaccessible runtime/process/GitHub and absent progress timestamps unknown", async () => {
   const f = await fixture();
