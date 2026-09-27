@@ -796,6 +796,8 @@
     {
       "key": "ISS-217",
       "file": "planning/drafts/ISS-217.md",
+      "title": "Retain issue-observation diagnostics and resume a reconciled observation stop on one restart",
+      "summary": "Retain sanitized issue and lifecycle diagnostics and resume a reconciled issue-observation stop on one restart without selected-read retry.",
       "milestone": "M1",
       "blockedBy": []
     }
