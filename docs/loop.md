@@ -159,6 +159,14 @@ only a proved pre-send failure plus fresh absence permits one additional post
 in that call. A comment HTTP 5xx is uncertain, never pre-send. Exhausted reads
 or an unresolved post retain the non-parking unknown stop and pending intent;
 saved records and restart reconciliation are unchanged.
+ISS-217's candidate repair retains the sanitized `GithubCommandFailure.message`
+category for failed issue commands, and `malformed issue observation` for acquired
+responses that fail parsing or shape checks. The existing diagnostic reaches the
+stop body's bounded `Diagnostic:` and blocked output's `diagnostics`. A failed
+learning-note lifecycle also reports its `QueueBlocked.diagnostics` as
+`lifecycleDiagnostics` beside `lifecycleReason`; unrelated errors retain
+`learning-note-state-unknown` without a diagnostic. Non-note reads remain
+single-shot, and pre-selection board/census and current-main refusals are unchanged.
 Published delivery, including a pending publication intent whose response may
 have been lost, resumes its existing reconciliation, checks and mutations; it
 does not rewrite an in-flight publication merely because main moved. An exact
@@ -530,6 +538,18 @@ issue follows ordinary recovery and all its checks. Unavailable or unknown
 issue observations and mismatched identity do not establish closure.
 This cycle completion recognizes external closure; it does not establish
 native delivery, hosted green, merge, deployment or milestone exit evidence (ISS-144).
+
+ISS-217's candidate repair lets one host restart continue the saved open cycle
+after reconciling an unfinished `issue-observation-unavailable` run-stop note.
+Fresh issue/comment observation must establish marker acceptance before the
+existing completion is written; unknown note state still stops. Repeated entry
+skips that completed note without another comment or changes to retained attempts
+and participants. Item stops, other run stops (including ungranted gate stops),
+external closure and fresh delivery failures retain their existing paths. This
+removes only the second restart recorded in ISS-217, not the host-owned first
+restart. These diagnostics and continuation remain planned until this candidate
+lands after independent review and hosted bootstrap; installation and preserved-run
+start require separate host authority.
 
 A matching native source-author FAIL parks the item through ordinary stop
 handling and advances to unrelated ready work. Before reconstructing a saved source, supervision validates the

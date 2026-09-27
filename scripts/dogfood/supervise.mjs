@@ -363,7 +363,7 @@ let repositoryAdapter;
 let queueAdapter;
 let supervisor;
 
-function blocked(error, lifecycleReason) {
+function blocked(error, lifecycleReason, lifecycleDiagnostics) {
   const reason = error instanceof QueueBlocked ? error.reason : "queue-internal-error";
   const diagnostics =
     error instanceof QueueBlocked
@@ -381,6 +381,7 @@ function blocked(error, lifecycleReason) {
       reason,
       ...(diagnostics ? { diagnostics } : {}),
       ...(lifecycleReason ? { lifecycleReason } : {}),
+      ...(lifecycleDiagnostics ? { lifecycleDiagnostics } : {}),
     })}\n`,
   );
   process.exitCode = 1;
@@ -424,6 +425,7 @@ async function stop(error, retainedAttempts) {
       reason,
       lifecycleReason:
         stopError instanceof QueueBlocked ? stopError.reason : "learning-note-state-unknown",
+      lifecycleDiagnostics: stopError instanceof QueueBlocked ? stopError.diagnostics : undefined,
     };
   }
 }
@@ -544,13 +546,13 @@ async function main() {
           validatedExecutor = undefined;
           continue;
         }
-        blocked(error, outcome.lifecycleReason);
+        blocked(error, outcome.lifecycleReason, outcome.lifecycleDiagnostics);
         break;
       }
     }
   } catch (error) {
     const outcome = await stop(error);
-    blocked(error, outcome.lifecycleReason);
+    blocked(error, outcome.lifecycleReason, outcome.lifecycleDiagnostics);
   } finally {
     admission?.close();
   }
