@@ -194,7 +194,12 @@ function runnable(issue, snapshot, targetMilestone, opsAdmission) {
   );
 }
 
-function candidatesFromAuthority(snapshot, targetMilestone, opsAdmission) {
+function candidatesFromAuthority(
+  snapshot,
+  targetMilestone,
+  opsAdmission,
+  diagnostic = (row) => process.stdout.write(`${JSON.stringify(row)}\n`),
+) {
   if (!snapshot.window) return [];
   return snapshot.issues
     .filter((issue) => runnable(issue, snapshot, targetMilestone, opsAdmission))
@@ -204,12 +209,48 @@ function candidatesFromAuthority(snapshot, targetMilestone, opsAdmission) {
         const routing = parseRoutingMarker(issue.body);
         return [{ key: `cs-${issue.number}`, number: issue.number, routing }];
       } catch (error) {
-        process.stdout.write(
-          `${JSON.stringify({ status: "not-runnable", issue: issue.number, ...(targetMilestone === undefined ? {} : { target: targetMilestone }), reason: error.reason })}\n`,
-        );
+        diagnostic({
+          status: "not-runnable",
+          issue: issue.number,
+          ...(targetMilestone === undefined ? {} : { target: targetMilestone }),
+          reason: error.reason,
+        });
         return [];
       }
     });
+}
+
+// ISS-136: one authority snapshot and the same selector, without its stdout diagnostics.
+export async function previewWork({ repository, executorRoot, targetMilestone, opsAdmission }) {
+  validateOpsAdmission({ repository, targetMilestone, opsAdmission });
+  const snapshot = await authority(repository, executorRoot, targetMilestone);
+  const diagnostics = new Map();
+  const candidates = candidatesFromAuthority(snapshot, targetMilestone, opsAdmission, (row) =>
+    diagnostics.set(row.issue, row.reason),
+  );
+  const outstanding = snapshot.issues
+    .filter(
+      (issue) =>
+        (targetMilestone === undefined
+          ? snapshot.window && issue.milestone?.id === snapshot.window.id
+          : issue.milestone?.number === targetMilestone) &&
+        (!isOps(issue) || opsAdmitted(issue, targetMilestone, opsAdmission)),
+    )
+    .map((issue) => {
+      const reasons = issue.labels
+        .map((label) => label.name)
+        .filter((name) => name.toLowerCase().startsWith("status:needs-"));
+      reasons.push(
+        ...issue.blockedBy
+          .filter((blocker) => blocker.state !== "closed")
+          .map((blocker) => `blocked-by:#${blocker.number}`),
+      );
+      if (!snapshot.product.isRunnableRefined(issue)) reasons.push("not-runnable-refined");
+      if (issue.milestone?.id !== snapshot.window?.id) reasons.push("outside-current-window");
+      if (diagnostics.has(issue.number)) reasons.push(diagnostics.get(issue.number));
+      return { key: `cs-${issue.number}`, number: issue.number, title: issue.title, reasons };
+    });
+  return { candidates, outstanding, scope: snapshot.window ?? null };
 }
 
 export async function selectCandidates({

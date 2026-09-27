@@ -237,6 +237,12 @@ it.skipIf(process.platform === "win32")(
     await expect(chaseSets.selectCandidates({ ...input, targetMilestone: 155 })).resolves.toEqual(
       [],
     );
+    const idlePreview = await chaseSets.previewWork({ ...input, targetMilestone: 155 });
+    expect(idlePreview).toMatchObject({
+      candidates: [],
+      outstanding: [{ number: 7820, reasons: ["status:needs-operator"] }],
+    });
+    expect(idlePreview.outstanding.some((row) => row.number === 4382)).toBe(false);
     current.issues.push(
       current.issue(7822, 155, [], [4382]),
       current.issue(7823, 155, ["status:needs-replan"]),
@@ -244,6 +250,14 @@ it.skipIf(process.platform === "win32")(
       current.issue(7825, 155),
     );
     await current.save();
+    const preview = await chaseSets.previewWork({ ...input, targetMilestone: 155 });
+    expect(preview.candidates).toEqual(
+      await chaseSets.selectCandidates({ ...input, targetMilestone: 155 }),
+    );
+    expect(preview.outstanding.map((row) => row.number)).toEqual([7820, 7822, 7823, 7825]);
+    expect(preview.outstanding.find((row) => row.number === 7822)?.reasons).toContain(
+      "blocked-by:#4382",
+    );
     const config = {
       repository: input.repository,
       stableExecutorRoot: input.executorRoot,

@@ -494,9 +494,33 @@ it.each([false, true])(
       });
       return;
     }
-    expect(JSON.parse(first.stdout)).toEqual({ status: "idle", run: f.loop.run });
-    expect(first.stderr).toBe("");
-    expect(await command()).toEqual(first);
+    const replay = await command();
+    for (const result of [first, replay]) {
+      const lines = result.stdout
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      expect(lines).toMatchObject([
+        {
+          status: "supervisor-started",
+          run: f.loop.run,
+          pid: expect.any(Number),
+          observedAt: expect.any(String),
+        },
+        {
+          status: "idle",
+          run: f.loop.run,
+          pid: expect.any(Number),
+          observedAt: expect.any(String),
+        },
+      ]);
+      expect(lines[0].pid).toBe(lines[1].pid);
+      expect(Number.isFinite(Date.parse(lines[0].observedAt))).toBe(true);
+      expect(Date.parse(lines[1].observedAt)).toBeGreaterThanOrEqual(
+        Date.parse(lines[0].observedAt),
+      );
+      expect(result.stderr).toBe("");
+    }
     // The real supervisor and retained queue/delivery consumers ran. The command
     // effect fixture logs workspace composition and native launch/mutation entries.
     expect(await readFile(resolve(runState, "command-calls.log"), "utf8")).toBe(

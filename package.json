@@ -16,7 +16,8 @@
     "verify:bootstrap": "node scripts/verify/bootstrap.mjs",
     "planning:check": "node scripts/planning/check.mjs",
     "planning:board-check": "node scripts/planning/board-check.mjs",
-    "loop:supervise": "node scripts/dogfood/supervise.mjs"
+    "loop:supervise": "node scripts/dogfood/supervise.mjs",
+    "loop:status": "node scripts/dogfood/status.mjs"
   },
   "devDependencies": {
     "@types/node": "26.2.0",

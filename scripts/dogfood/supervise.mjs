@@ -374,6 +374,9 @@ function blocked(error, lifecycleReason) {
     process.stderr.fd,
     `${JSON.stringify({
       status: "blocked",
+      run: loop?.run,
+      pid: process.pid,
+      observedAt: new Date().toISOString(),
       reason,
       ...(diagnostics ? { diagnostics } : {}),
       ...(lifecycleReason ? { lifecycleReason } : {}),
@@ -432,6 +435,9 @@ async function main() {
     const executingRoot = await realpath(resolve(import.meta.dirname, "../.."));
     loop = JSON.parse(await readFile(resolve(process.argv[2]), "utf8"));
     validateLoopConfig(loop);
+    process.stdout.write(
+      `${JSON.stringify({ status: "supervisor-started", run: loop.run, pid: process.pid, observedAt: new Date().toISOString() })}\n`,
+    );
     admission = createNativeDbAdmission(loop.run, process.stdin, process.stdout);
     repositoryAdapter = await loadRepositoryAdapter(loop.adapter, executingRoot);
     process.env.PATH = `${dirname(loop.gitExecutable)}${delimiter}${process.env.PATH ?? ""}`;
@@ -442,7 +448,9 @@ async function main() {
         if (!active) {
           active = await nextCycle(loop, executingRoot, supervisor, repositoryAdapter);
           if (!active) {
-            process.stdout.write(`${JSON.stringify({ status: "idle", run: loop.run })}\n`);
+            process.stdout.write(
+              `${JSON.stringify({ status: "idle", run: loop.run, pid: process.pid, observedAt: new Date().toISOString() })}\n`,
+            );
             break;
           }
           await persistCycle(loop, active);
@@ -503,7 +511,9 @@ async function main() {
         if (started.status === "closed" && !(await hasStartedDelivery(config)))
           throw new QueueBlocked("closed-issue-without-delivery");
         const result = await queueStep(config, queueAdapter);
-        process.stdout.write(`${JSON.stringify(result)}\n`);
+        process.stdout.write(
+          `${JSON.stringify({ ...result, run: loop.run, pid: process.pid, observedAt: new Date().toISOString() })}\n`,
+        );
         if (result.status === "advancing-attempt") continue;
         if (result.status.startsWith("observing-")) {
           await new Promise((done) => setTimeout(done, 10_000));

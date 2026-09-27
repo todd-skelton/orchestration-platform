@@ -34,7 +34,9 @@ export async function waitForProvider(
   probe: ProviderProbe,
   clock = { now: Date.now, pause },
   report: (status: object) => void = (status) =>
-    process.stdout.write(`${JSON.stringify(status)}\n`),
+    process.stdout.write(
+      `${JSON.stringify({ ...status, pid: process.pid, observedAt: new Date().toISOString() })}\n`,
+    ),
 ) {
   const deadline =
     clock.now() + (config.providerOutageCeilingMs ?? DEFAULT_PROVIDER_OUTAGE_CEILING_MS);
