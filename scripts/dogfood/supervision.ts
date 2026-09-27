@@ -5,6 +5,7 @@ import { promisify } from "node:util";
 // @ts-expect-error Node 24 executes this private TypeScript composition directly.
 import * as queue from "./queue.ts";
 import type { RepositoryAdapter } from "./repository-adapter.js";
+import { postedStopBody } from "./repository-adapter.mjs";
 import { resolveRouting } from "./routing.mjs";
 // @ts-expect-error Node 24 executes this private TypeScript module directly.
 import { GithubCommandFailure } from "./github-command-failure.ts";
@@ -965,7 +966,7 @@ export async function stopCycle(
     cycle.selection,
     {
       marker: intent.marker,
-      body: `${intent.body}${unpark ? ` To unpark, ${unpark}.` : ""}`,
+      body: postedStopBody(intent.body, unpark),
     },
     adapter,
   );

@@ -17,6 +17,10 @@ export interface RepositoryCandidate {
   routing?: import("./routing.mjs").RoutingSelection;
 }
 
+export function postedStopBody(body: string, unpark?: string) {
+  return `${body}${unpark ? ` To unpark, ${unpark}.` : ""}`;
+}
+
 export interface RepositoryIssueContext {
   routing?: import("./routing.mjs").RoutingSelection;
   title: string;

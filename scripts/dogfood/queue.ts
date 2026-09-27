@@ -3,6 +3,7 @@ import { execFile } from "node:child_process";
 import { mkdir, readFile, readdir, realpath, rename, writeFile } from "node:fs/promises";
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
+import { unparkInstructions as selfUnparkInstructions } from "../../adapters/self.mjs";
 import {
   continuationSlug,
   observeIntegrationAuthority,
@@ -57,6 +58,7 @@ import {
   validateLocations,
 } from "./repair-policy.mjs";
 import {
+  postedStopBody,
   repositoryDeliveryPolicy,
   validateOpsAdmission,
   type OpsAdmission,
@@ -723,6 +725,7 @@ async function admitTerminalAttempt(
       terminal.stop === Number(stop) &&
       terminal.selection?.cycle === Number(cycle) &&
       terminal.reason === "continuation-failed" &&
+      typeof terminal.body === "string" &&
       terminal.attempts === 2 &&
       terminal.selection?.key === selected.key &&
       terminal.selection.number === selected.number &&
@@ -909,7 +912,9 @@ async function admitTerminalAttempt(
   check(
     receipt.id === packet.terminalReceiptUrl.split("issuecomment-")[1] &&
       receipt.url === packet.terminalReceiptUrl &&
-      receipt.body === terminal.body &&
+      // Admission is self-only and continuation-failed is always an item stop.
+      // Derive the poster's full body without calling park or changing readiness.
+      receipt.body === postedStopBody(terminal.body, selfUnparkInstructions) &&
       Number.isFinite(Date.parse(receipt.capturedAt)),
   );
   check(

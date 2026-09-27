@@ -17,6 +17,7 @@ import { resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
 import { afterEach, expect, it } from "vitest";
+import { unparkInstructions } from "../../adapters/self.mjs";
 import type { Adapter } from "../../scripts/dogfood/flow.js";
 import { githubDeliveryAdapter } from "../../scripts/dogfood/delivery-adapter.mjs";
 import { DeliveryBlocked } from "../../scripts/dogfood/delivery.mjs";
@@ -364,7 +365,7 @@ async function exhaustedFixture(shape: Shape = "conflict", spentRetry = false, a
       throw new Error("unused pullRequest");
     },
     requiredChecks: () => ["Node 24 / ubuntu-latest"],
-    park: () => "add the `ready` label after acting on the note",
+    park: () => unparkInstructions,
     mergeMethod: () => ({ method: "squash" }),
     afterMerge: () => {},
   };
@@ -484,7 +485,10 @@ async function terminalAdmissionFixture() {
     planningRevision: f.main,
   };
   const terminalMarker = `loop-stop:${RUN}:11:3`;
-  const terminalBody = `<!-- ${terminalMarker} --> Synthetic hosted failure after two attempts.`;
+  // ISS-216: reproduce only the recorded byte relationship, with synthetic identities
+  // and visibly synthetic content, never an altered real receipt.
+  const terminalBody =
+    `<!-- ${terminalMarker} --> Synthetic hosted failure after two attempts. `.padEnd(1222, "S");
   await f.put(f.runState, "cycle-11-stop-3", {
     selection: terminalSelection,
     stop: 3,
@@ -553,7 +557,7 @@ async function terminalAdmissionFixture() {
     id: "9002",
     url: packet.terminalReceiptUrl,
     author: "synthetic-loop",
-    body: terminalBody,
+    body: `${terminalBody} To unpark, add the \`ready\` label after acting on the note.`,
     capturedAt: authority.capturedAt,
   };
   const observe = async (url: string) => {
@@ -622,6 +626,8 @@ async function terminalAdmissionFixture() {
 
 it("ISS-215 production composition: red without delegation, green only for fresh attempt 3; interruption/restart is one reservation", async () => {
   const f = await terminalAdmissionFixture();
+  expect(Buffer.byteLength(f.terminalBody)).toBe(1222);
+  expect(Buffer.byteLength(f.receipt.body)).toBe(1281);
   const { terminalAttemptAdmission: omitted, ...without } = f.loop;
   await expect(f.compose(without as typeof f.loop)).rejects.toMatchObject({
     reason: "integration-continuation-required",
@@ -663,6 +669,138 @@ it("ISS-215 production composition: red without delegation, green only for fresh
   expect(f.calls).toHaveLength(3);
   await f.unchanged();
 });
+
+it.each([
+  "absent suffix",
+  "wrong suffix",
+  "edited original",
+  "another stop",
+  "truncated",
+  "extra byte",
+])("ISS-216 rejects only the changed receipt body: %s", async (fault) => {
+  const f = await terminalAdmissionFixture();
+  const original = f.receipt.body;
+  const bodies: Record<string, string> = {
+    "absent suffix": f.terminalBody,
+    "wrong suffix": original.replace("`ready`", "`other`"),
+    "edited original": original.replace("Synthetic hosted", "Synthetic edited"),
+    "another stop": original.replace(f.packet.terminalMarker, `loop-stop:${RUN}:11:2`),
+    truncated: original.slice(0, -1),
+    "extra byte": `${original} `,
+  };
+  f.receipt.body = bodies[fault]!;
+  const receiptBytes = JSON.stringify(f.receipt);
+  f.policy.park = () => {
+    throw new Error("admission must not park or change labels");
+  };
+  await expect(f.compose()).rejects.toMatchObject({
+    reason: "terminal-attempt-admission-mismatch",
+  });
+  expect(f.calls).toEqual([
+    f.packet.authorityUrl,
+    f.packet.terminalReceiptUrl,
+    "synthetic-publication",
+  ]);
+  await expect(readFile(f.reservation)).rejects.toMatchObject({ code: "ENOENT" });
+  expect(await readdir(f.runState)).not.toContain(`${KEY.toLowerCase()}-attempt-3`);
+  expect(await readdir(f.loop.worktreeRoot)).not.toContain(`${KEY.toLowerCase()}-attempt-3-source`);
+  expect(JSON.stringify(f.receipt)).toBe(receiptBytes);
+  await f.unchanged();
+  // Same state and bindings; restore ONLY body to prove no other guard caused refusal.
+  f.receipt.body = original;
+  const validReceipt = JSON.stringify(f.receipt);
+  const queue = await f.compose();
+  expect(queue.items[0]!.implementationAttempt).toBe(3);
+  expect(queue.initialHistory).toEqual(f.history);
+  expect(JSON.stringify(f.receipt)).toBe(validReceipt);
+  await f.unchanged();
+});
+
+it.each(["retained", "future", "no-suffix"])(
+  "ISS-216 production poster and admission round-trip with interrupted posting: %s self stop",
+  async (shape) => {
+    const f = await terminalAdmissionFixture();
+    const cycle = {
+      selection: { ...f.terminalSelection, cycle: shape === "retained" ? 11 : 12 },
+      initialHistory: f.history,
+    };
+    const stop = shape === "retained" ? 3 : 1;
+    const reason = shape === "no-suffix" ? "provider-unavailable" : "continuation-failed";
+    const comments: string[] = [];
+    let parks = 0;
+    const repository = {
+      ...f.policy,
+      park: () => {
+        parks++;
+        return unparkInstructions;
+      },
+    };
+    const supervisor: SupervisionAdapter = {
+      currentMain: async () => f.main,
+      issue: async () => ({ state: "OPEN", key: KEY, labels: [], comments }),
+      removeReady: async () => {
+        throw new Error("unexpected label mutation");
+      },
+      close: async () => {
+        throw new Error("unexpected closure");
+      },
+      comment: async (_config, _number, body) => {
+        comments.push(body);
+        throw new Error("synthetic lost comment response");
+      },
+    };
+    await expect(
+      stopCycle(f.loop, cycle, reason, 2, supervisor, repository, undefined, stop),
+    ).rejects.toThrow("synthetic lost comment response");
+    const stopPath = resolve(f.runState, `cycle-${cycle.selection.cycle}-stop-${stop}.json`);
+    const stopBytes = await readFile(stopPath, "utf8");
+    const terminal = JSON.parse(stopBytes);
+    if (shape === "retained") {
+      expect(comments).toEqual([f.receipt.body]);
+      await stopCycle(f.loop, cycle, reason, 2, supervisor, repository, undefined, stop);
+    } else {
+      await expect(reconcilePendingStop(f.loop, cycle, supervisor, repository)).resolves.toEqual({
+        scope: shape === "no-suffix" ? "run" : "item",
+        reason,
+      });
+    }
+    expect(comments).toHaveLength(1);
+    expect(comments[0]).toBe(
+      terminal.body +
+        (shape === "no-suffix"
+          ? ""
+          : " To unpark, add the `ready` label after acting on the note."),
+    );
+    expect(parks).toBe(shape === "no-suffix" ? 0 : 2);
+    expect(await readFile(stopPath, "utf8")).toBe(stopBytes);
+    f.packet.terminalMarker = terminal.marker;
+    f.receipt.body = comments[0]!;
+    const receiptBytes = JSON.stringify(f.receipt);
+    f.policy.park = () => {
+      throw new Error("admission must not park");
+    };
+    if (shape === "no-suffix") {
+      // A host stop has no suffix, but it cannot establish a terminal item admission.
+      await expect(f.compose()).rejects.toMatchObject({
+        reason: "terminal-attempt-admission-mismatch",
+      });
+      await expect(readFile(f.reservation)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(f.calls).toEqual([]);
+    } else {
+      const queue = await f.compose();
+      expect(queue.items[0]!.implementationAttempt).toBe(3);
+      expect(queue.initialHistory).toEqual(f.history);
+      const saved = await readFile(f.reservation, "utf8");
+      expect(JSON.parse(saved).receipt).toEqual(f.receipt);
+      expect(await f.compose()).toEqual(queue);
+      expect(f.calls).toHaveLength(3);
+      expect(await readFile(f.reservation, "utf8")).toBe(saved);
+    }
+    expect(JSON.stringify(f.receipt)).toBe(receiptBytes);
+    expect(await readFile(stopPath, "utf8")).toBe(stopBytes);
+    await f.unchanged();
+  },
+);
 
 it.each([
   "author",
@@ -1298,6 +1436,7 @@ it.each(["pass", "author-fail", "review-fail", "host-unknown", "dead", "gate-fai
   async (mode) => {
     const f = await terminalAdmissionFixture();
     const q = await f.compose();
+    const reservation = await readFile(f.reservation, "utf8");
     const item = q.items[0]!;
     const launches: string[] = [];
     const effects: string[] = [];
@@ -1537,6 +1676,8 @@ it.each(["pass", "author-fail", "review-fail", "host-unknown", "dead", "gate-fai
     );
     expect(await readdir(f.runState)).not.toContain(`${KEY.toLowerCase()}-attempt-4`);
     expect((await adapter().history()).slice(0, 26)).toEqual(f.history);
+    expect(f.calls).toHaveLength(3);
+    expect(await readFile(f.reservation, "utf8")).toBe(reservation);
     await f.unchanged();
   },
 );
