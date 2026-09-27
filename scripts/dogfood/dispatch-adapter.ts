@@ -1,11 +1,11 @@
 import { execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 // @ts-expect-error Node 24 executes this private TypeScript composition directly.
-import { QueueBlocked } from "./flow.ts";
+import { QueueBlocked, authorScratchRoot } from "./flow.ts";
 import type { Adapter, Attempt, Config, Role, Terminal } from "./flow.js";
 import { MAX_TERMINAL_SUMMARY_LENGTH, terminalSummary } from "./terminal-summary.mjs";
 
@@ -206,8 +206,9 @@ const artifact = (config: Config, role: Role, launch: string, suffix: string) =>
   resolve(config.stateDirectory, `${role}-${launch}.${suffix}`);
 const attemptArtifact = (attempt: Attempt, suffix: string) =>
   `${attempt.trace.slice(0, -"jsonl".length)}${suffix}`;
-export const authorTemporaryRoot = (config: Config) =>
-  resolve(config.stateDirectory, "author-temp");
+// One producer for the scratch path: the prompt names it, the sandbox and
+// TEMP/TMP/TMPDIR grant it, and launch creates it.
+export const authorTemporaryRoot: (config: Config) => string = authorScratchRoot;
 const toml = (value: string) => JSON.stringify(value);
 // POSIX copies only these exact spellings. Windows environment names are
 // case-insensitive, so an allowed alias is copied once under this canonical spelling.
@@ -589,6 +590,11 @@ export function codexAdapter(gitExecutable = "git", now = Date.now): Adapter {
     },
     async launch(role, config, prompt) {
       await admitLaunch(config, role);
+      // ISS-146: the author's sandbox writable root and TEMP/TMP/TMPDIR point at
+      // this external scratch path, so it must exist before every launch:
+      // initial, corrective and retried. Existing contents are evidence and
+      // are never cleared.
+      if (role === "author") await mkdir(authorTemporaryRoot(config), { recursive: true });
       const launch = randomUUID();
       await writeFile(artifact(config, role, launch, "prompt.txt"), prompt, { flag: "wx" });
       await writeFile(

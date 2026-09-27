@@ -28,6 +28,7 @@ import {
   completeCycle,
   prerequisiteOwners,
   isItemStopReason,
+  MAX_STOP_DETAIL_LENGTH,
   nextCycle as nativeNextCycle,
   persistCycle,
   reconcilePendingStop,
@@ -1735,6 +1736,45 @@ it.each(["current-main-unavailable", "routing-row-unconfigured"])(
     expect(observation.comments[0]).toContain("no recorded author or reviewer launches");
     expect(observation.comments[0]).toContain("after 0 implementation attempts");
     expect(observation.labels).toContain("ready");
+  },
+);
+
+// ISS-146: #7766's stop note cut its gate diagnostic at 500 characters and hid
+// the failing subcheck. The note now carries the gate failure output's artifact
+// paths, exact command and sanitized runner tail, still under one finite bound.
+it.each([MAX_STOP_DETAIL_LENGTH, MAX_STOP_DETAIL_LENGTH + 1])(
+  "quotes a complete delivery gate diagnostic in the stop note up to the bound: %i",
+  async (length) => {
+    const root = await mkdtemp(resolve(tmpdir(), "supervision-gate-detail-"));
+    roots.push(root);
+    const config = loop(root);
+    const cycle = selected();
+    const observation: IssueObservation = {
+      state: "OPEN",
+      key: "ISS-105",
+      labels: ["ready"],
+      comments: [],
+    };
+    const log = resolve(root, "runtime", "source", "gate-0abcfcbf", "candidate.log");
+    const header = `Complete delivery gate evidence: full runner output ${JSON.stringify(log)}; terminal ${JSON.stringify(resolve(log, "../candidate-terminal.json"))} binds exact head ${"a".repeat(40)}. Command: {"executable":"pnpm","argv":["run","check:structure"],"cwd":${JSON.stringify(resolve(log, "../tree"))}}. Exit: {"code":1,"signal":null}.\nDiagnostic tail (last 400 of 9000 characters, sanitized):\n[structure] subcheck stray-files failed: unexpected ["bounded-contexts/marketplace/artifacts/jpeg-corrective"]\n`;
+    expect(header.length).toBeGreaterThan(500);
+    const diagnostic = header + "x".repeat(length - header.length);
+    expect(diagnostic).toHaveLength(length);
+    await persistCycle(config, cycle);
+    await stopCycle(
+      config,
+      cycle,
+      "gate-attribution-unknown:check:structure",
+      1,
+      fakeAdapter(observation),
+      repositoryPolicy,
+      diagnostic,
+    );
+    const note = observation.comments[0]!;
+    expect(note).toContain(JSON.stringify(diagnostic.slice(0, MAX_STOP_DETAIL_LENGTH)));
+    expect(note.includes(JSON.stringify(diagnostic))).toBe(length === MAX_STOP_DETAIL_LENGTH);
+    expect(note).toContain("subcheck stray-files failed");
+    expect(note).toContain(JSON.stringify(JSON.stringify(log)).slice(1, -1));
   },
 );
 

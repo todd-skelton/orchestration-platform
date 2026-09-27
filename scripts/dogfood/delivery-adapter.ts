@@ -1,9 +1,10 @@
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, open, readFile, realpath, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, realpath, writeFile, type FileHandle } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import { promisify } from "node:util";
 import { RepairBlocked, parseReview } from "./repair-policy.mjs";
+import { SetupOutputSanitizer } from "./setup-adapter.mjs";
 import { loadBoardSnapshot, normalizeBody, planningKeyOf } from "../planning/board-check.mjs";
 import { checkCandidateBoard } from "../planning/candidate-board.mjs";
 import { resolvePnpmLauncher } from "../pnpm-launcher.mjs";
@@ -28,7 +29,30 @@ const SHA = /^[a-f0-9]{40}$/;
 const DIGEST = /^[a-f0-9]{64}$/;
 const ATTEMPT_ID = /^[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}$/;
 
+interface CommandExit {
+  code: number | null;
+  signal: string | null;
+  startup?: string;
+}
+
 // ISS-152: pipe directly to a runtime file, not execFile's bounded output buffer.
+function spawnToFile(
+  command: GateFailureEvidence["command"],
+  file: FileHandle,
+  env?: Record<string, string>,
+) {
+  return new Promise<CommandExit>((done) => {
+    const child = spawn(command.executable, command.argv, {
+      cwd: command.cwd,
+      windowsHide: true,
+      stdio: ["ignore", file.fd, file.fd],
+      ...(env ? { env: { ...process.env, ...env } } : {}),
+    });
+    child.once("error", (error) => done({ code: null, signal: null, startup: error.message }));
+    child.once("close", (code, signal) => done({ code, signal }));
+  });
+}
+
 async function gateCommand(
   command: GateFailureEvidence["command"],
   log: string,
@@ -36,22 +60,165 @@ async function gateCommand(
 ) {
   const file = await open(log, "wx");
   try {
-    return await new Promise<{ code: number | null; signal: string | null; startup?: string }>(
-      (done) => {
-        const child = spawn(command.executable, command.argv, {
-          cwd: command.cwd,
-          windowsHide: true,
-          stdio: ["ignore", file.fd, file.fd],
-          ...(env ? { env: { ...process.env, ...env } } : {}),
-        });
-        child.once("error", (error) => done({ code: null, signal: null, startup: error.message }));
-        child.once("close", (code, signal) => done({ code, signal }));
-      },
-    );
+    return await spawnToFile(command, file, env);
   } finally {
     await file.sync();
     await file.close();
   }
+}
+
+// ISS-146: the same offline, frozen, no-scripts install as setup and the base
+// control, so a disposable checkout carries nothing the commit did not declare.
+const OFFLINE_INSTALL = ["install", "--offline", "--frozen-lockfile", "--ignore-scripts"];
+
+// The failure output that reaches stop notes and correction prompts quotes at
+// most this many trailing characters of `candidate.log`, after the same byte
+// sanitizer setup applies to its captured output. The complete log stays in
+// the delivery runtime.
+export const GATE_DIAGNOSTIC_TAIL_LENGTH = 1200;
+
+// One executed gate observation, bound to the exact head in
+// `candidate-terminal.json`. `command` is what actually ran or failed to start:
+// the disposable checkout, the dependency install, the gate runner, or the
+// executor's internal board call. `candidate.log` holds only that command's
+// output, so gateDiagnostics parses exactly what the runner printed.
+export interface GateTerminal extends CommandExit {
+  head: string;
+  command: GateFailureEvidence["command"];
+  /** The disposable checkout that ran the gate; absent for an internal call. */
+  tree?: string;
+  install?: CommandExit & { log: string };
+  /** Executor-side failure around the runner: checkout, install, cleanup, I/O. */
+  host?: string;
+  /** The checkout no longer described the exact head after the gate ran. */
+  drift?: string;
+}
+
+export function sanitizeGateText(value: string) {
+  const bytes: number[] = [];
+  const sanitizer = new SetupOutputSanitizer((byte) => bytes.push(byte));
+  sanitizer.write(Buffer.from(value));
+  sanitizer.end();
+  return Buffer.from(bytes).toString("utf8");
+}
+
+export function gateFailureOutput(
+  log: string,
+  terminal: string,
+  result: GateTerminal,
+  raw: string,
+) {
+  const plain = raw.replace(/\u001b\[[0-9;]*m/g, "");
+  const tail = sanitizeGateText(plain.slice(-GATE_DIAGNOSTIC_TAIL_LENGTH));
+  const exit = { code: result.code, signal: result.signal };
+  return (
+    `Complete delivery gate evidence: full runner output ${JSON.stringify(log)}; terminal ${JSON.stringify(terminal)} binds exact head ${result.head}, the executed command and working directory, exit, dependency install and cleanup. Command: ${JSON.stringify(result.command)}. Exit: ${JSON.stringify(exit)}.` +
+    (result.startup ? ` Startup failure: ${sanitizeGateText(result.startup)}.` : "") +
+    (result.host ? ` Executor failure: ${sanitizeGateText(result.host)}.` : "") +
+    `\nDiagnostic tail (last ${tail.length} of ${plain.length} characters, sanitized):\n${tail}`
+  );
+}
+
+async function committedGate(
+  config: DeliveryConfig,
+  name: string,
+  head: string,
+  gitExecutable: string,
+  directory: string,
+  log: FileHandle,
+): Promise<GateTerminal> {
+  // Short fixed names keep hosted Windows checkouts inside the path budget;
+  // the exclusive `candidate.log` already refuses re-entry into this directory.
+  const tree = resolve(directory, "tree");
+  const checkout = {
+    executable: gitExecutable,
+    argv: ["worktree", "add", "--detach", tree, head],
+    cwd: config.repositoryRoot,
+  };
+  const terminal: GateTerminal = { head, command: checkout, code: null, signal: null, tree };
+  const status = async () => ({
+    head: await git(gitExecutable, config, ["rev-parse", "HEAD"], tree),
+    changes: await git(gitExecutable, config, ["status", "--porcelain"], tree),
+  });
+  let added = false;
+  try {
+    await run(gitExecutable, checkout.argv, checkout.cwd);
+    added = true;
+    const launcher = await resolvePnpmLauncher();
+    const installLog = resolve(directory, "candidate-install.log");
+    const install = {
+      executable: launcher.executable,
+      argv: [...launcher.prefixArgs, ...OFFLINE_INSTALL],
+      cwd: tree,
+    };
+    const installed = await gateCommand(install, installLog);
+    terminal.install = { ...installed, log: installLog };
+    if (installed.code !== 0 || installed.signal || installed.startup) {
+      Object.assign(terminal, installed, {
+        command: install,
+        host: `dependency install failed in the disposable checkout; output: ${installLog}`,
+      });
+      return terminal;
+    }
+    const afterInstall = await status();
+    if (afterInstall.head !== head || afterInstall.changes !== "") {
+      terminal.command = install;
+      terminal.host = `dependency install changed the disposable checkout: HEAD ${afterInstall.head}\n${afterInstall.changes}`;
+      return terminal;
+    }
+    terminal.command = {
+      executable: launcher.executable,
+      argv: [...launcher.prefixArgs, "run", name],
+      cwd: tree,
+    };
+    Object.assign(terminal, await spawnToFile(terminal.command, log));
+    const afterGate = await status();
+    if (afterGate.head !== head || afterGate.changes !== "")
+      terminal.drift = `disposable gate checkout drifted after the gate: HEAD ${afterGate.head}\n${afterGate.changes}`;
+  } catch (error) {
+    terminal.host = String(error);
+    await log.write(`${String(error)}\n`);
+  } finally {
+    if (added) {
+      try {
+        await git(gitExecutable, config, ["worktree", "remove", "--force", tree]);
+      } catch (error) {
+        terminal.host = `disposable gate checkout cleanup failed: ${String(error)}`;
+      }
+    }
+  }
+  return terminal;
+}
+
+// The self board gate reads the committed candidate through Git objects and
+// the live board; it never needs a checkout and no base control can attribute it.
+async function internalBoardGate(
+  config: DeliveryConfig,
+  head: string,
+  gitExecutable: string,
+  log: FileHandle,
+): Promise<GateTerminal> {
+  const terminal: GateTerminal = {
+    head,
+    command: {
+      executable: "internal:checkCandidateBoard",
+      argv: [config.worktree, head, gitExecutable],
+      cwd: config.worktree,
+    },
+    code: 0,
+    signal: null,
+  };
+  try {
+    await checkCandidateBoard(config.worktree, head, gitExecutable);
+  } catch (error) {
+    terminal.code = 1;
+    const failure = error as { stdout?: string; stderr?: string; stack?: string };
+    await log.write(
+      `${[failure.stdout, failure.stderr, failure.stack ?? String(error)].filter(Boolean).join("\n")}\n`,
+    );
+    await stagedFile(config, "board-failure.log", String(error));
+  }
+  return terminal;
 }
 
 const STATIC_SCOPED_GATE = "verify:static:scoped";
@@ -935,58 +1102,54 @@ export function githubDeliveryAdapter(
         );
       }
       const log = resolve(directory, "candidate.log");
-      let command: GateFailureEvidence["command"];
+      const terminalPath = resolve(directory, "candidate-terminal.json");
+      const boardGate =
+        name === "planning:board-check" &&
+        config.repository === "todd-skelton/orchestration-platform";
       try {
-        const launcher = await resolvePnpmLauncher();
-        command = {
-          executable: launcher.executable,
-          argv: [...launcher.prefixArgs, "run", name],
-          cwd: config.worktree,
-        };
-      } catch (error) {
-        throw new DeliveryBlocked(`gate-host-failed:${name}`, String(error));
-      }
-      try {
-        if (
-          name === "planning:board-check" &&
-          config.repository === "todd-skelton/orchestration-platform"
-        ) {
-          // This gate observes the live board and cannot be attributed by a local base control.
-          try {
-            await checkCandidateBoard(config.worktree, head, gitExecutable);
-          } catch (error) {
-            await stagedFile(config, `board-failure.log`, String(error));
-            return { status: "failed", output: String(error) };
-          }
-          if (!(await verifyWorkspace(config, head)))
-            throw new DeliveryBlocked("candidate-workspace-drift");
-          return { status: "passed" };
-        }
-        const terminalPath = resolve(directory, "candidate-terminal.json");
-        let saved;
+        let saved: GateTerminal | undefined;
         try {
           saved = JSON.parse(await readFile(terminalPath, "utf8"));
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
         }
-        if (saved) {
-          if (saved.head !== head) throw new DeliveryBlocked("gate-failure-head-drift");
-          command = saved.command;
+        if (saved && saved.head !== head) throw new DeliveryBlocked("gate-failure-head-drift");
+        let result = saved;
+        if (!result) {
+          // ISS-146: the gate observes the exact commit, never the author's
+          // working directory; `candidate.log` is opened exclusively so an
+          // interrupted observation without its terminal stays incomplete.
+          const file = await open(log, "wx");
+          try {
+            result = boardGate
+              ? await internalBoardGate(config, head, gitExecutable, file)
+              : await committedGate(config, name, head, gitExecutable, directory, file);
+          } finally {
+            await file.sync();
+            await file.close();
+          }
         }
-        const result = saved ?? (await gateCommand(command, log));
         await stagedFile(
           config,
           `${directory.split(/[\\/]/).at(-1)}/candidate-terminal.json`,
-          JSON.stringify({ head, command, ...result }),
+          JSON.stringify(result),
         );
         const output = await readFile(log, "utf8");
+        if (result.drift)
+          throw new DeliveryBlocked(
+            "candidate-workspace-drift",
+            `${result.drift}; evidence: ${log}; terminal: ${terminalPath}`,
+          );
         if (!(await verifyWorkspace(config, head)))
           throw new DeliveryBlocked("candidate-workspace-drift");
-        if (result.code === 0 && !result.signal && !result.startup) return { status: "passed" };
-        const diagnostics =
-          result.code !== null && !result.signal && !result.startup
-            ? gateDiagnostics(name, output)
-            : [];
+        const ran = result.code !== null && !result.signal && !result.startup && !result.host;
+        if (ran && result.code === 0) return { status: "passed" };
+        const failure = gateFailureOutput(log, terminalPath, result, output);
+        if (boardGate) {
+          // Live board evidence cannot be attributed by a local base control.
+          return { status: "failed", output: failure };
+        }
+        const diagnostics = ran ? gateDiagnostics(name, output) : [];
         // Tie every diagnostic to a file in the committed candidate, not an external path.
         let committed = diagnostics.length > 0;
         for (const diagnostic of diagnostics) {
@@ -1004,10 +1167,11 @@ export function githubDeliveryAdapter(
         }
         const evidence: GateFailureEvidence = {
           head,
-          command,
+          command: result.command,
           log,
           diagnostics,
           cause:
+            result.host ||
             result.startup ||
             (/(?:tsc|prettier|vitest): (?:not found|command not found)|'(?:tsc|prettier|vitest)' is not recognized/.test(
               output,
@@ -1018,7 +1182,7 @@ export function githubDeliveryAdapter(
                 ? "diagnostic"
                 : "unknown",
         };
-        return { status: "failed", output: result.startup ?? output, evidence };
+        return { status: "failed", output: failure, evidence };
       } catch (error) {
         if (error instanceof DeliveryBlocked) throw error;
         if ((error as NodeJS.ErrnoException).code === "EEXIST")
@@ -1073,7 +1237,7 @@ export function githubDeliveryAdapter(
         const install = await gateCommand(
           {
             executable: launcher.executable,
-            argv: [...launcher.prefixArgs, "install", "--offline", "--frozen-lockfile"],
+            argv: [...launcher.prefixArgs, ...OFFLINE_INSTALL],
             cwd: tree,
           },
           resolve(directory, "base-install.log"),

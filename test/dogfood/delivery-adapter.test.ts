@@ -1,6 +1,7 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
 import {
+  appendFile,
   mkdir,
   mkdtemp,
   open,
@@ -12,7 +13,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { dirname, resolve } from "node:path";
+import { basename, dirname, resolve } from "node:path";
 import { PassThrough } from "node:stream";
 import { promisify } from "node:util";
 import { afterEach, expect, it, vi } from "vitest";
@@ -29,6 +30,7 @@ import {
 } from "../../scripts/dogfood/supervise.mjs";
 import {
   assertControllerExecutor,
+  GATE_DIAGNOSTIC_TAIL_LENGTH,
   gateDiagnostics,
   githubDeliveryAdapter,
 } from "../../scripts/dogfood/delivery-adapter.mjs";
@@ -50,6 +52,7 @@ import { repositoryDeliveryPolicy } from "../../scripts/dogfood/repository-adapt
 import { isItemStopReason } from "../../scripts/dogfood/supervision.js";
 import { MAX_TERMINAL_SUMMARY_LENGTH } from "../../scripts/dogfood/terminal-summary.mjs";
 import * as boardSnapshot from "../../scripts/planning/board-check.mjs";
+import { expectedBoardItems } from "../../scripts/planning/board-check.mjs";
 import {
   queueStep,
   queueUsage,
@@ -532,7 +535,7 @@ it.each(["missing", "cancelled"])(
   },
 );
 
-const gateFaults = vi.hoisted(() => ({ cleanup: false }));
+const gateFaults = vi.hoisted(() => ({ cleanup: false as false | "base" | "tree" }));
 const workspaceGit = vi.hoisted(() => vi.fn<(args: string[], cwd: string) => string>());
 const workspaceCommands = vi.hoisted(() => ({
   observe: undefined as ((args: string[], cwd: string) => void) | undefined,
@@ -550,8 +553,13 @@ vi.mock("node:child_process", async (original) => {
     ) => {
       if (executable === "workspace-git")
         return Promise.resolve({ stdout: workspaceGit(args, String(options.cwd)), stderr: "" });
-      if (gateFaults.cleanup && args[0] === "worktree" && args[1] === "remove")
-        return Promise.reject(new Error("fixture control cleanup failed"));
+      if (
+        gateFaults.cleanup &&
+        args[0] === "worktree" &&
+        args[1] === "remove" &&
+        basename(String(args.at(-1))) === gateFaults.cleanup
+      )
+        return Promise.reject(new Error(`fixture ${gateFaults.cleanup} cleanup failed`));
       if (executable === "git") workspaceCommands.observe?.(args, String(options.cwd));
       return execute(executable, args, options);
     },
@@ -580,12 +588,19 @@ it.each(["startup", "log-io"])(
       const executable = resolve(current.stateDirectory, "missing-pnpm.exe");
       vi.stubEnv("npm_execpath", executable);
       const result = await adapter.runGate(current, "typecheck", current.candidateHead);
+      // The dependency install is the first command in the disposable checkout;
+      // its startup failure is the executor's, never the candidate's.
+      const tree = resolve(gateDirectory(current, "typecheck"), "tree");
       expect(result).toMatchObject({
         status: "failed",
         evidence: {
           cause: "host",
           head: current.candidateHead,
-          command: { executable, argv: ["run", "typecheck"], cwd: current.worktree },
+          command: {
+            executable,
+            argv: ["install", "--offline", "--frozen-lockfile", "--ignore-scripts"],
+            cwd: tree,
+          },
         },
       });
       if (typeof result !== "object" || result.status !== "failed" || !result.evidence)
@@ -593,11 +608,42 @@ it.each(["startup", "log-io"])(
       const terminal = JSON.parse(
         await readFile(resolve(result.evidence.log, "../candidate-terminal.json"), "utf8"),
       );
-      expect(terminal).toMatchObject({ code: null, startup: expect.stringContaining("ENOENT") });
+      expect(terminal).toMatchObject({
+        head: current.candidateHead,
+        tree,
+        code: null,
+        startup: expect.stringContaining("ENOENT"),
+        install: { code: null, startup: expect.stringContaining("ENOENT") },
+        host: expect.stringContaining("dependency install failed"),
+      });
+      expect(result.output).toContain(`Startup failure: `);
+      expect(result.output).toContain(JSON.stringify(result.evidence.log));
+      await expect(readFile(resolve(tree, "stable.txt"))).rejects.toMatchObject({ code: "ENOENT" });
     }
     expect(await git(["status", "--porcelain"], current.worktree)).toBe("");
   },
 );
+
+function gateDirectory(current: DeliveryConfig, gate: string) {
+  return resolve(current.stateDirectory, `gate-${createHash("sha256").update(gate).digest("hex")}`);
+}
+
+async function gateFixture(remote = "https://github.com/todd-skelton/orchestration-platform.git") {
+  const { current, git } = await repositoryFixture(remote);
+  const commit = async (message = "gate fixture") => {
+    await git(["add", "."], current.worktree);
+    await git(
+      ["-c", "user.name=fixture", "-c", "user.email=fixture@example.test", "commit", "-m", message],
+      current.worktree,
+    );
+    return git(["rev-parse", "HEAD"], current.worktree);
+  };
+  const pin = async () => {
+    current.candidateHead = await git(["rev-parse", "HEAD"], current.worktree);
+    await git(["checkout", "--detach", current.candidateHead], current.reviewWorktree);
+  };
+  return { current, git, commit, pin };
+}
 
 it.each([
   ["candidate", "candidate"],
@@ -610,28 +656,12 @@ it.each([
   ["unrecognized", "unknown"],
   ["missing-file", "unknown"],
   ["drift", "drift"],
+  ["candidate-install", "candidate-host"],
+  ["tree-cleanup", "candidate-host"],
 ])(
   "captures a complete terminal gate and attributes %s with an isolated base control",
   async (mode, expected) => {
-    const { current, git } = await repositoryFixture(
-      "https://github.com/todd-skelton/orchestration-platform.git",
-    );
-    const commit = async () => {
-      await git(["add", "."], current.worktree);
-      await git(
-        [
-          "-c",
-          "user.name=fixture",
-          "-c",
-          "user.email=fixture@example.test",
-          "commit",
-          "-m",
-          "gate fixture",
-        ],
-        current.worktree,
-      );
-      return git(["rev-parse", "HEAD"], current.worktree);
-    };
+    const { current, git, commit } = await gateFixture();
     await writeFile(
       resolve(current.worktree, "package.json"),
       JSON.stringify({ scripts: { typecheck: "tsc --noEmit" } }),
@@ -643,14 +673,19 @@ it.each([
     current.candidateHead = await commit();
     await git(["checkout", "--detach", current.candidateHead], current.reviewWorktree);
     const launcher = resolve(current.stateDirectory, "gate-tool.mjs");
+    // The runner only ever sees the disposable checkout it was started in: the
+    // candidate tree (`tree`) or the base control (`base`), never the author worktree.
     await writeFile(
       launcher,
       `
     import { readFileSync, writeFileSync } from "node:fs";
+    import { basename } from "node:path";
     const mode = ${JSON.stringify(mode)};
+    const where = basename(process.cwd());
+    if (!["tree", "base"].includes(where)) { console.log("wrong cwd " + process.cwd()); process.exit(7); }
     if (process.argv[2] === "install") {
-      if (mode === "base-drift") writeFileSync("feature.ts", "uncommitted change");
-      process.exit(mode === "install" ? 1 : 0);
+      if (mode === "base-drift" && where === "base") writeFileSync("feature.ts", "uncommitted change");
+      process.exit((mode === "install" && where === "base") || (mode === "candidate-install" && where === "tree") ? 1 : 0);
     }
     const candidate = readFileSync("feature.ts", "utf8").includes("candidate");
     if (!candidate && mode !== "base") { console.log("base passed"); process.exit(0); }
@@ -664,12 +699,24 @@ it.each([
   `,
     );
     vi.stubEnv("npm_execpath", launcher);
-    gateFaults.cleanup = mode === "cleanup";
+    gateFaults.cleanup = mode === "cleanup" ? "base" : mode === "tree-cleanup" ? "tree" : false;
     const adapter = githubDeliveryAdapter();
+    const tree = resolve(gateDirectory(current, "typecheck"), "tree");
+    const worktreeBefore = await git(["status", "--porcelain", "--ignored"], current.worktree);
     if (expected === "drift") {
-      await expect(adapter.runGate(current, "typecheck", current.candidateHead)).rejects.toThrow(
-        "candidate-workspace-drift",
+      // The runner mutated its disposable checkout, so its output no longer
+      // describes the exact head; the author worktree itself never changed.
+      await expect(
+        adapter.runGate(current, "typecheck", current.candidateHead),
+      ).rejects.toMatchObject({
+        reason: "candidate-workspace-drift",
+        diagnostics: expect.stringContaining("disposable gate checkout drifted"),
+      });
+      expect(await readFile(resolve(current.worktree, "feature.ts"), "utf8")).toBe("candidate\n");
+      expect(await git(["status", "--porcelain", "--ignored"], current.worktree)).toBe(
+        worktreeBefore,
       );
+      await expect(readFile(resolve(tree, "feature.ts"))).rejects.toMatchObject({ code: "ENOENT" });
       return;
     }
     const result = await adapter.runGate(current, "typecheck", current.candidateHead);
@@ -677,39 +724,342 @@ it.each([
     if (typeof result !== "object" || result.status !== "failed" || !result.evidence)
       throw new Error("missing gate evidence");
     const failure = result.evidence;
+    const terminalPath = resolve(failure.log, "../candidate-terminal.json");
+    const terminal = JSON.parse(await readFile(terminalPath, "utf8"));
+    expect(terminal).toMatchObject({ head: current.candidateHead, tree, command: failure.command });
+    expect(failure.command.cwd).toBe(tree);
+    expect(failure.command.cwd).not.toBe(current.worktree);
+    // The disposable checkout is removed after the observation unless its cleanup failed.
+    if (mode === "tree-cleanup")
+      expect(await readFile(resolve(tree, "feature.ts"), "utf8")).toBe("candidate\n");
+    else
+      await expect(readFile(resolve(tree, "feature.ts"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect(result.output).toContain(JSON.stringify(failure.log));
+    expect(result.output).toContain(JSON.stringify(terminalPath));
+    expect(result.output).toContain(`exact head ${current.candidateHead}`);
+    expect(result.output).toContain(JSON.stringify(failure.command));
+    if (expected === "candidate-host") {
+      expect(failure.cause).toBe("host");
+      expect(failure.diagnostics).toEqual([]);
+      if (mode === "candidate-install") {
+        expect(failure.command.argv.slice(-4)).toEqual([
+          "install",
+          "--offline",
+          "--frozen-lockfile",
+          "--ignore-scripts",
+        ]);
+        expect(terminal).toMatchObject({
+          code: 1,
+          install: { code: 1, log: resolve(failure.log, "../candidate-install.log") },
+          host: expect.stringContaining("dependency install failed"),
+        });
+        expect(result.output).toContain("Executor failure: dependency install failed");
+      } else {
+        expect(failure.command.argv.slice(-2)).toEqual(["run", "typecheck"]);
+        expect(terminal).toMatchObject({
+          code: 1,
+          host: expect.stringContaining("cleanup failed"),
+        });
+        expect(result.output).toContain("cleanup failed");
+      }
+      expect(await git(["status", "--porcelain", "--ignored"], current.worktree)).toBe(
+        worktreeBefore,
+      );
+      await expect(adapter.runGate(current, "typecheck", current.candidateHead)).resolves.toEqual(
+        result,
+      );
+      return;
+    }
     expect(failure.command).toEqual({
       executable: process.execPath,
       argv: [launcher, "run", "typecheck"],
-      cwd: current.worktree,
+      cwd: tree,
     });
     const bytes = await readFile(failure.log, "utf8");
     expect(bytes.length).toBeGreaterThan(4000);
+    // The runner output is retained whole; the failure output quotes a bounded tail of it.
+    expect(bytes.startsWith(mode === "timeout" ? "Test timed out" : "")).toBe(true);
+    expect(result.output.endsWith(bytes.slice(-GATE_DIAGNOSTIC_TAIL_LENGTH))).toBe(true);
+    expect(result.output).toContain(
+      `Diagnostic tail (last ${GATE_DIAGNOSTIC_TAIL_LENGTH} of ${bytes.length} characters, sanitized):`,
+    );
     if (expected === "unknown") expect(failure.cause).toBe("unknown");
     else {
       expect(failure.cause).toBe("diagnostic");
       const control = await adapter.attributeGate!(current, "typecheck", failure, main);
       expect(control).toMatchObject({ cause: expected, main });
       if (!["install", "base-drift"].includes(mode)) {
-        const terminal = JSON.parse(
+        const baseTerminal = JSON.parse(
           await readFile(resolve(control.log, "../base-terminal.json"), "utf8"),
         );
-        expect(terminal).toMatchObject({
+        expect(baseTerminal).toMatchObject({
           head: main,
           command: { executable: failure.command.executable, argv: failure.command.argv },
         });
-        expect(terminal.command.cwd).not.toBe(current.worktree);
+        // Candidate, base and author working directories are three distinct trees.
+        expect(new Set([baseTerminal.command.cwd, tree, current.worktree]).size).toBe(3);
+        expect(baseTerminal.command.cwd).toBe(resolve(failure.log, "../base"));
         if (mode === "cleanup")
-          expect(await readFile(resolve(terminal.command.cwd, "feature.ts"), "utf8")).toBe(
+          expect(await readFile(resolve(baseTerminal.command.cwd, "feature.ts"), "utf8")).toBe(
             "base\n",
           );
-        else await expect(readFile(resolve(terminal.command.cwd, "feature.ts"))).rejects.toThrow();
+        else
+          await expect(readFile(resolve(baseTerminal.command.cwd, "feature.ts"))).rejects.toThrow();
       }
       expect(await git(["rev-parse", "HEAD"], current.worktree)).toBe(current.candidateHead);
     }
     expect(await readFile(failure.log, "utf8")).toBe(bytes);
+    expect(await git(["status", "--porcelain", "--ignored"], current.worktree)).toBe(
+      worktreeBefore,
+    );
     await expect(adapter.runGate(current, "typecheck", current.candidateHead)).resolves.toEqual(
       result,
     );
+  },
+);
+
+// ISS-146: Chase Sets #7766 failed `check:structure` on empty ignored author
+// scratch that no commit or CI ever contained. The gate now observes the exact
+// commit in its own disposable checkout, so scratch beside the author worktree
+// is neither read nor deleted; only committed content can fail a gate.
+it.each(["clean-commit", "empty-scratch", "nonempty-contamination", "structure-failure"])(
+  "runs the structure gate against the committed candidate only: %s",
+  async (mode) => {
+    const { current, git, commit } = await gateFixture();
+    await writeFile(
+      resolve(current.worktree, "package.json"),
+      JSON.stringify({ scripts: { "check:structure": "node check-structure.mjs" } }),
+    );
+    await writeFile(resolve(current.worktree, "pnpm-lock.yaml"), "fixture lock\n");
+    await writeFile(resolve(current.worktree, "feature.ts"), "candidate\n");
+    if (mode === "structure-failure")
+      await writeFile(resolve(current.worktree, "stray-artifact.tmp.txt"), "committed stray\n");
+    current.candidateHead = await commit();
+    await git(["checkout", "--detach", current.candidateHead], current.reviewWorktree);
+    const committed = ["feature.ts", "package.json", "pnpm-lock.yaml", "stable.txt"];
+    // Ignored scratch in the author worktree, exactly as a worker leaves it.
+    await appendFile(
+      resolve(current.controllerRoot, ".git/info/exclude"),
+      "artifacts/\nscratch.log\n",
+    );
+    const scratch = resolve(current.worktree, "artifacts/jpeg-corrective");
+    if (mode !== "clean-commit") await mkdir(scratch, { recursive: true });
+    if (mode === "nonempty-contamination") {
+      await writeFile(resolve(scratch, "capture.json"), "{}");
+      await writeFile(resolve(current.worktree, "scratch.log"), "worker scratch\n");
+    }
+    const worktreeBefore = await git(["status", "--porcelain", "--ignored"], current.worktree);
+    // Git reports ignored files, never an empty ignored directory: exactly the
+    // invisible scratch that failed #7766.
+    expect(worktreeBefore.includes("!! artifacts/")).toBe(mode === "nonempty-contamination");
+    const scratchEntries = async () =>
+      mode === "clean-commit" ? "absent" : (await readdir(scratch)).sort().join(",");
+    const scratchBefore = await scratchEntries();
+    const launcher = resolve(current.stateDirectory, "gate-tool.mjs");
+    await writeFile(
+      launcher,
+      `
+    import { readdirSync } from "node:fs";
+    if (process.argv[2] === "install") process.exit(0);
+    const expected = ${JSON.stringify(committed)};
+    const entries = readdirSync(".").filter((name) => name !== ".git" && name !== "node_modules").sort();
+    const unexpected = entries.filter((name) => !expected.includes(name));
+    const missing = expected.filter((name) => !entries.includes(name));
+    console.log("check:structure in " + process.cwd());
+    if (unexpected.length || missing.length) {
+      console.log("[structure] subcheck stray-files failed: unexpected " + JSON.stringify(unexpected) + " missing " + JSON.stringify(missing));
+      process.exit(1);
+    }
+    console.log("[structure] all subchecks passed");
+  `,
+    );
+    vi.stubEnv("npm_execpath", launcher);
+    const adapter = githubDeliveryAdapter();
+    const directory = gateDirectory(current, "check:structure");
+    const result = await adapter.runGate(current, "check:structure", current.candidateHead);
+    const terminal = JSON.parse(
+      await readFile(resolve(directory, "candidate-terminal.json"), "utf8"),
+    );
+    const log = await readFile(resolve(directory, "candidate.log"), "utf8");
+    expect(terminal).toMatchObject({
+      head: current.candidateHead,
+      tree: resolve(directory, "tree"),
+      command: { cwd: resolve(directory, "tree"), argv: [launcher, "run", "check:structure"] },
+      install: { code: 0, log: resolve(directory, "candidate-install.log") },
+    });
+    expect(log).toContain(`check:structure in ${resolve(directory, "tree")}`);
+    if (mode === "structure-failure") {
+      expect(result).toMatchObject({
+        status: "failed",
+        evidence: { cause: "unknown", head: current.candidateHead, diagnostics: [] },
+      });
+      if (typeof result !== "object" || result.status !== "failed") throw new Error("unreachable");
+      // The stop excerpt carries the subcheck, not only a runtime path.
+      expect(result.output).toContain(
+        '[structure] subcheck stray-files failed: unexpected ["stray-artifact.tmp.txt"] missing []',
+      );
+      expect(result.output).toContain(JSON.stringify(resolve(directory, "candidate.log")));
+    } else expect(result).toEqual({ status: "passed" });
+    // Scratch is never deleted and the author worktree is untouched.
+    expect(await git(["status", "--porcelain", "--ignored"], current.worktree)).toBe(
+      worktreeBefore,
+    );
+    expect(await scratchEntries()).toBe(scratchBefore);
+    if (mode === "nonempty-contamination")
+      expect(await readFile(resolve(scratch, "capture.json"), "utf8")).toBe("{}");
+    await expect(readFile(resolve(directory, "tree/feature.ts"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+    await expect(
+      adapter.runGate(current, "check:structure", current.candidateHead),
+    ).resolves.toEqual(result);
+  },
+);
+
+// ISS-146: presence of a gate directory or log proves nothing. A log without
+// its terminal is an incomplete observation; a terminal for another head refuses.
+it.each(["log-without-terminal", "foreign-terminal"])(
+  "refuses partial gate evidence instead of reusing it: %s",
+  async (mode) => {
+    const { current, git } = await gateFixture();
+    const launcher = resolve(current.stateDirectory, "gate-tool.mjs");
+    await writeFile(launcher, "process.exit(0);\n");
+    vi.stubEnv("npm_execpath", launcher);
+    const directory = gateDirectory(current, "typecheck");
+    await mkdir(directory, { recursive: true });
+    const retained = "partial runner output from an interrupted observation\n";
+    if (mode === "log-without-terminal") {
+      await writeFile(resolve(directory, "candidate.log"), retained);
+      await expect(adapterRunGate(current, "typecheck")).rejects.toMatchObject({
+        reason: "gate-attribution-unknown:typecheck",
+        diagnostics: `Incomplete terminal observation; retained output: ${resolve(directory, "candidate.log")}`,
+      });
+      expect(await readFile(resolve(directory, "candidate.log"), "utf8")).toBe(retained);
+      await expect(readFile(resolve(directory, "candidate-terminal.json"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+    } else {
+      const foreign = JSON.stringify({
+        head: "f".repeat(40),
+        command: { executable: launcher, argv: ["run", "typecheck"], cwd: current.worktree },
+        code: 0,
+        signal: null,
+      });
+      await writeFile(resolve(directory, "candidate-terminal.json"), foreign);
+      await expect(adapterRunGate(current, "typecheck")).rejects.toThrow("gate-failure-head-drift");
+      expect(await readFile(resolve(directory, "candidate-terminal.json"), "utf8")).toBe(foreign);
+    }
+    await expect(readdir(directory)).resolves.not.toContain("tree");
+    expect(await git(["status", "--porcelain"], current.worktree)).toBe("");
+    function adapterRunGate(config: DeliveryConfig, gate: string) {
+      return githubDeliveryAdapter().runGate(config, gate, config.candidateHead);
+    }
+  },
+);
+
+const boardPlanning = (draftSuffix = "") => ({
+  roadmap: {
+    schemaVersion: "orchestration-roadmap/v1",
+    repository: "todd-skelton/orchestration-platform",
+    project: { id: "PVT_fixture", number: 1, title: "Delivery", url: "https://example.test/p" },
+    milestones: [{ key: "M1", title: "First" }],
+    issues: [
+      { key: "ISS-074", file: "planning/drafts/ISS-074.md", milestone: "M1", blockedBy: [] },
+    ],
+  },
+  draft: `---\nkey: ISS-074\ntitle: "Deliver"\nlabels: ["type:slice", "ready"]\nmilestone: "First"\nblocked_by: []\n---\n\n## Why\n\nUseful.\n\n## Done when\n\n- Preserve behavior.${draftSuffix}\n`,
+});
+
+it.each(["ignored-draft", "stale-board"])(
+  "checks the committed candidate planning through Git objects, never the worktree: %s",
+  async (mode) => {
+    const { current, git, commit } = await gateFixture();
+    const writePlanning = async (suffix: string) => {
+      const planning = boardPlanning(suffix);
+      await mkdir(resolve(current.worktree, "planning/drafts"), { recursive: true });
+      await writeFile(
+        resolve(current.worktree, "planning/roadmap.json"),
+        `${JSON.stringify(planning.roadmap, null, 2)}\n`,
+      );
+      await writeFile(resolve(current.worktree, "planning/drafts/ISS-074.md"), planning.draft);
+    };
+    await writePlanning("");
+    const main = await commit("planning base");
+    await git(["update-ref", "refs/remotes/origin/main", main]);
+    await writePlanning("\n\nCandidate planning delta.");
+    current.candidateHead = await commit("candidate planning");
+    await git(["checkout", "--detach", current.candidateHead], current.reviewWorktree);
+    // An ignored draft on disk would change the filesystem census; the commit has none.
+    await appendFile(resolve(current.controllerRoot, ".git/info/exclude"), "ISS-999.md\n");
+    if (mode === "ignored-draft")
+      await writeFile(resolve(current.worktree, "planning/drafts/ISS-999.md"), "stray\n");
+    const expectedBody = expectedBoardItems({
+      roadmap: boardPlanning().roadmap,
+      issueDrafts: { "ISS-074": boardPlanning("\n\nCandidate planning delta.").draft },
+    } as never)[0]!.body;
+    const board = vi.spyOn(boardSnapshot, "loadBoardSnapshot").mockResolvedValue({
+      repository: "todd-skelton/orchestration-platform",
+      totalCount: 1,
+      issues: [
+        {
+          number: 332,
+          state: "OPEN",
+          title: "[ISS-074] Deliver",
+          body: mode === "stale-board" ? expectedBody.replace("delta", "stale") : expectedBody,
+          milestone: "First",
+        },
+      ],
+    } as never);
+    const project = vi.spyOn(boardSnapshot, "loadProjectSnapshot").mockResolvedValue({
+      id: "PVT_fixture",
+      title: "Delivery",
+      totalCount: 1,
+      items: [{ id: "1", repository: "todd-skelton/orchestration-platform", number: 332 }],
+    } as never);
+    try {
+      const adapter = githubDeliveryAdapter();
+      const directory = gateDirectory(current, "planning:board-check");
+      const worktreeBefore = await git(["status", "--porcelain", "--ignored"], current.worktree);
+      const result = await adapter.runGate(current, "planning:board-check", current.candidateHead);
+      const terminal = JSON.parse(
+        await readFile(resolve(directory, "candidate-terminal.json"), "utf8"),
+      );
+      expect(terminal).toEqual({
+        head: current.candidateHead,
+        command: {
+          executable: "internal:checkCandidateBoard",
+          argv: [current.worktree, current.candidateHead, "git"],
+          cwd: current.worktree,
+        },
+        code: mode === "stale-board" ? 1 : 0,
+        signal: null,
+      });
+      await expect(readdir(directory)).resolves.not.toContain("tree");
+      if (mode === "stale-board") {
+        expect(result).toMatchObject({ status: "failed" });
+        if (typeof result !== "object" || result.status !== "failed")
+          throw new Error("unreachable");
+        // Live board failures carry complete evidence but stay ineligible for correction.
+        expect(result.evidence).toBeUndefined();
+        expect(result.output).toContain("BOARD_CONTRACT_MISMATCH: ISS-074 body does not match");
+        expect(result.output).toContain(JSON.stringify(resolve(directory, "candidate.log")));
+        expect(await readFile(resolve(current.stateDirectory, "board-failure.log"), "utf8")).toBe(
+          "Error: BOARD_CONTRACT_MISMATCH: ISS-074 body does not match its source draft",
+        );
+        expect(await readFile(resolve(directory, "candidate.log"), "utf8")).toContain(
+          "BOARD_CONTRACT_MISMATCH: ISS-074 body does not match its source draft",
+        );
+      } else expect(result).toEqual({ status: "passed" });
+      expect(await git(["status", "--porcelain", "--ignored"], current.worktree)).toBe(
+        worktreeBefore,
+      );
+      await expect(
+        adapter.runGate(current, "planning:board-check", current.candidateHead),
+      ).resolves.toEqual(result);
+    } finally {
+      board.mockRestore();
+      project.mockRestore();
+    }
   },
 );
 
@@ -939,14 +1289,21 @@ it.each([
     if (typeof result !== "object" || result.status !== "failed" || !result.evidence)
       throw new Error("missing gate evidence");
     const failure = result.evidence;
+    const tree = resolve(gateDirectory(current, "verify:static:scoped"), "tree");
     expect(failure.command).toEqual({
       executable: process.execPath,
       argv: [launcher, "run", "verify:static:scoped"],
-      cwd: current.worktree,
+      cwd: tree,
     });
     const bytes = await readFile(failure.log, "utf8");
     expect(bytes.length).toBeGreaterThan(4000);
+    // The detached disposable checkout still derives the candidate's own scope.
     expect(bytes).toContain("source=git merge-base.");
+    // Only runner output reaches the parsed log; the executor's exit and cleanup
+    // live in the terminal, so the final static block is never followed by them.
+    expect(bytes).not.toMatch(/^(?:Exit|Cleanup): /m);
+    expect(bytes.endsWith("[ELIFECYCLE] Command failed with exit code 1.\n")).toBe(mode !== "tail");
+    await expect(readFile(resolve(tree, "feature.ts"))).rejects.toMatchObject({ code: "ENOENT" });
     if (expected === "unknown" && mode !== "vacuous") {
       expect(failure.cause).toBe("unknown");
       expect(failure.diagnostics).toEqual(

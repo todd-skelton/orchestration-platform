@@ -37,19 +37,27 @@ export function candidatePlanningKeys(base, candidate) {
   return keys;
 }
 
-export async function candidatePlanningBase(worktree, head, gitExecutable = "git") {
-  const git = async (args) =>
+function pinnedGit(worktree, gitExecutable) {
+  return async (args) =>
     (
       await exec(gitExecutable, ["-C", worktree, ...args], { maxBuffer: 32 * 1024 * 1024 })
     ).stdout.trimEnd();
+}
+
+export async function candidatePlanningBase(worktree, head, gitExecutable = "git") {
+  const git = pinnedGit(worktree, gitExecutable);
   const base = await git(["merge-base", "refs/remotes/origin/main", head]);
   return loadPlanningSnapshot(worktree, { revision: base, git });
 }
 
+// ISS-146: the gate reads the committed candidate through Git objects, never
+// the working directory, so ignored or untracked files beside `worktree`
+// cannot reach it. `worktree` only names a checkout of the same repository.
 export async function checkCandidateBoard(worktree, head, gitExecutable = "git") {
+  const git = pinnedGit(worktree, gitExecutable);
   const base = await candidatePlanningBase(worktree, head, gitExecutable);
   const { roadmap } = base;
-  const candidate = await loadPlanningSnapshot(worktree);
+  const candidate = await loadPlanningSnapshot(worktree, { revision: head, git });
   validatePlanningSnapshot(candidate);
   const keys = candidatePlanningKeys(base, candidate);
   const planning = {

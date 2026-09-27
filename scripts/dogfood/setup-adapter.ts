@@ -169,8 +169,9 @@ async function joinGitReads<T extends readonly unknown[] | []>(reads: T) {
   }
 }
 
-// Setup alone owns this byte filter. Pending lookahead is at most 19 bytes;
-// suppression holds no line, URL or secret, regardless of its length.
+// Setup owns this byte filter; the delivery gate failure tail (ISS-146) reuses
+// it unchanged. Pending lookahead is at most 19 bytes; suppression holds no
+// line, URL or secret, regardless of its length.
 export class SetupOutputSanitizer {
   private pending: { byte: number; field: number }[] = [];
   private suppression: "line" | "url" | undefined;
