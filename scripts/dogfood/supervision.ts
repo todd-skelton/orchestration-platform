@@ -760,6 +760,11 @@ const stopRecoveryActions: Record<ActionableStopReason, RecoveryAction> = {
   "implementation-attempt-ceiling-exhausted": ({ evidence }) =>
     `inspect ${evidence} and apply the final blocking findings before unparking the issue`,
 };
+// ISS-146: #7766's 500-character stop excerpt hid the failing subcheck. A stop
+// note now quotes this much of its diagnostic, enough for the gate failure
+// output's artifact paths, exact command and bounded sanitized runner tail.
+export const MAX_STOP_DETAIL_LENGTH = 3000;
+
 function stopMessage(
   config: LoopConfig,
   selection: Pick<SelectedIssue, "cycle" | "key" | "number" | "routing">,
@@ -792,7 +797,7 @@ function stopMessage(
           ? exact(context)
           : `inspect ${evidence} for the stop reason ${reason}, correct the reported condition, and restart`;
   const count = `after ${attempts} implementation attempt${attempts === 1 ? "" : "s"}`;
-  const detail = diagnostics?.trim().slice(0, 500);
+  const detail = diagnostics?.trim().slice(0, MAX_STOP_DETAIL_LENGTH);
   const placements = history
     .filter(
       (participant) =>

@@ -4905,7 +4905,7 @@ export function repositoryQueueAdapter(
           if (attribution.cause !== "candidate")
             return stopGate(
               `gate-${attribution.cause === "base" ? "base-failed" : attribution.cause === "host" ? "host-failed" : "attribution-unknown"}:${error.gate}`,
-              `Failed head ${delivery.candidateHead}, delivery main ${main}; diagnostics ${failure.log}; control ${attribution.log}`,
+              `Failed head ${delivery.candidateHead}, delivery main ${main}; diagnostics ${failure.log}; control ${attribution.log}${error.diagnostics ? `. ${error.diagnostics}` : ""}`,
             );
           const failedAuthor = (await readHistory()).findLast(
             (p) => p.item === item.id && p.role === "author",
@@ -4922,7 +4922,7 @@ export function repositoryQueueAdapter(
             return stopGate("gate-correction-not-authorized", failure.log);
           const correctionRoot = recovering ? recoveryDirectory : accepted.stateDirectory;
           const directory = resolve(correctionRoot, "gate-correction");
-          const context = `Failed exact reviewed head: ${delivery.candidateHead}; delivery main base: ${main}; predecessor complete review: ${refreshedSource.reviewId}. Exact failed command: ${JSON.stringify(failure.command)}. Full diagnostic artifact: ${failure.log}; failing identities/diagnostics: ${JSON.stringify(failure.diagnostics)}. Base control and attribution: ${resolve(delivery.stateDirectory, "gate-attribution.json")}. Original acceptance and preserved author/reviewer records and captured traces: ${accepted.stateDirectory}; predecessor delivery and review records: ${delivery.stateDirectory}. Read both directories' config, candidate, author/reviewer attempt and terminal files and the trace paths they name. Start from the failed head, retain the full implementation diff against main, and correct only this failure and its direct causes. All original acceptance criteria remain mandatory.`;
+          const context = `Failed exact reviewed head: ${delivery.candidateHead}; delivery main base: ${main}; predecessor complete review: ${refreshedSource.reviewId}. Exact failed command: ${JSON.stringify(failure.command)}. Full diagnostic artifact: ${failure.log}; its terminal record (exact head, command, working directory, exit, install and cleanup): ${resolve(failure.log, "..", "candidate-terminal.json")}; failing identities/diagnostics: ${JSON.stringify(failure.diagnostics)}. Base control and attribution: ${resolve(delivery.stateDirectory, "gate-attribution.json")}. Original acceptance and preserved author/reviewer records and captured traces: ${accepted.stateDirectory}; predecessor delivery and review records: ${delivery.stateDirectory}. Read both directories' config, candidate, author/reviewer attempt and terminal files and the trace paths they name. Start from the failed head, retain the full implementation diff against main, and correct only this failure and its direct causes. All original acceptance criteria remain mandatory.`;
           await mkdir(directory, { recursive: true });
           await record(correctionRoot, "gate-correction", {
             failedHead: delivery.candidateHead,

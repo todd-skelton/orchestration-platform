@@ -239,6 +239,12 @@ export function validateConfig(config: Config) {
   }
 }
 
+// The same path the dispatch adapter grants as the author's sandbox writable
+// root and TEMP/TMP/TMPDIR; the prompt names it so the worker knows where
+// scratch belongs. Only the adapter creates it.
+export const authorScratchRoot = (config: Pick<Config, "stateDirectory">) =>
+  resolve(config.stateDirectory, "author-temp");
+
 export function workerPrompt(config: Config, role: Role, head: string, prompt: string): string {
   const defaultGates = ["typecheck", "format:check", "test"];
   const gates = config.localGates ?? defaultGates;
@@ -263,6 +269,9 @@ export function workerPrompt(config: Config, role: Role, head: string, prompt: s
   return (
     `${prompt}\n\nPilot run ${config.run}; role ${role}; exact ${role === "author" ? "base" : "review head"}: ${head}.\n` +
     `Allowed author paths: ${JSON.stringify(config.correctionPaths ?? config.allowedPaths)}. Author may edit source only: do not stage, commit, or change Git metadata; leave HEAD at the exact base. Reviewer must leave its worktree unchanged. Never push, publish, merge, or change credentials.\n` +
+    (role === "author"
+      ? `Write scratch, temporary fixtures, command captures and execution evidence under the existing attempt scratch root ${JSON.stringify(authorScratchRoot(config))}, outside the source tree; it is retained across correction and resume. Do not create scratch files or directories in the source tree, even ignored or empty ones: delivery gates run the committed candidate in a disposable checkout, so only committed content can pass or fail them.\n`
+      : "") +
     `Explain substantive findings in progress messages before the final response; these remain in the captured trace. ${report} Review every changed assertion independently.${localVerification}\n` +
     (role === "author" && config.mainBase && config.mainBase !== config.base
       ? "This corrective base already contains implementation work. If inspection and executed checks support the existing source, report PASS without manufacturing source changes; the unchanged candidate still requires independent review and all delivery gates.\n"

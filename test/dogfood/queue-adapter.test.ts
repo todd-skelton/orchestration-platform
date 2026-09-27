@@ -1621,6 +1621,22 @@ it.each([false, true])(
             ).toEqual([MAX_TERMINAL_SUMMARY_LENGTH, MAX_TERMINAL_SUMMARY_LENGTH]);
           }
         }
+        if (role === "author") {
+          // ISS-146: every author launch names its own external scratch root.
+          expect(prompt).toContain(
+            JSON.stringify(resolve(selectedConfig.stateDirectory, "author-temp")),
+          );
+          expect(prompt).toContain("Do not create scratch files or directories in the source tree");
+        }
+        if (correction) {
+          expect(prompt).toContain(
+            `Full diagnostic artifact: ${resolve(current.source.stateDirectory, "typecheck.log")}`,
+          );
+          expect(prompt).toContain(
+            `its terminal record (exact head, command, working directory, exit, install and cleanup): ${resolve(current.source.stateDirectory, "candidate-terminal.json")}`,
+          );
+          expect(prompt).toContain('"argv":["fixture-pnpm","run","typecheck"]');
+        }
         const selected = correction ? `gate-${role}` : role;
         const deadAuthor = selected === "author" && launches.length === 0;
         launches.push(selected);

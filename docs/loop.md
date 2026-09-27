@@ -390,6 +390,50 @@ isolated committed tree at the recorded delivery main base, with an offline,
 frozen dependency install. Changed manifests or lockfiles remain unknown.
 The candidate and base logs and terminal records remain in the delivery runtime (ISS-152).
 
+### Confined author scratch and committed gates
+
+ISS-146 records Chase Sets #7766's reviewed delivery failing `check:structure`
+on empty ignored author scratch that no commit or CI contained, behind a
+500-character stop excerpt that hid the subcheck. Every author launch (initial,
+corrective and retried) creates the existing external scratch root
+`<state directory>/author-temp` before the observer spawns the worker, and never
+clears it: the author's sandbox writable root and TEMP/TMP/TMPDIR already point
+there, and the shared author prompt names it. Each state directory owns its
+own root, so a correction's scratch is distinct from its source's. The reviewer
+receives no scratch. This is a worker instruction plus a created directory, not
+a new per-file authority mechanism; the workspace-write sandbox still admits
+source edits.
+
+Each local delivery gate observes the exact reviewed commit, never the author's
+working directory. A pnpm gate runs in a disposable detached checkout
+`gate-<sha256(gate)>/tree` under its delivery runtime, after the same offline,
+frozen, no-scripts install as setup and the base control; the short fixed name
+keeps hosted Windows fixtures inside their path budget. The self
+`planning:board-check` gate reads the committed candidate planning through Git
+objects with the existing `candidate-board.mjs` and runs no checkout. Ignored
+or untracked files beside the source worktree, including empty ignored
+directories, are neither read nor deleted; source and review worktrees are
+never cleaned, and the existing before/after workspace drift checks stay. A
+checkout whose HEAD or `git status` changed after the runner is
+`candidate-workspace-drift`. The executor removes only its own disposable tree.
+
+`candidate.log` holds exactly the runner's output (or the executor failure
+that prevented a runner), so gateDiagnostics parses no executor text;
+`candidate-install.log` holds the install output;
+`candidate-terminal.json` binds the exact head to the executed command and its
+working directory (or `internal:checkCandidateBoard`), exit, install result,
+cleanup or drift. A log without its terminal remains an incomplete observation,
+never a passing gate; resume reuses a same-head terminal without another run.
+A failed gate's output names the full log and terminal, the exact head and
+command, then quotes the last `GATE_DIAGNOSTIC_TAIL_LENGTH` (1200) characters of
+the runner output through setup's byte sanitizer. The stop note quotes up to
+`MAX_STOP_DETAIL_LENGTH` (3000) characters of a stop diagnostic; attribution
+stops append that output after the log and control paths, and the correction
+prompt names the terminal beside the full artifact. Board failures still write
+`board-failure.log` and stay ineligible for correction. Checkout, install,
+cleanup and startup failures are host causes; ISS-152 attribution, the base
+control and the candidate/base/host/unknown classification are unchanged.
+
 Only a passing base control admits candidate attribution. The scoped static
 base control receives the candidate's derived changed-file set as
 `CHANGED_FILES_JSON`, and its pass counts only when the failing link's
@@ -887,9 +931,9 @@ hosted CI only.
   `/root/orchestration-m1/runtime/<run>`; worktrees under
   `/root/orchestration-m1/worktrees`; log `/root/orchestration-m1/supervisor.log`.
 - Start from Windows with `scripts/executor/start-loop.ps1 [-Config <config>]
-  [-VerifierWorktree <path>]` (PowerShell 7). It stays attached to one
+[-VerifierWorktree <path>]` (PowerShell 7). It stays attached to one
   `C:\Windows\System32\wsl.exe -d Ubuntu -- bash
-  /root/orchestration-m1/repo/scripts/executor/run-loop.sh <config>` child
+/root/orchestration-m1/repo/scripts/executor/run-loop.sh <config>` child
   through redirected stdio with `WSLENV` empty, and exits with the
   supervisor's code on idle, a terminal stop, cancel or a start failure
   (ISS-164). `run-loop.sh` no longer detaches: it keeps the provider and tool
@@ -985,6 +1029,7 @@ WSL exit is not Linux cleanup, and Linux survivors after Windows loss remain
 the incumbent's responsibility. The test-only trigger is a disposable copied
 runtime whose entry requests once through the actual factory with a Node
 parent stand-in; there is no production selector, flag or declaration.
+
 - A Chase Sets config may set `"targetMilestone": 155`, using the positive
   repository milestone number, to limit the native pull window to that
   milestone (ISS-135). Product readiness, dependencies and exclusions still

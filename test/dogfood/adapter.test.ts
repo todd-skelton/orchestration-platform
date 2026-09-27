@@ -1,5 +1,7 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { PassThrough } from "node:stream";
@@ -314,6 +316,220 @@ it("rejects obsolete extra Git write configuration instead of exposing hooks/con
   const unsafe = { ...config, adapter: { ...config.adapter, authorGitDirectory: "/shared/.git" } };
   expect(() => launchArguments(unsafe, "author")).toThrow("unsupported-adapter-configuration");
 });
+// ISS-146: the scratch root is the author's only sandbox-writable path outside
+// the source tree and its TEMP/TMP/TMPDIR. Every real launch creates it before
+// the observer spawns the worker, and never clears what an earlier launch left.
+async function launchFixture() {
+  const root = await realpath(await mkdtemp(resolve(tmpdir(), "author-scratch-")));
+  cleanup.push(root);
+  const stateDirectory = resolve(root, "source");
+  await mkdir(stateDirectory);
+  const worktree = resolve(root, "author");
+  await mkdir(worktree);
+  const initial: Config = {
+    ...config,
+    run: "scratch-trial",
+    stateDirectory,
+    worktree,
+    reviewWorktree: resolve(root, "reviewer"),
+    base: "a".repeat(40),
+  };
+  const corrective: Config = {
+    ...initial,
+    stateDirectory: resolve(stateDirectory, "gate-correction"),
+    base: "b".repeat(40),
+    mainBase: "a".repeat(40),
+  };
+  await mkdir(corrective.stateDirectory);
+  return { root, initial, corrective, resumed: initial };
+}
+
+it("creates the scratch root before the initial, corrective and resumed author launch reaches the observer", async () => {
+  vi.stubEnv("CODEX_PROVIDER_BASE_URL", undefined);
+  vi.stubEnv("CODEX_PROVIDER_AUTH_COMMAND", undefined);
+  const f = await launchFixture();
+  // A real observer launch of an absent absolute executable: the launcher's
+  // exit receipt arrives without an identity, after the scratch root exists.
+  const executable = resolve(f.root, "absent-codex");
+  const adapter = codexAdapter();
+  for (const [kind, current] of Object.entries({
+    initial: f.initial,
+    corrective: f.corrective,
+    resumed: f.resumed,
+  })) {
+    const scratch = authorTemporaryRoot(current);
+    const launch: Config = { ...current, adapter: { kind: "codex-exec", executable } };
+    if (kind === "initial") await expect(stat(scratch)).rejects.toMatchObject({ code: "ENOENT" });
+    else if (kind === "resumed")
+      expect(await readFile(resolve(scratch, "evidence.log"), "utf8")).toBe("retained\n");
+    await expect(adapter.launch("author", launch, `${kind} prompt`)).rejects.toThrow(
+      "launcher-exited-before-identity-reconcile",
+    );
+    expect((await stat(scratch)).isDirectory()).toBe(true);
+    expect(scratch.startsWith(current.worktree)).toBe(false);
+    if (kind === "initial") await writeFile(resolve(scratch, "evidence.log"), "retained\n");
+    const request = (await readdir(current.stateDirectory)).find((name) =>
+      name.endsWith(".request.json"),
+    )!;
+    expect(
+      JSON.parse(await readFile(resolve(current.stateDirectory, request), "utf8")),
+    ).toMatchObject({
+      executable,
+      args: expect.arrayContaining([
+        `sandbox_workspace_write.writable_roots=[${JSON.stringify(scratch)}]`,
+      ]),
+    });
+  }
+  expect(await readFile(resolve(authorTemporaryRoot(f.initial), "evidence.log"), "utf8")).toBe(
+    "retained\n",
+  );
+  // A reviewer launch grants no scratch and creates nothing.
+  const reviewerState = resolve(f.root, "review-state");
+  await mkdir(reviewerState);
+  await expect(
+    adapter.launch(
+      "reviewer",
+      { ...f.initial, stateDirectory: reviewerState, adapter: { kind: "codex-exec", executable } },
+      "review prompt",
+    ),
+  ).rejects.toThrow("launcher-exited-before-identity-reconcile");
+  expect(await readdir(reviewerState)).not.toContain("author-temp");
+});
+
+// The loopback provider double answers the pool status and authenticated
+// models probes exactly as production admission asks them; a sandbox that
+// forbids listening skips this case, as test/executor.test.ts does.
+async function loopbackProvider(requests: { url: string; at: number }[]) {
+  const server = createServer((request, response) => {
+    requests.push({ url: String(request.url), at: Date.now() });
+    response.setHeader("content-type", "application/json");
+    if (request.url === "/api/status")
+      response.end(
+        JSON.stringify({
+          accounts: [{ disabled: false, routingModels: { test: { status: "ready" } } }],
+        }),
+      );
+    else if (
+      request.url === "/v1/models" &&
+      request.headers.authorization === "Bearer test-provider-key"
+    )
+      response.end(JSON.stringify({ data: [{ id: "test" }] }));
+    else {
+      response.statusCode = 401;
+      response.end("{}");
+    }
+  });
+  try {
+    await new Promise<void>((done, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", done);
+    });
+  } catch {
+    return undefined;
+  }
+  return {
+    port: (server.address() as AddressInfo).port,
+    close: () => new Promise<void>((done) => server.close(() => done())),
+  };
+}
+
+it.skipIf(process.platform === "win32").for(["direct", "loopback"] as const)(
+  "launches a worker double that finds its scratch root after %s admission",
+  async (admission, context) => {
+    const f = await launchFixture();
+    const requests: { url: string; at: number }[] = [];
+    const provider = admission === "loopback" ? await loopbackProvider(requests) : undefined;
+    if (admission === "loopback" && !provider) return context.skip();
+    try {
+      if (provider) {
+        const helper = resolve(f.root, "auth.sh");
+        await writeFile(helper, '#!/bin/sh\nprintf "test-provider-key\\n"\n', { mode: 0o700 });
+        vi.stubEnv("CODEX_PROVIDER_BASE_URL", `http://127.0.0.1:${provider.port}/v1`);
+        vi.stubEnv("CODEX_PROVIDER_AUTH_COMMAND", helper);
+        vi.stubEnv("CODEX_POOL_STATUS_URL", `http://127.0.0.1:${provider.port}/api/status`);
+      } else {
+        vi.stubEnv("CODEX_PROVIDER_BASE_URL", undefined);
+        vi.stubEnv("CODEX_PROVIDER_AUTH_COMMAND", undefined);
+        vi.stubEnv("CODEX_POOL_STATUS_URL", undefined);
+      }
+      const adapter = codexAdapter();
+      let launches = 0;
+      for (const [kind, current] of Object.entries({
+        initial: f.initial,
+        corrective: f.corrective,
+        resumed: f.resumed,
+      })) {
+        const scratch = authorTemporaryRoot(current);
+        const sentinel = resolve(f.root, `${kind}-invoked.json`);
+        const executable = resolve(f.root, `${kind}-codex.sh`);
+        const threadId = `01a048fe-90c8-7cb3-8da5-938c1f5cb5f${launches}`;
+        const verdict = JSON.stringify({
+          run: current.run,
+          role: "author",
+          head: current.base,
+          verdict: "PASS",
+          summary: "",
+        });
+        const events = [
+          { type: "thread.started", thread_id: threadId },
+          { type: "item.completed", item: { type: "agent_message", text: verdict } },
+          { type: "turn.completed", usage: { input_tokens: 1, output_tokens: 1 } },
+        ];
+        // The credential-free worker double: records whether its scratch root
+        // already existed, then emits one complete PASS trace.
+        await writeFile(
+          executable,
+          [
+            "#!/bin/sh",
+            `if [ -d ${JSON.stringify(scratch)} ]; then existed=true; else existed=false; fi`,
+            `printf '{"scratchExisted":%s,"firstArgument":"%s"}' "$existed" "$1" > ${JSON.stringify(sentinel)}`,
+            ...events.map((event) => `printf '%s\\n' '${JSON.stringify(event)}'`),
+            "",
+          ].join("\n"),
+          { mode: 0o700 },
+        );
+        if (kind === "initial")
+          await expect(stat(scratch)).rejects.toMatchObject({ code: "ENOENT" });
+        const before = requests.length;
+        const attempt = await adapter.launch(
+          "author",
+          { ...current, adapter: { kind: "codex-exec", executable } },
+          `${kind} prompt`,
+        );
+        launches++;
+        expect(attempt).toMatchObject({
+          id: threadId,
+          trace: expect.stringContaining(current.stateDirectory),
+        });
+        // Production admission order: pool status, then the authenticated models
+        // catalog, both answered before the worker double was invoked.
+        expect(requests.slice(before).map((row) => row.url)).toEqual(
+          provider ? ["/api/status", "/v1/models"] : [],
+        );
+        const invoked = JSON.parse(await eventuallyRead(sentinel));
+        expect(invoked).toEqual({ scratchExisted: true, firstArgument: "exec" });
+        if (provider)
+          expect((await stat(sentinel)).mtimeMs).toBeGreaterThanOrEqual(requests.at(-1)!.at - 1);
+        await eventuallyRead(`${attempt.trace.slice(0, -"jsonl".length)}exit.json`);
+        await expect(adapter.observe("author", current, attempt)).resolves.toMatchObject({
+          id: threadId,
+          status: "passed",
+          head: current.base,
+        });
+        // Each state directory owns its scratch: the correction's is distinct,
+        // and the resumed launch finds the initial evidence untouched.
+        if (kind === "initial") await writeFile(resolve(scratch, "evidence.log"), "retained\n");
+        else if (kind === "corrective") {
+          expect(scratch).not.toBe(authorTemporaryRoot(f.initial));
+          expect(await readdir(scratch)).toEqual([]);
+        } else expect(await readFile(resolve(scratch, "evidence.log"), "utf8")).toBe("retained\n");
+      }
+    } finally {
+      await provider?.close();
+    }
+  },
+);
+
 it("reads actual Codex event shape and retains usage as advisory data", () => {
   expect(parseTrace(trace(), true, "reviewer", config, id)).toEqual({
     id,

@@ -57,6 +57,7 @@ import {
 import { selfPlanFromSnapshots, requiredChecks } from "../../adapters/self.mjs";
 import * as self from "../../adapters/self.mjs";
 import { candidatePlanningBase } from "../../scripts/planning/candidate-board.mjs";
+import * as candidateBoard from "../../scripts/planning/candidate-board.mjs";
 import { repositoryDeliveryPolicy } from "../../scripts/dogfood/repository-adapter.mjs";
 import { isItemStopReason } from "../../scripts/dogfood/supervision.js";
 
@@ -1421,6 +1422,12 @@ async function savedGateStop(
   await expect(f.run()).rejects.toThrow(`gate-attribution-unknown:${gate}`);
   const stoppedHead = await f.git(f.sourceTree, ["rev-parse", "HEAD"]);
   const failedDirectory = f.gates.at(-1)!.directory;
+  // ISS-146: an attributed stop names the artifacts and quotes the gate's own
+  // failure output, not only a runtime path.
+  const stop = JSON.parse(await readFile(resolve(acceptedDirectory, "gate-stop.json"), "utf8"));
+  expect(stop.diagnostics).toContain(`diagnostics ${resolve(failedDirectory, "full-gate.log")}`);
+  expect(stop.diagnostics).toContain(`control ${resolve(f.state, "base-control.log")}`);
+  expect(stop.diagnostics).toContain("AssertionError: wrong value");
   const artifacts = resolve(
     failedDirectory,
     `gate-${createHash("sha256").update(gate).digest("hex")}`,
@@ -2127,6 +2134,86 @@ it.each([false, true])(
     expect(await readFile(resolve(f.sourceState, "gate-1.json"), "utf8")).toBe(oldReceipt);
   },
 );
+
+// ISS-146: an interrupted gate observation keeps its exact-head terminal and
+// log; resumed delivery reuses them beside untouched ignored author scratch,
+// without another worker, implementation attempt or board read.
+it("resumes an interrupted self gate from its retained terminal beside ignored scratch", async () => {
+  const f = await fixture();
+  await writeFile(resolve(f.repo, ".git/info/exclude"), "artifacts/\nscratch.log\n");
+  const scratch = resolve(f.sourceTree, "bounded-contexts/marketplace/artifacts/jpeg-corrective");
+  await mkdir(scratch, { recursive: true });
+  await writeFile(resolve(f.sourceTree, "scratch.log"), "worker scratch\n");
+  await f.saveAttempt();
+  const history = await f.adapter().history();
+  const records = [
+    "author-attempt",
+    "author-terminal",
+    "reviewer-attempt",
+    "reviewer-terminal",
+    "candidate",
+    "config",
+  ];
+  const oldRecords = Object.fromEntries(
+    await Promise.all(
+      records.map(async (name) => [
+        name,
+        await readFile(resolve(f.sourceState, `${name}.json`), "utf8"),
+      ]),
+    ),
+  );
+  const boardChecks = vi.spyOn(candidateBoard, "checkCandidateBoard");
+  const runGate = f.delivery.runGate;
+  let interrupt = true;
+  f.delivery.runGate = async (current, gate, head) => {
+    const observed = await runGate(current, gate, head);
+    if (gate === "planning:board-check" && interrupt) {
+      interrupt = false;
+      throw new Error("interrupted after the gate observation, before its receipt");
+    }
+    return observed;
+  };
+  const step = () => queueStep(f.config, { ...f.adapter(), async assertExecutor() {} });
+  await expect(step()).rejects.toThrow("delivery-state-unknown");
+  const directory = resolve(
+    f.sourceState,
+    `gate-${createHash("sha256").update("planning:board-check").digest("hex")}`,
+  );
+  const terminal = await readFile(resolve(directory, "candidate-terminal.json"), "utf8");
+  expect(JSON.parse(terminal)).toEqual({
+    head: f.head,
+    command: {
+      executable: "internal:checkCandidateBoard",
+      argv: [f.sourceTree, f.head, "git"],
+      cwd: f.sourceTree,
+    },
+    code: 0,
+    signal: null,
+  });
+  expect(await readdir(directory)).toEqual(["candidate-terminal.json", "candidate.log"]);
+  expect(boardChecks).toHaveBeenCalledTimes(1);
+  for (let resume = 0; resume < 2; resume++) {
+    await expect(step()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+    expect(JSON.parse(await readFile(resolve(f.state, "attempt.json"), "utf8"))).toMatchObject({
+      candidateAttempt: 1,
+      head: f.head,
+      reviewId: f.reviewer.id,
+      retries: 0,
+      phase: "delivery",
+    });
+    expect(await f.adapter().history()).toEqual(history);
+  }
+  expect(boardChecks).toHaveBeenCalledTimes(1);
+  expect(await readFile(resolve(directory, "candidate-terminal.json"), "utf8")).toBe(terminal);
+  expect(f.prompts).toEqual([]);
+  expect(f.authorPrompts).toEqual([]);
+  expect(f.gateHeads).toEqual([f.head, f.head]);
+  for (const [name, contents] of Object.entries(oldRecords))
+    expect(await readFile(resolve(f.sourceState, `${name}.json`), "utf8")).toBe(contents);
+  expect(await readdir(scratch)).toEqual([]);
+  expect(await readFile(resolve(f.sourceTree, "scratch.log"), "utf8")).toBe("worker scratch\n");
+  boardChecks.mockRestore();
+});
 
 it("reconciles a completed rebase whose response was lost without repeating it", async () => {
   const f = await fixture();

@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  authorScratchRoot,
   correctGate,
   QueueBlocked,
   reviewRefresh,
@@ -387,6 +388,43 @@ it.each(["dead", "malformed"] as const)(
       });
     expect(f.launches).toEqual(["author", "author"]);
     expect(f.commits).toEqual([]);
+  },
+);
+
+// ISS-146: the initial, corrective (gate) and dead-author retry launches all
+// name one external scratch root; the retry's clean-base reset never touches it.
+it.each(["source", "gate"] as const)(
+  "names one retained scratch root for the initial and retried %s author launch",
+  async (caller) => {
+    const f = await fixture();
+    const scratch = authorScratchRoot(f.config);
+    expect(scratch.startsWith(f.config.stateDirectory)).toBe(true);
+    expect(scratch.startsWith(f.config.worktree)).toBe(false);
+    if (caller === "gate") {
+      f.config.mainBase = pilotRevision;
+      f.config.correctionPaths = ["scripts/repair.mjs"];
+    }
+    const run = () =>
+      caller === "gate"
+        ? correctGate(f.config, f.adapter, f.pilot, "test", "Synthetic failing assertion artifact.")
+        : f.run();
+    await expect(run()).resolves.toMatchObject({ status: "observing-author" });
+    await mkdir(scratch, { recursive: true });
+    await writeFile(resolve(scratch, "focused-test.log"), "captured before the worker died\n");
+    f.statuses.author = "dead";
+    f.retry("running");
+    await expect(run()).resolves.toMatchObject({ status: "observing-author", retries: 1 });
+    expect(f.launches).toEqual(["author", "author"]);
+    expect(f.resets).toEqual([["reset", "--hard", f.config.base]]);
+    expect(f.cleans).toHaveLength(1);
+    expect(await readFile(resolve(scratch, "focused-test.log"), "utf8")).toBe(
+      "captured before the worker died\n",
+    );
+    for (const prompt of f.launchPrompts) {
+      expect(prompt).toContain(JSON.stringify(scratch));
+      expect(prompt).toContain("retained across correction and resume");
+      expect(prompt).toContain("Final response must be ONLY JSON");
+    }
   },
 );
 
@@ -1683,11 +1721,13 @@ describe("supervised sequential pilot (fake attempts, never live acceptance)", (
     });
     expect(f.launches).toEqual(["author", "author", "author"]);
   });
-  it("preserves the author prompt and states the reviewer's total serialized length cap", async () => {
+  it("confines author scratch and states the reviewer's total serialized length cap", async () => {
     const f = await fixture();
+    expect(authorScratchRoot(f.config)).toBe(resolve(f.config.stateDirectory, "author-temp"));
     expect(workerPrompt(f.config, "author", base, "Improve the selected issue.")).toBe(
       `Improve the selected issue.\n\nPilot run one-trial; role author; exact base: ${base}.\n` +
         'Allowed author paths: ["scripts/repair.mjs"]. Author may edit source only: do not stage, commit, or change Git metadata; leave HEAD at the exact base. Reviewer must leave its worktree unchanged. Never push, publish, merge, or change credentials.\n' +
+        `Write scratch, temporary fixtures, command captures and execution evidence under the existing attempt scratch root ${JSON.stringify(resolve(f.config.stateDirectory, "author-temp"))}, outside the source tree; it is retained across correction and resume. Do not create scratch files or directories in the source tree, even ignored or empty ones: delivery gates run the committed candidate in a disposable checkout, so only committed content can pass or fail them.\n` +
         `Explain substantive findings in progress messages before the final response; these remain in the captured trace. Final response must be ONLY JSON: {"run":"one-trial","role":"author","head":"${base}","verdict":"PASS","summary":""} (or verdict FAIL), with a short "summary" string of at most ${MAX_TERMINAL_SUMMARY_LENGTH} characters; use an empty string when there are no findings. Review every changed assertion independently. Before reporting, run \`pnpm typecheck\`, \`pnpm format:check\` and \`pnpm test\` in this worktree, and fix what fails.\n`,
     );
     expect(workerPrompt(f.config, "reviewer", head, "Improve the selected issue.")).toBe(
