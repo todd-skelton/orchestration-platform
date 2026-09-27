@@ -13,6 +13,7 @@ import {
 import { gitSetupAdapter } from "../../../scripts/dogfood/setup-adapter.ts";
 export * from "../../../scripts/dogfood/queue.ts";
 export * from "../../../scripts/dogfood/supervision.ts";
+export { PauseRequested } from "../../../scripts/dogfood/pause.mjs";
 export { codexAdapter } from "../../../scripts/dogfood/dispatch-adapter.ts";
 
 const execute = promisify(execFile);
@@ -139,6 +140,7 @@ registerHooks({
       [
         "./queue.ts",
         "./supervision.ts",
+        "./pause.mjs",
         "./repository-adapter.mjs",
         "./dispatch-adapter.ts",
       ].includes(specifier) &&

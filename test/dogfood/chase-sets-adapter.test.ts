@@ -17,6 +17,8 @@ import { tmpdir } from "node:os";
 import { promisify } from "node:util";
 import { afterEach, expect, it, vi } from "vitest";
 import * as chaseSets from "../../adapters/chase-sets.mjs";
+import { controlLoop } from "../../scripts/dogfood/control.mjs";
+import { requestPause } from "../../scripts/dogfood/pause.mjs";
 import { DeliveryBlocked, type DeliveryConfig } from "../../scripts/dogfood/delivery.js";
 import {
   loadRepositoryAdapter,
@@ -188,6 +190,76 @@ if (args[0] === "api" && args.some((arg) => arg.includes("issue(number:"))) {
   );
   return { executorRoot, runtime, milestones, issues, issue, save, callsPath, commentsPath };
 }
+
+it.skipIf(process.platform === "win32")(
+  "pause/resume previews current Chase priorities without bypassing eligibility or scope",
+  async () => {
+    const f = await scopedFixture();
+    f.issues.push(
+      f.issue(7822, 155, [], [4382]),
+      f.issue(7823, 155, ["status:needs-replan"]),
+      f.issue(7824, 155),
+      f.issue(7825, 155),
+    );
+    const priority = (number: number, value: number) => {
+      f.issues
+        .find((row) => row.number === number)!
+        .labels.nodes.find((label) => label.name.startsWith("priority:"))!.name =
+        `priority:p${value}`;
+    };
+    priority(7824, 1);
+    priority(7825, 2);
+    await f.save();
+    const loop = {
+      schemaVersion: "dogfood-loop/v1",
+      adapter: "chase-sets",
+      repository: "chase-sets/chase-sets",
+      stableExecutorRoot: f.executorRoot,
+      stateRoot: f.runtime,
+      run: "priority-pause",
+      targetMilestone: 155,
+    } as LoopConfig;
+    const path = resolve(f.runtime, "loop.json");
+    await writeFile(path, JSON.stringify(loop));
+    const repository = await loadRepositoryAdapter(
+      "chase-sets",
+      resolve(import.meta.dirname, "../.."),
+    );
+    const unused = async (): Promise<never> => {
+      throw new Error("unexpected active work");
+    };
+    const supervisor: SupervisionAdapter = {
+      currentMain: async () => "a".repeat(40),
+      issue: unused,
+      removeReady: unused,
+      close: unused,
+      comment: unused,
+    };
+    const next = () => nextCycle(loop, f.executorRoot, supervisor, repository);
+    expect((await next())?.selection.number).toBe(7824);
+    await requestPause(loop);
+    await expect(next()).rejects.toThrow("pause-after-current");
+    priority(7825, 0);
+    await f.save();
+    const input = {
+      repository: loop.repository,
+      executorRoot: f.executorRoot,
+      targetMilestone: 155,
+    };
+    expect((await chaseSets.previewWork(input)).candidates.map((row) => row.number)).toEqual([
+      7825, 7824,
+    ]);
+    await expect(next()).rejects.toThrow("pause-after-current");
+    await controlLoop(path, "resume", async () => ({ status: "exited", pid: null }));
+    expect((await next())?.selection.number).toBe(7825);
+    // Equal priority uses issue number; p0 blocked/needs rows and the other outcome stay excluded.
+    priority(7824, 0);
+    await f.save();
+    expect((await chaseSets.selectCandidates(input)).map((row) => row.number)).toEqual([
+      7824, 7825,
+    ]);
+  },
+);
 
 it.skipIf(process.platform === "win32")(
   "excludes missing, duplicate and malformed planning routes with typed diagnostics",

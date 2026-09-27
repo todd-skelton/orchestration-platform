@@ -1,7 +1,9 @@
 import { appendFile, mkdir, readFile, writeFile } from "node:fs/promises";
-import { delimiter, dirname, resolve } from "node:path";
+import { basename, delimiter, dirname, resolve } from "node:path";
 import { QueueBlocked } from "../../../scripts/dogfood/queue.ts";
 import { DeliveryBlocked } from "../../../scripts/dogfood/delivery.mjs";
+import { requestPause } from "../../../scripts/dogfood/pause.mjs";
+export { PauseRequested } from "../../../scripts/dogfood/pause.mjs";
 // ISS-165: the supervisor composes the real native adapter; only queue,
 // supervision and repository effects are synthetic here.
 export { codexAdapter } from "../../../scripts/dogfood/dispatch-adapter.ts";
@@ -54,6 +56,8 @@ export async function loadRepositoryAdapter() {
       ]);
       controls.selectCalls = (controls.selectCalls ?? 0) + 1;
       await writeFile(controlsPath, `${JSON.stringify(controls)}\n`);
+      if (controls.pauseDuringSelection)
+        await requestPause({ stateRoot: dirname(directory), run: basename(directory) });
       if (controls.selectionMessage) throw new Error(controls.selectionMessage);
       if (controls.selectionReason)
         throw new QueueBlocked(controls.selectionReason, controls.selectionDiagnostics);
@@ -309,6 +313,11 @@ export function repositoryQueueAdapter(config, _executingRoot, options) {
         resolve(process.env.SUPERVISE_FIXTURE_STATE, "command-controls.json"),
         {},
       );
+      if (controls.pauseDuringSource)
+        await requestPause({
+          stateRoot: dirname(process.env.SUPERVISE_FIXTURE_STATE),
+          run: config.run,
+        });
       if (controls.stopReason) throw new QueueBlocked(controls.stopReason);
       // ISS-165 TEST-ONLY trigger at the queue's source boundary: the composed
       // options.native is the actual supervisor composition; only its external

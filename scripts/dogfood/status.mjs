@@ -4,6 +4,7 @@ import { open, readFile, readdir, readlink } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
+import { observePause } from "./pause.mjs";
 
 const exec = promisify(execFile);
 const commandOptions = { timeout: 20_000, maxBuffer: 16 * 1024 * 1024, windowsHide: true };
@@ -25,6 +26,7 @@ async function json(path) {
 // Unsupported platforms and unreadable process tables remain unknown.
 export async function observeSupervisor(configPath, procRoot = "/proc") {
   try {
+    const configured = await json(configPath);
     const matches = [];
     let inaccessible = false;
     // The ISS-136 worker check runs under bwrap's private PID namespace.
@@ -39,7 +41,15 @@ export async function observeSupervisor(configPath, procRoot = "/proc") {
         );
         if (script < 0 || !args[script + 1]) continue;
         const cwd = await readlink(resolve(procRoot, pid, "cwd"));
-        if (resolve(cwd, args[script + 1]) !== resolve(configPath)) continue;
+        const otherPath = resolve(cwd, args[script + 1]);
+        if (otherPath !== resolve(configPath)) {
+          const other = await json(otherPath);
+          if (!other) {
+            inaccessible = true;
+            continue;
+          }
+          if (other.run !== configured?.run || other.stateRoot !== configured?.stateRoot) continue;
+        }
         const stat = await readFile(resolve(procRoot, pid, "stat"), "utf8");
         const state = stat.slice(stat.lastIndexOf(")") + 2).split(" ")[0];
         if (state === "Z" || state === "X") continue;
@@ -184,6 +194,13 @@ export async function observeStatus(configPath, options = {}) {
     }
   };
   const supervisor = await (options.supervisor ?? observeSupervisor)(configPath);
+  let pause;
+  try {
+    pause = { status: "observed", ...(await observePause(loop)) };
+  } catch (error) {
+    pause = { status: "unavailable", diagnostic: diagnostic(error) };
+    unavailable.push(`Pause: ${pause.diagnostic}`);
+  }
   let events = [];
   let truncatedLog = false;
   try {
@@ -369,16 +386,18 @@ export async function observeStatus(configPath, options = {}) {
     }
   }
   const retainedStop = completed ? null : stop;
-  const stopped = !live && (retainedStop || event?.status === "blocked");
+  const stopped = !live && ((retainedStop && !pause.acknowledgedAt) || event?.status === "blocked");
   const status = live
     ? supervisor.status
     : supervisor.status === "unavailable"
       ? "unavailable"
       : stopped
         ? "stopped"
-        : event?.status === "idle" && (!selection || completed)
-          ? "idle/exited"
-          : "exited";
+        : pause.acknowledgedAt
+          ? "paused"
+          : event?.status === "idle" && (!selection || completed)
+            ? "idle/exited"
+            : "exited";
   const reason = stopped ? (retainedStop?.reason ?? event?.reason) : null;
   return {
     observedAt,
@@ -387,11 +406,12 @@ export async function observeStatus(configPath, options = {}) {
     scope: { adapter: loop.adapter, targetMilestone: loop.targetMilestone ?? null },
     status,
     supervisor,
+    pause,
     lastLogObservation: event
       ? { status: event.status, observedAt: event.observedAt ?? null }
       : null,
     current:
-      selection && !completed
+      selection && !completed && !pause.acknowledgedAt
         ? {
             ...selection,
             url: `https://github.com/${loop.repository}/issues/${selection.number}`,
@@ -409,7 +429,7 @@ export async function observeStatus(configPath, options = {}) {
         }
       : null,
     operatorAction:
-      !live && selection && !completed && !stopped
+      !live && selection && !completed && !stopped && !pause.acknowledgedAt
         ? "Saved work remains. Inspect its records before an authorized resume; no automatic restart."
         : null,
     progress: last
@@ -447,6 +467,12 @@ export function formatStatus(value) {
     `Progress ${value.progress.at ?? "unknown"}; age ${value.progress.ageSeconds === null ? "unknown" : `${value.progress.ageSeconds}s`} (${value.progress.event ?? "no timestamped event"})`,
   ];
   if (value.stop) lines.push(`Stop ${value.stop.reason}: ${value.stop.operatorAction}`);
+  if (value.pause?.status === "unavailable")
+    lines.push(`Pause unavailable: ${value.pause.diagnostic}`);
+  else if (value.pause?.requestedAt)
+    lines.push(
+      `Pause requested ${value.pause.requestedAt}; acknowledged ${value.pause.acknowledgedAt ?? "pending (current issue continues)"}`,
+    );
   if (value.supervisor.diagnostic)
     lines.push(`Supervisor evidence: ${value.supervisor.diagnostic}`);
   if (value.lastLogObservation)

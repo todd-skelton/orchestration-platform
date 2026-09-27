@@ -152,12 +152,15 @@ export function repositoryQueueAdapter(config, root, options) {
   return adapter;
 }
 
+export { PauseRequested } from "../../../scripts/dogfood/pause.mjs";
+
 registerHooks({
   resolve(specifier, context, nextResolve) {
     if (
       [
         "./queue.ts",
         "./supervision.ts",
+        "./pause.mjs",
         "./repository-adapter.mjs",
         "./dispatch-adapter.ts",
       ].includes(specifier) &&

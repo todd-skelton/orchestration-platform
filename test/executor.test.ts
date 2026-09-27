@@ -143,6 +143,99 @@ async function startLoopHarness(body: string[]) {
   return { root, run };
 }
 
+it.for([
+  { flag: "-PauseAfterCurrent", action: "pause", code: 0, launch: false },
+  { flag: "-Resume", action: "resume", code: 0, launch: true },
+  { flag: "", action: "start", code: 0, launch: true },
+  { flag: "-Resume", action: "resume", code: 1, launch: false },
+])(
+  "launcher preflight $action (exit $code) precedes every bridge and launch",
+  async ({ flag, action, code, launch }, context) => {
+    const shell = await powershell();
+    if (!shell) return context.skip();
+    const root = await mkdtemp(resolve(tmpdir(), "pause-launcher-"));
+    cleanup.push(() => rm(root, { recursive: true, force: true }));
+    const source = await readFile(resolve(executor, "start-loop.ps1"), "utf8");
+    const boundary = "$check = [System.Diagnostics.Process]::Start($control)";
+    expect(source).toContain(boundary);
+    const script = resolve(root, "capture.ps1");
+    // Replace external execution only. The real entry constructs argv, branches
+    // on preflight failure/pause, and forwards resume into the attached launcher.
+    await writeFile(
+      script,
+      source.replace(
+        boundary,
+        `
+    [pscustomobject]@{event='control'; arguments=@($control.ArgumentList); wslenv=$control.Environment['WSLENV']; shell=$control.UseShellExecute} | ConvertTo-Json -Compress
+    $check = [pscustomobject]@{ExitCode=${code}}
+    $check | Add-Member -MemberType ScriptMethod -Name WaitForExit -Value { }
+    function Start-PoolBridges { param($Bridge) Write-Output '{"event":"bridge"}' }
+    function Start-AttachedSupervisor { param($Executable, $ArgumentList, $VerifierWorktree)
+      [Console]::WriteLine(([pscustomobject]@{event='launch'; arguments=$ArgumentList; verifier=$VerifierWorktree} | ConvertTo-Json -Compress))
+      return 0
+    }
+  `,
+      ),
+    );
+    const config = '/root/config with spaces/loop;$PATH "quoted".json';
+    const result = await new Promise<{ code: number | null; stdout: string }>((done, reject) => {
+      const child = spawn(
+        shell,
+        [
+          "-NoProfile",
+          "-NonInteractive",
+          "-File",
+          script,
+          "-Config",
+          config,
+          "-VerifierWorktree",
+          "C:/verifier space",
+          ...(flag ? [flag] : []),
+        ],
+        { windowsHide: true },
+      );
+      let stdout = "";
+      child.stdout.on("data", (data) => (stdout += data));
+      child.on("error", reject);
+      child.on("close", (code) => done({ code, stdout }));
+    });
+    expect(result.code).toBe(code);
+    const rows = result.stdout
+      .trim()
+      .split(/\r?\n/)
+      .map((line) => JSON.parse(line));
+    expect(rows[0]).toMatchObject({
+      event: "control",
+      wslenv: "",
+      shell: false,
+      arguments: [
+        "-d",
+        "Ubuntu",
+        "--exec",
+        "/root/orchestration-m1/tools/node-v24.15.0-linux-x64/bin/node",
+        "/root/orchestration-m1/repo/scripts/dogfood/control.mjs",
+        config,
+        action,
+      ],
+    });
+    expect(rows.map((row) => row.event)).toEqual(
+      launch ? ["control", "bridge", "launch"] : ["control"],
+    );
+    if (launch)
+      expect(rows[2]).toMatchObject({
+        arguments: [
+          "-d",
+          "Ubuntu",
+          "--",
+          "bash",
+          "/root/orchestration-m1/repo/scripts/executor/run-loop.sh",
+          config,
+        ],
+        verifier: "C:/verifier space",
+      });
+  },
+);
+
 it("starts one bridge per missing port before launching the loop", async (context) => {
   const root = await mkdtemp(resolve(tmpdir(), "start-loop-bridge-"));
   cleanup.push(() => rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }));

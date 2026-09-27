@@ -15,6 +15,8 @@ import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, expect, it } from "vitest";
+import { controlLoop } from "../../scripts/dogfood/control.mjs";
+import { observePause, requestPause } from "../../scripts/dogfood/pause.mjs";
 import { prerequisiteFixture, prerequisiteProof } from "./fixtures/prerequisite.js";
 import {
   sourceFailureFixture,
@@ -175,6 +177,29 @@ it.each([false, true])("FAIL drains unrelated ready order: resumed=%s", async (r
     f.calls.filter((call) => call.startsWith("launch:") && call.endsWith("/110")),
   ).toHaveLength(1);
 });
+
+it("pause after retained repair failure preserves attempts, retry and routing charges on resume", async () => {
+  const f = await repairFailureFixture();
+  roots.push(f.root);
+  await f.fail();
+  await f.stop();
+  const before = await snapshot(f.runState);
+  await requestPause(f.loop);
+  await expect(f.advance()).rejects.toThrow("pause-after-current");
+  await expect(f.advance()).rejects.toThrow("pause-after-current");
+  for (const [path, bytes] of before) expect(await readFile(path, "utf8"), path).toBe(bytes);
+  const config = resolve(f.root, "pause-loop.json");
+  await writeFile(config, JSON.stringify(f.loop));
+  await controlLoop(config, "resume", async () => ({ status: "exited", pid: null }));
+  const next = (await f.advance())!;
+  expect(next.selection.key).toBe("fixture-159");
+  expect(next.initialHistory).toHaveLength(6);
+  expect(next.initialHistory.some((worker) => worker.outcome === "failed")).toBe(true);
+  for (const [path, bytes] of before) expect(await readFile(path, "utf8"), path).toBe(bytes);
+  expect(
+    f.calls.filter((call) => call.startsWith("launch:") && call.endsWith("/110")),
+  ).toHaveLength(5);
+});
 let runOrdinal = 0;
 const command = resolve(import.meta.dirname, "../../scripts/dogfood/supervise.mjs");
 const hook = resolve(import.meta.dirname, "supervise-fixtures/hook.mjs");
@@ -302,6 +327,115 @@ it("runs one selected issue through observation, completion and the next selecti
     { status: "idle", run: "synthetic-command-run" },
   ]);
 }, 30_000);
+
+it("pauses before selection across restart, then explicitly resumes through the same command", async () => {
+  const f = await fixture();
+  const loop = JSON.parse(await readFile(f.request, "utf8"));
+  await requestPause(loop);
+  for (let restart = 0; restart < 2; restart++) {
+    const result = await run(f.request);
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toContain('"status":"paused"');
+    expect(await readdir(f.runState)).not.toContain("cycle-1-selected.json");
+    expect(
+      JSON.parse(await readFile(resolve(f.runState, "command-controls.json"), "utf8")).selectCalls,
+    ).toBeUndefined();
+  }
+  expect((await observePause(loop)).acknowledgedAt).not.toBeNull();
+  for (const status of ["running", "paused", "unavailable"]) {
+    await expect(
+      controlLoop(f.request, "resume", async () => ({ status, pid: 42 })),
+    ).rejects.toThrow(`supervisor-${status}`);
+    expect((await observePause(loop)).requestId).not.toBeNull();
+  }
+  await controlLoop(f.request, "resume", async () => ({ status: "exited", pid: null }));
+  await writeFile(
+    resolve(f.runState, "command-controls.json"),
+    JSON.stringify({ observeImmediately: true }),
+  );
+  expect((await run(f.request)).stdout).toContain('"status":"complete"');
+  const completed = await readFile(resolve(f.runState, "cycle-1-complete.json"), "utf8");
+  expect(JSON.parse(completed).history).toHaveLength(2);
+  expect((await run(f.request)).stdout).toContain('"status":"idle"');
+  expect(await readFile(resolve(f.runState, "cycle-1-complete.json"), "utf8")).toBe(completed);
+});
+
+it.each(["OPEN", "CLOSED"])(
+  "honors a request received during selection reads before dispatch or idle: %s",
+  async (state) => {
+    const f = await fixture();
+    await writeFile(resolve(f.runState, "command-issue.json"), JSON.stringify({ state }));
+    await writeFile(
+      resolve(f.runState, "command-controls.json"),
+      JSON.stringify({ pauseDuringSelection: true }),
+    );
+    const result = await run(f.request);
+    expect(result.code, result.stderr).toBe(0);
+    expect(result.stdout).toContain('"status":"paused"');
+    expect(result.stdout).not.toContain('"status":"idle"');
+    expect(await readdir(f.runState)).not.toContain("cycle-1-selected.json");
+    await expect(readFile(resolve(f.runState, "command-calls.log"))).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  },
+);
+
+it.each([undefined, "implementation-attempt-ceiling-exhausted", "provider-unavailable"])(
+  "pause during current work preserves completion or stop handling: %s",
+  async (stopReason) => {
+    const f = await fixture();
+    const loop = JSON.parse(await readFile(f.request, "utf8"));
+    await writeFile(
+      resolve(f.runState, "command-controls.json"),
+      JSON.stringify({ pauseDuringSource: true, observeImmediately: true, stopReason }),
+    );
+    const result = await run(f.request);
+    const host = stopReason === "provider-unavailable";
+    expect(result.code, result.stderr).toBe(host ? 1 : 0);
+    expect(result.stdout).toContain(host ? '"status":"supervisor-started"' : '"status":"paused"');
+    if (host) {
+      expect(result.stderr).toContain('"reason":"provider-unavailable"');
+      expect(result.stdout).not.toContain('"status":"paused"');
+    }
+    const pause = await observePause(loop);
+    expect(Boolean(pause.acknowledgedAt)).toBe(!host);
+    const controls = JSON.parse(
+      await readFile(resolve(f.runState, "command-controls.json"), "utf8"),
+    );
+    expect(controls.selectCalls).toBe(1);
+    expect(controls.parkCalls ?? 0).toBe(stopReason && !host ? 1 : 0);
+    expect(await readdir(f.runState)).not.toContain("cycle-2-selected.json");
+    const before = await snapshot(f.runState);
+    const restart = await run(f.request);
+    expect(restart.code).toBe(host ? 1 : 0);
+    if (!host) expect(await snapshot(f.runState)).toEqual(before);
+  },
+);
+
+it("a saved active selection resumes with a pending pause and retains charged history", async () => {
+  const f = await fixture();
+  const loop = JSON.parse(await readFile(f.request, "utf8"));
+  const selection = { cycle: 1, key: "ISS-105", number: 362, base: "a".repeat(40) };
+  await writeFile(
+    resolve(f.runState, "cycle-1-selected.json"),
+    `${JSON.stringify(selection, null, 2)}\n`,
+  );
+  await requestPause(loop);
+  await writeFile(
+    resolve(f.runState, "command-controls.json"),
+    JSON.stringify({ observeImmediately: true }),
+  );
+  const result = await run(f.request);
+  expect(result.code, result.stderr).toBe(0);
+  expect(result.stdout).toContain('"status":"complete"');
+  expect(result.stdout).toContain('"status":"paused"');
+  expect(
+    JSON.parse(await readFile(resolve(f.runState, "cycle-1-complete.json"), "utf8")).history,
+  ).toHaveLength(2);
+  const before = await snapshot(f.runState);
+  await run(f.request);
+  expect(await snapshot(f.runState)).toEqual(before);
+});
 
 async function savedSelection(options: {
   workspace: "stale" | "missing";
