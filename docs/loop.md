@@ -1013,6 +1013,106 @@ literal paths with spaces and shell metacharacters; they skip where `pwsh` is
 absent, including this worker. This observation supplies no host installation or
 live-start authority.
 
+### Opt-in attention watcher
+
+ISS-138 addresses the repeated host inspection in ISS-129, ISS-132, ISS-134
+and ISS-110. `loop:watch` is a separate host process observing one configured
+run through ISS-136 status. It continues observing after the supervisor exits.
+It only writes its own notification state and comments on one explicitly
+configured existing GitHub tracking issue; it never starts or resumes delivery,
+changes priorities, edits scheduling records, or installs a service. Merging
+this implementation neither installs nor enables a watcher.
+
+After the ordinary reviewed-executor installation and explicit operator
+activation, create a separate JSON file outside the checkout, for example
+`/root/orchestration-m2/watch.json`:
+
+```json
+{
+  "loopConfig": "/root/orchestration-m2/loop-replanned.json",
+  "destination": "https://github.com/OWNER/REPO/issues/123",
+  "intervalSeconds": 60,
+  "noProgressSeconds": 1800
+}
+```
+
+Replace the destination with the authorized existing tracking issue, and ensure
+the host's existing `gh` authentication can read and comment there. The destination
+may be in a different repository. Use an absolute loop config path. From the
+installed WSL executor checkout, with its usual Node/pnpm/gh tool PATH:
+
+```sh
+pnpm --silent loop:watch /root/orchestration-m2/watch.json
+```
+
+Run it in a separate host terminal from the supervisor. For explicit detached
+activation, the operator can instead run:
+
+```sh
+nohup pnpm --silent loop:watch /root/orchestration-m2/watch.json > /root/orchestration-m2/watch.log 2>&1 &
+```
+
+Record that shell's `$!` and inspect `watch.log`. To stop a foreground watcher,
+use Ctrl-C. For the detached watcher, identify its Node watcher process with
+`pgrep -af 'scripts/dogfood/watch.mjs'`, verify its config argument, then
+`kill -TERM <watcher-node-pid>`; do not signal the supervisor. Disabling means
+stopping that watcher and not launching it again. There is no automatic start,
+restart or service registration. Run only one watcher for a run/destination;
+the single-operator model does not provide a concurrent-watcher lock. Configuration
+changes take effect on watcher restart. `--once` performs one bounded observation
+and exits (nonzero for observation/notification failure), useful for an explicit
+test activation. It can post a real comment to the configured destination.
+
+The default observation interval is 60 seconds (configurable from 30 seconds
+to one day), measured after each completed observation. No-progress defaults to
+1800 seconds and must be at least that interval. Status and each GitHub command
+have a two-minute command bound; observations never overlap. A failed observation
+or notification is visible on stderr/the watcher log and retries only on a later
+interval. This does not alter any delivery timeout, retry or launch allowance.
+
+Attention comments identify the run, affected issue/PR, exact learning-note link
+when readable (otherwise its issue), last evidenced progress and age, known
+provider/CI/deploy waits, and the next operator action. The run has no hosted run
+page: its identifier maps to the configured run's local status and runtime.
+Comments summarize structured status fields, never stop bodies, credentials or
+worker transcripts. Stops and confirmed unexpected supervisor exits notify even
+on the first observation. Idle with blocked outstanding work requests operator
+attention; acknowledged pause, process suspension, and exhausted idle are not
+crashes. A pending pause does not excuse a host stop. A no-progress warning means
+only that no newer timestamped progress is evidenced, even with a live supervisor;
+if timestamps are absent, timing starts at the first retained running observation
+and the message still says progress/age are unknown.
+
+Minimal state is retained at
+`<stateRoot>/<run>/operator/watch-<destination-hash>.json`, outside the checkout
+and separate from delivery state. It holds the active condition, counter, pending
+comment and first running observation. Unchanged conditions are silent across
+restarts even as their age grows. A changed condition notifies once; a positively
+observed return to running without a warning, intentional pause or exhausted idle
+reports recovery once. Unavailable observations are logged locally and cannot
+establish recovery. Recovery is not a worker-health or delivery verdict.
+Before posting, the watcher saves a pending comment and checks its marker on the
+tracking issue; later observations reconcile lost responses before retrying.
+Pending notifications finish before newer transitions, so an outage can delay
+an alert and its subsequent recovery. Keep the state when stopping/restarting;
+deleting it can duplicate comments. GitHub does not offer atomic comment
+idempotency: delayed visibility after an uncertain response can still duplicate
+a post. Notifications depend on GitHub availability and the operator's issue
+subscription/notification settings; a posted comment is not proof it was read.
+A watcher on this host cannot alert while the whole host is powered off. This
+is not remote uptime monitoring.
+
+`test/dogfood/watch.test.ts` demonstrates explicit activation on a disposable
+test run: live observation, supervisor loss, one tracking-issue alert, repeated
+observation/restart without another alert, then one recovery. It exercises the
+actual ISS-136 status reader and GitHub command arguments with a local fake
+GitHub response transport and proves delivery files are unchanged. Additional
+cases cover retained notes, pauses, blocked idle, slow work and provider/CI/deploy
+waits, unavailable evidence and failed/lost GitHub responses. This is a local
+test demonstration, not live GitHub notification delivery; it does not touch
+the active M2 validation. A live demonstration requires the operator's explicit
+test-run config and destination and the same opt-in commands above.
+
 ### Pause after current work and change priorities
 
 ISS-137 addresses ISS-135's successor dispatch and ISS-110's manual same-run

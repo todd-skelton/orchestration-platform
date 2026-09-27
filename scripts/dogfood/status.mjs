@@ -422,6 +422,7 @@ export async function observeStatus(configPath, options = {}) {
     stop: stopped
       ? {
           reason,
+          marker: retainedStop?.marker ?? null,
           operatorAction:
             retainedStop?.body ??
             event?.diagnostics ??
