@@ -1131,6 +1131,19 @@ publication. It freshly reads the authority comment's ID, URL, author and
 complete body, the terminal receipt, and the PR's number, URL, source branch,
 head, OPEN state and draft flag. Comment body and claim bytes use SHA-256;
 terminal history uses `queueDigest`. Captures retain UTC observation instants.
+The ISS-216 candidate repair compares the complete receipt byte for byte with
+the retained stop body plus exactly ` To unpark, ${unpark}.`, using the self
+adapter's deterministic unpark instructions and the poster's shared body
+derivation. Admission never calls `park`. Only the already eligible self
+`continuation-failed` item stop supplies this suffix; host stops post their
+unchanged body and do not qualify. Missing or different suffixes, edited or
+truncated bodies and extra bytes refuse; no trimming or prefix comparison is
+permitted. Historical stop shapes and bytes remain unchanged.
+This repair remains candidate behavior until reviewed, hosted-green landing
+and separately authorized host installation. The host must then freshly
+observe the complete receipt and all existing authority, history, claim and
+publication bindings at pre-reservation admission; synthetic round-trip tests
+establish neither live admission nor ISS-146 readiness or start authority.
 An unavailable external read stops as
 `terminal-attempt-admission-authority-unavailable`, without parking or spending
 admission. A contradictory or stale binding stops as

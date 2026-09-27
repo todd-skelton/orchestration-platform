@@ -186,6 +186,8 @@ export function localGates({ repository }) {
   return ["typecheck", "format:check", "test"];
 }
 
+export const unparkInstructions = "add the `ready` label after acting on the note";
+
 export async function park({ repository, number }) {
   validateRepository(repository);
   await runFile("gh", [
@@ -197,7 +199,7 @@ export async function park({ repository, number }) {
     "--repo",
     repository,
   ]);
-  return "add the `ready` label after acting on the note";
+  return unparkInstructions;
 }
 
 function describeLineChanges({ added, deleted }) {

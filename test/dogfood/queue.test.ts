@@ -1665,6 +1665,9 @@ async function loopFixture(
           cp(resolve(import.meta.dirname, "../../scripts"), resolve(repository, "scripts"), {
             recursive: true,
           }),
+          cp(resolve(import.meta.dirname, "../../adapters"), resolve(repository, "adapters"), {
+            recursive: true,
+          }),
         ]
       : []),
   ]);
