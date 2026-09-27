@@ -661,6 +661,123 @@ it("resumes a still-open saved selection through ordinary source and delivery", 
   ).toHaveLength(2);
 });
 
+it.each(["typed", "untyped"])(
+  "ISS-217 retains observation and learning-note diagnostics: %s",
+  async (noteFailure) => {
+    const f = await fixture();
+    await writeFile(
+      resolve(f.runState, "command-controls.json"),
+      JSON.stringify({
+        observeImmediately: true,
+        observationFailure: "issue-observation-unavailable",
+        noteFailure,
+      }),
+    );
+    const result = await run(f.request);
+    expect(result.stdout).toContain('"status":"observing-hosted-checks"');
+    expect(result.code).toBe(1);
+    expect(JSON.parse(result.stderr)).toMatchObject({
+      reason: "issue-observation-unavailable",
+      diagnostics: "synthetic observation category",
+      lifecycleReason: "learning-note-state-unknown",
+    });
+    expect(JSON.parse(result.stderr).lifecycleDiagnostics).toBe(
+      noteFailure === "typed" ? "synthetic note category" : undefined,
+    );
+    const stop = JSON.parse(await readFile(resolve(f.runState, "cycle-1-stop-1.json"), "utf8"));
+    expect(stop).toMatchObject({ reason: "issue-observation-unavailable", attempts: 1 });
+    expect(stop.body).toContain('Diagnostic: "synthetic observation category".');
+    expect(stop.body + result.stderr).not.toContain("private note error");
+    await expect(
+      readFile(resolve(f.runState, "cycle-1-stop-1-complete.json")),
+    ).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  },
+);
+
+it.each([
+  { reason: "issue-observation-unavailable", freshFailure: false },
+  { reason: "gate-host-failed:synthetic", freshFailure: false },
+  { reason: "issue-observation-unavailable", freshFailure: true },
+])(
+  "ISS-217 pending note resumes only an observation stop in one restart: $reason, fresh failure=$freshFailure",
+  async ({ reason, freshFailure }) => {
+    const f = await fixture();
+    const controls = resolve(f.runState, "command-controls.json");
+    await writeFile(
+      controls,
+      JSON.stringify({
+        observeImmediately: true,
+        observationFailure: reason,
+        noteFailure: "typed",
+      }),
+    );
+    const failed = await run(f.request);
+    expect(failed.stdout).toContain('"status":"observing-hosted-checks"');
+    expect(JSON.parse(failed.stderr)).toMatchObject({
+      reason,
+      lifecycleReason: "learning-note-state-unknown",
+    });
+    const before = await snapshot(f.runState);
+    const retained = [...before].filter(([path]) =>
+      /(?:selected|stop-1|participant-\d+-terminal)\.json$/.test(path),
+    );
+    expect(retained).toHaveLength(4);
+    await writeFile(
+      controls,
+      JSON.stringify({
+        observeImmediately: true,
+        ...(freshFailure ? { deliveryStop: "gate-host-failed:fresh" } : {}),
+      }),
+    );
+    const resumed = await run(f.request);
+    const continuation = reason === "issue-observation-unavailable";
+    expect(resumed.code, resumed.stderr).toBe(continuation && !freshFailure ? 0 : 1);
+    if (continuation && !freshFailure) {
+      expect(resumed.stdout).toContain('"status":"complete"');
+      expect(resumed.stdout).toContain('"status":"idle"');
+    } else {
+      expect(JSON.parse(resumed.stderr)).toMatchObject({
+        status: "blocked",
+        reason: freshFailure ? "gate-host-failed:fresh" : reason,
+      });
+      expect(resumed.stdout).not.toContain('"status":"complete"');
+    }
+    const completed = await readFile(resolve(f.runState, "cycle-1-stop-1-complete.json"), "utf8");
+    const issuePath = resolve(f.runState, "command-issue.json");
+    const issue = JSON.parse(await readFile(issuePath, "utf8"));
+    expect(issue.comments).toHaveLength(freshFailure ? 2 : 1);
+    expect(issue.comments[0]).toContain("<!-- loop-stop:synthetic-command-run:1:1 -->");
+    if (freshFailure) {
+      expect(issue.state).toBe("OPEN");
+      expect(issue.comments[1]).toContain("<!-- loop-stop:synthetic-command-run:1:2 -->");
+      await writeFile(controls, JSON.stringify({ observeImmediately: true }));
+    }
+    const calls = await readFile(resolve(f.runState, "command-calls.log"), "utf8");
+    expect(calls.match(/source:ISS-105:1/g)).toHaveLength(1);
+    expect(calls.match(/delivery:ISS-105:1/g)).toHaveLength(continuation ? 2 : 1);
+    expect(calls.match(/workspace:ISS-105/g)).toHaveLength(continuation ? 3 : 2);
+    const settled = await snapshot(f.runState);
+    const repeated = await run(f.request);
+    expect(repeated.code, repeated.stderr).toBe(0);
+    expect(
+      (await readFile(resolve(f.runState, "command-calls.log"), "utf8")).match(/source:ISS-105:1/g),
+    ).toHaveLength(1);
+    if (continuation && !freshFailure)
+      for (const [path, bytes] of settled)
+        if (!path.startsWith(resolve(f.runState, "command-")))
+          expect(await readFile(path, "utf8"), path).toBe(bytes);
+    expect(JSON.parse(await readFile(issuePath, "utf8")).comments).toEqual(issue.comments);
+    expect(await readFile(resolve(f.runState, "cycle-1-stop-1-complete.json"), "utf8")).toBe(
+      completed,
+    );
+    for (const [path, bytes] of retained) expect(await readFile(path, "utf8"), path).toBe(bytes);
+    expect(await readdir(f.runState)).not.toContain(`cycle-1-stop-${freshFailure ? 3 : 2}.json`);
+    expect(JSON.parse(await readFile(controls, "utf8")).parkCalls).toBeUndefined();
+  },
+);
+
 it.each([
   { state: "OPEN", reason: "candidate-workspace-drift", workspaceCalls: true },
   { state: "UNKNOWN", reason: "issue-observation-unavailable", workspaceCalls: false },

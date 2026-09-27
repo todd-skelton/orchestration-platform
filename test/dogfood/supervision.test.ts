@@ -314,11 +314,83 @@ it.each(["start", "complete"])(
         : completeCycle(f.config, f.cycle, [], f.adapter);
     await expect(operation).rejects.toMatchObject({
       reason: "issue-observation-unavailable",
-      diagnostics: undefined,
+      diagnostics: "GitHub connection failed before send",
     });
     expect(f.probe).toHaveBeenCalledTimes(1);
     expect(f.pause).not.toHaveBeenCalled();
     expect(f.post).not.toHaveBeenCalled();
+  },
+);
+
+it.each(["malformed-json", "wrong-number"])(
+  "ISS-217 non-note %s retains a fixed malformed observation diagnostic",
+  async (mode) => {
+    const f = await noteFixture();
+    f.probe.mockResolvedValue(
+      mode === "malformed-json"
+        ? "not JSON: private comment body"
+        : JSON.stringify({ ...f.row, number: 999 }),
+    );
+    await expect(startCycle(f.config, f.cycle, f.adapter)).rejects.toMatchObject({
+      reason: "issue-observation-unavailable",
+      diagnostics: "malformed issue observation",
+    });
+    expect(f.probe).toHaveBeenCalledTimes(1);
+    expect(f.pause).not.toHaveBeenCalled();
+    expect(f.post).not.toHaveBeenCalled();
+  },
+);
+
+it.each(["absent", "accepted", "unknown", "post-wrong-key", "post-closed", "post-duplicate"])(
+  "ISS-217 pending observation note validates fresh marker authority: %s",
+  async (mode) => {
+    const f = await noteFixture();
+    f.probe.mockRejectedValue(noteTransport());
+    await expect(
+      stopCycle(f.config, f.cycle, "issue-observation-unavailable", 2, f.adapter, f.policy),
+    ).rejects.toMatchObject({ reason: "learning-note-state-unknown" });
+    const intentPath = resolve(f.directory, "cycle-1-stop-1.json");
+    const intent = await readFile(intentPath, "utf8");
+    const selection = await readFile(resolve(f.directory, "cycle-1-selected.json"));
+    f.probe.mockClear();
+    f.events.length = 0;
+    if (mode !== "unknown") f.probe.mockImplementation(async () => JSON.stringify(f.row));
+    if (mode === "accepted") f.row.comments.push({ body: JSON.parse(intent).body });
+    if (mode.startsWith("post-"))
+      f.post.mockImplementationOnce(async (body) => {
+        f.row.comments.push({ body });
+        if (mode === "post-wrong-key") f.row.body = "<!-- planning-key: ISS-999 -->";
+        if (mode === "post-closed") f.row.state = "CLOSED";
+        if (mode === "post-duplicate") f.row.comments.push({ body });
+      });
+    const completionPath = resolve(f.directory, "cycle-1-stop-1-complete.json");
+    if (mode === "absent" || mode === "accepted") {
+      await expect(f.reconcile()).resolves.toBeUndefined();
+      expect(f.events).toEqual(mode === "absent" ? ["view", "comment", "view"] : ["view"]);
+      const completion = await readFile(completionPath);
+      expect(JSON.parse(completion.toString()).history).toEqual(f.cycle.initialHistory);
+      await expect(f.reconcile()).resolves.toBeUndefined();
+      expect(await readFile(completionPath)).toEqual(completion);
+      expect(f.probe).toHaveBeenCalledTimes(mode === "absent" ? 2 : 1);
+      expect(f.row.comments).toHaveLength(1);
+    } else {
+      await expect(f.reconcile()).rejects.toMatchObject({
+        reason:
+          mode === "unknown"
+            ? "learning-note-state-unknown"
+            : mode === "post-wrong-key"
+              ? "selected-issue-identity-drift"
+              : mode === "post-closed"
+                ? "stopped-issue-state-unknown"
+                : "duplicate-learning-note",
+      });
+      expect(f.probe).toHaveBeenCalledTimes(mode === "unknown" ? 3 : 2);
+      await expect(readFile(completionPath)).rejects.toMatchObject({ code: "ENOENT" });
+    }
+    expect(f.post).toHaveBeenCalledTimes(mode === "accepted" || mode === "unknown" ? 0 : 1);
+    expect(f.park).not.toHaveBeenCalled();
+    expect(await readFile(intentPath, "utf8")).toBe(intent);
+    expect(await readFile(resolve(f.directory, "cycle-1-selected.json"))).toEqual(selection);
   },
 );
 

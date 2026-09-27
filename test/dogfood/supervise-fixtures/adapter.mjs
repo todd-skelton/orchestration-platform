@@ -197,12 +197,18 @@ export function repositorySupervisionAdapter() {
       );
       return controls.main ?? "a".repeat(40);
     },
-    async issue(config, number) {
+    async issue(config, number, purpose) {
       await call(`issue:${number}`);
       const controls = await readJson(
         resolve(process.env.SUPERVISE_FIXTURE_STATE, "command-controls.json"),
         {},
       );
+      if (purpose === "learning-note" && controls.noteFailure) {
+        if (controls.noteFailure === "untyped") throw new Error("private note error");
+        throw new QueueBlocked("learning-note-state-unknown", "synthetic note category");
+      }
+      if (purpose !== "learning-note" && controls.hostedObserved && controls.observationFailure)
+        throw new QueueBlocked(controls.observationFailure, "synthetic observation category");
       if (controls.issueObservationStops?.[number])
         throw new QueueBlocked(controls.issueObservationStops[number]);
       if (controls.issueObservations?.[number]) return controls.issueObservations[number];
@@ -347,6 +353,17 @@ export function repositoryQueueAdapter(config, _executingRoot, options) {
     },
     async delivery(item, accepted) {
       await call(`delivery:${item.id}`);
+      const controlsPath = resolve(process.env.SUPERVISE_FIXTURE_STATE, "command-controls.json");
+      const controls = await readJson(controlsPath, {});
+      if (controls.deliveryStop) throw new QueueBlocked(controls.deliveryStop);
+      if (controls.observationFailure && !controls.hostedObserved) {
+        await writeFile(controlsPath, JSON.stringify({ ...controls, hostedObserved: true }));
+        return {
+          status: "observing-hosted-checks",
+          head: accepted.head,
+          reviewId: accepted.reviewId,
+        };
+      }
       return {
         status: "complete",
         run: item.source.run,

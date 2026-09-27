@@ -1012,6 +1012,8 @@ export async function reconcilePendingStop(
       adapter,
       repositoryAdapter,
     );
+    // ISS-217: a reconciled observation note can resume its saved cycle now.
+    if (scope === "run" && intent.reason === "issue-observation-unavailable") return undefined;
     // ISS-157: finish the old learning note, then let native delivery admit the grant.
     // Completed notes already follow that path. The saved stop itself remains untouched.
     const grant = config.gateStopAuthorization;
@@ -1081,7 +1083,7 @@ export function repositorySupervisionAdapter(
           purpose === "learning-note"
             ? "learning-note-state-unknown"
             : "issue-observation-unavailable",
-          purpose === "learning-note" ? failure.message : undefined,
+          failure.message,
         );
       }
     }
@@ -1104,7 +1106,7 @@ export function repositorySupervisionAdapter(
         comments: row.comments.map((comment: any) => comment?.body),
       };
     } catch {
-      throw new QueueBlocked("issue-observation-unavailable");
+      throw new QueueBlocked("issue-observation-unavailable", "malformed issue observation");
     }
   };
   return {
