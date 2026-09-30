@@ -22,7 +22,7 @@ export const SELF_ROUTING: RoutingRow = {
   ],
   reviewer: [
     { model: "claude-opus-5-5", effort: "high" },
-    { model: "gpt-6-sol", effort: "high" },
+    { model: "gpt-6.1-sol", effort: "high" },
   ],
 };
 

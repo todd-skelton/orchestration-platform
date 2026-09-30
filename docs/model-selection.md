@@ -8,10 +8,10 @@ placements, not provider availability or capability evidence.
 | Selector           | Short label | Efforts in native ladders | Native ladder roles |
 | ------------------ | ----------- | ------------------------- | ------------------- |
 | `gpt-6-astra`       | Astra       | medium, high, xhigh       | author, reviewer    |
-| `gpt-6-sol`         | Sol         | medium, high              | author, reviewer    |
+| `gpt-6.1-sol`       | Sol         | medium, high              | author, reviewer    |
 | `gpt-6-luna`        | Luna        | high, xhigh               | author              |
 | `claude-opus-5-5`   | Opus        | medium, high              | author, reviewer    |
-| `claude-sonnet-5`   | Sonnet      | medium, high              | author, reviewer    |
+| `claude-sonnet-5-5` | Sonnet      | medium, high              | author, reviewer    |
 | `claude-fable-5-1`  | Fable       | high                      | author              |
 
 Placement comes from the routing row (ISS-149, ISS-158, `docs/loop.md`).
@@ -19,7 +19,8 @@ Each row has ordered author and reviewer ladders; reviewer models are disjoint
 from every author model. Self uses Astra/high, Astra/xhigh, Fable/high author
 with Opus/high then Sol/high review. Chase Sets planning markers select the
 ladders in `adapters/chase-sets-routing.json`. Current placement prose uses
-the short labels above: Luna and Sol mean GPT-6, and Opus means Opus 5.5.
+the short labels above: Luna means Luna 6, Sol means Sol 6.1, Sonnet means
+Sonnet 5.5, and Opus means Opus 5.5.
 `claude-fable-5` is retired. Terra has no native route and is removed from
 the current dispatch roster.
 
@@ -30,6 +31,13 @@ That replacement preserved roles, efforts and ladder order; ISS-203's placement
 changes are below. Native Opus roles grant no incumbent protected authorship.
 Generic operator model strings remain open configuration; there is no global
 blacklist or automatic static-config rewrite.
+
+ISS-218 applies Todd's September 28 [Sonnet replacement](https://github.com/chase-sets/chase-sets/issues/8403)
+and September 29 [Sol replacement](https://github.com/chase-sets/chase-sets/issues/8403#issuecomment-5900473741):
+`gpt-6-sol` becomes `gpt-6.1-sol` and `claude-sonnet-5` becomes
+`claude-sonnet-5-5`. These literal substitutions preserve every ISS-203 row,
+role, effort and rung, including native Sonnet reviewer tails. Predecessors
+remain historical identities, with no new selections from shipped ladders.
 
 After every author failure, try the next configured rung: normally more effort
 before changing model, with the other vendor last in every author ladder.
@@ -43,7 +51,7 @@ the selected rung. Attempt ceilings and retry budgets are unchanged.
 
 ## Shipped placements
 
-ISS-158 supplies failure-count advancement, ISS-202 the successor selectors,
+ISS-158 supplies failure-count advancement, ISS-202/218 the successor selectors,
 and ISS-203 this complete placement matrix. Entries are in launch order:
 
 | Row | Author ladder | Review 11 ladder | Review 12 ladder |
@@ -60,8 +68,9 @@ and ISS-203 this complete placement matrix. Entries are in launch order:
 Review 11 uses high effort for intended recall; review 12 uses medium for
 intended precision. Neither intent is locally certified.
 Reviewer fallbacks exclude all models in their row's author ladder, including
-later rungs. Sonnet is a weaker refusal-only continuity rung; a quality verdict
-never advances review to it. Two refusals exhaust review and stop the host,
+later rungs. Sonnet retains its predecessor's refusal-only continuity role;
+this makes no successor strength claim, and a quality verdict never advances
+review to it. Two refusals exhaust review and stop the host,
 retaining the pool reset time. Replacement authority transfers no predecessor
 benchmark, score, verdict or capability evidence to the successors.
 
@@ -77,6 +86,10 @@ USD/task estimates are API benchmark costs, not subscription spend or cost per
 accepted artifact. Opus/Fable cells include provider fallback; they establish
 neither pure-model nor local native performance. The public panel establishes
 no reviewer recall, UI fit or service bar.
+The September 23 Sol and Sonnet labels in this entire section refer to the
+predecessor selectors `gpt-6-sol` and `claude-sonnet-5`; no benchmark,
+score, cost, sample count, verdict or capability evidence transfers to Sol 6.1 or
+Sonnet 5.5.
 
 - Row 2 keeps the cheaper Luna/xhigh effort step ($0.042 weighted) before
   adding Sol/medium (index 39.8, TB4 18.7%, $0.248). Sonnet/medium stays last
@@ -121,11 +134,17 @@ row and requires a separate decision before scope expansion.
 
 Use a quiescent fresh-run cutover only after independent exact-head PASS,
 final-head three-OS bootstrap green and separate host authorization, with
-supervisors absent and fresh runs/paths authorized. Immediately before an
-authorized install, the host must capture native account_pool/CLI admission
+supervisors and workers absent and fresh runs/paths authorized. Immediately
+before an authorized install, the host must capture native account_pool/CLI admission
 for each exact target model/effort on that host, with observed UTC instant,
-identity and result. Catalogue presence, earlier Pool14/Responses probes and
-fixture success are neither timely admission nor quality evidence. This change authorizes no
+exact requested/reported identity, effort, exit/result and retained evidence
+path. For ISS-218 the four captures are `gpt-6.1-sol/medium`,
+`gpt-6.1-sol/high`, `claude-sonnet-5-5/medium` and `claude-sonnet-5-5/high`,
+through the target executor's actual native Codex CLI/account_pool path.
+Unavailable or refused admission stops installation; it permits neither matrix
+changes nor predecessor fallback. Installed skill admission, catalogue presence,
+earlier Pool14/Responses probes and fixture success are neither timely admission
+nor quality evidence. This change authorizes no
 probe, install, start, unpark, host rotation or attempt renewal. Workers leave
 live executors, WSL runs, providers and runtime untouched. Independent reviewed
 publication, main-bound mirror and ordinary native readiness remain required.
@@ -134,16 +153,19 @@ Preserve old runs/configs and participant strings, efforts, routing indexes,
 attempts, failure counts, retries, ceilings and launch charges. Same-config
 replay retains its saved placement and rung. Changed ladders change the full
 configuration fingerprint and retain `conflicting-run-configuration` before
-launch: no aliases, backfill, waiver, automatic resume, budget reset or
-exhausted-lineage re-entry. Preserved-run continuation needs separate host
-disposition. Native authoring, independent review and all ordinary local,
+launch: no aliases, backfill, waiver, automatic resume, version-changing
+dead-worker retry, budget reset, exhausted-lineage re-entry or #457 renewal.
+Observing a pinned worker grants no retired-worker relaunch permission.
+Preserved-run continuation needs separate host disposition. Native authoring,
+independent review and all ordinary local,
 after-mirror and hosted gates remain required.
 
 ## Historical placement basis (2026-09-15)
 
 The following retained rationale describes the predecessor placements, not
-successor results. Here Luna/Sol mean GPT-5.6 and Opus means Claude Opus 5;
-none of these comparisons establishes successor quality or capability.
+successor results. Here Luna/Sol mean GPT-5.6, Sonnet means Sonnet 5 and Opus
+means Claude Opus 5; none of these comparisons establishes successor quality
+or capability.
 
 Rebuilt from public benchmarks (Artificial Analysis Intelligence Index v4.3
 and Coding Agent Index, vendor launch tables, Terminal-Bench 4.0, GDPval-AA,

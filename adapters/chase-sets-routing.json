@@ -12,11 +12,11 @@
         "effort": "xhigh"
       },
       {
-        "model": "gpt-6-sol",
+        "model": "gpt-6.1-sol",
         "effort": "medium"
       },
       {
-        "model": "claude-sonnet-5",
+        "model": "claude-sonnet-5-5",
         "effort": "medium"
       }
     ],
@@ -44,11 +44,11 @@
         "effort": "xhigh"
       },
       {
-        "model": "gpt-6-sol",
+        "model": "gpt-6.1-sol",
         "effort": "medium"
       },
       {
-        "model": "claude-sonnet-5",
+        "model": "claude-sonnet-5-5",
         "effort": "medium"
       }
     ],
@@ -82,11 +82,11 @@
     ],
     "reviewer": [
       {
-        "model": "gpt-6-sol",
+        "model": "gpt-6.1-sol",
         "effort": "high"
       },
       {
-        "model": "claude-sonnet-5",
+        "model": "claude-sonnet-5-5",
         "effort": "high"
       }
     ]
@@ -110,11 +110,11 @@
     ],
     "reviewer": [
       {
-        "model": "gpt-6-sol",
+        "model": "gpt-6.1-sol",
         "effort": "medium"
       },
       {
-        "model": "claude-sonnet-5",
+        "model": "claude-sonnet-5-5",
         "effort": "medium"
       }
     ]
@@ -142,7 +142,7 @@
         "effort": "high"
       },
       {
-        "model": "gpt-6-sol",
+        "model": "gpt-6.1-sol",
         "effort": "high"
       }
     ]
@@ -170,7 +170,7 @@
         "effort": "medium"
       },
       {
-        "model": "gpt-6-sol",
+        "model": "gpt-6.1-sol",
         "effort": "medium"
       }
     ]
@@ -198,7 +198,7 @@
         "effort": "high"
       },
       {
-        "model": "gpt-6-sol",
+        "model": "gpt-6.1-sol",
         "effort": "high"
       }
     ]
@@ -226,7 +226,7 @@
         "effort": "medium"
       },
       {
-        "model": "gpt-6-sol",
+        "model": "gpt-6.1-sol",
         "effort": "medium"
       }
     ]
@@ -236,7 +236,7 @@
     "review": 11,
     "author": [
       {
-        "model": "gpt-6-sol",
+        "model": "gpt-6.1-sol",
         "effort": "high"
       },
       {
@@ -254,7 +254,7 @@
         "effort": "high"
       },
       {
-        "model": "claude-sonnet-5",
+        "model": "claude-sonnet-5-5",
         "effort": "high"
       }
     ]
@@ -264,7 +264,7 @@
     "review": 12,
     "author": [
       {
-        "model": "gpt-6-sol",
+        "model": "gpt-6.1-sol",
         "effort": "high"
       },
       {
@@ -282,7 +282,7 @@
         "effort": "medium"
       },
       {
-        "model": "claude-sonnet-5",
+        "model": "claude-sonnet-5-5",
         "effort": "medium"
       }
     ]
@@ -306,11 +306,11 @@
     ],
     "reviewer": [
       {
-        "model": "gpt-6-sol",
+        "model": "gpt-6.1-sol",
         "effort": "high"
       },
       {
-        "model": "claude-sonnet-5",
+        "model": "claude-sonnet-5-5",
         "effort": "high"
       }
     ]
@@ -334,11 +334,11 @@
     ],
     "reviewer": [
       {
-        "model": "gpt-6-sol",
+        "model": "gpt-6.1-sol",
         "effort": "medium"
       },
       {
-        "model": "claude-sonnet-5",
+        "model": "claude-sonnet-5-5",
         "effort": "medium"
       }
     ]
@@ -358,11 +358,11 @@
     ],
     "reviewer": [
       {
-        "model": "gpt-6-sol",
+        "model": "gpt-6.1-sol",
         "effort": "high"
       },
       {
-        "model": "claude-sonnet-5",
+        "model": "claude-sonnet-5-5",
         "effort": "high"
       }
     ]
@@ -382,11 +382,11 @@
     ],
     "reviewer": [
       {
-        "model": "gpt-6-sol",
+        "model": "gpt-6.1-sol",
         "effort": "medium"
       },
       {
-        "model": "claude-sonnet-5",
+        "model": "claude-sonnet-5-5",
         "effort": "medium"
       }
     ]

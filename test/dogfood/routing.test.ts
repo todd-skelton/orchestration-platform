@@ -38,7 +38,7 @@ it("returns self's ladder, allowing only self to fall back to a static pair", ()
     ],
     reviewer: [
       { model: "claude-opus-5-5", effort: "high" },
-      { model: "gpt-6-sol", effort: "high" },
+      { model: "gpt-6.1-sol", effort: "high" },
     ],
   });
   expect(resolveRouting("self", undefined)).toBeUndefined();
@@ -48,27 +48,27 @@ it("returns self's ladder, allowing only self to fall back to a static pair", ()
   );
 });
 
-it("ships the exact ISS-203 matrix with two independent reviewers per policy", async () => {
+it("ships the exact ISS-203 matrix with ISS-218 successors and independent reviewers", async () => {
   const rows: RoutingRow[] = JSON.parse(
     await readFile(new URL("../../adapters/chase-sets-routing.json", import.meta.url), "utf8"),
   );
   const expected = new Map([
-    [2, ["gpt-6-luna/high", "gpt-6-luna/xhigh", "gpt-6-sol/medium", "claude-sonnet-5/medium"]],
+    [2, ["gpt-6-luna/high", "gpt-6-luna/xhigh", "gpt-6.1-sol/medium", "claude-sonnet-5-5/medium"]],
     [3, ["claude-opus-5-5/medium", "claude-opus-5-5/high", "gpt-6-astra/medium"]],
     [4, ["gpt-6-astra/medium", "gpt-6-astra/high", "claude-fable-5-1/high"]],
     [7, ["gpt-6-astra/high", "gpt-6-astra/xhigh", "claude-fable-5-1/high"]],
-    [10, ["gpt-6-sol/high", "gpt-6-astra/high", "claude-fable-5-1/high"]],
+    [10, ["gpt-6.1-sol/high", "gpt-6-astra/high", "claude-fable-5-1/high"]],
     [14, ["claude-opus-5-5/medium", "claude-opus-5-5/high", "gpt-6-astra/high"]],
     [15, ["claude-opus-5-5/high", "gpt-6-astra/high"]],
   ]);
   const expectedReviewers = new Map([
     [2, ["claude-opus-5-5", "gpt-6-astra"]],
-    [3, ["gpt-6-sol", "claude-sonnet-5"]],
-    [4, ["claude-opus-5-5", "gpt-6-sol"]],
-    [7, ["claude-opus-5-5", "gpt-6-sol"]],
-    [10, ["claude-opus-5-5", "claude-sonnet-5"]],
-    [14, ["gpt-6-sol", "claude-sonnet-5"]],
-    [15, ["gpt-6-sol", "claude-sonnet-5"]],
+    [3, ["gpt-6.1-sol", "claude-sonnet-5-5"]],
+    [4, ["claude-opus-5-5", "gpt-6.1-sol"]],
+    [7, ["claude-opus-5-5", "gpt-6.1-sol"]],
+    [10, ["claude-opus-5-5", "claude-sonnet-5-5"]],
+    [14, ["gpt-6.1-sol", "claude-sonnet-5-5"]],
+    [15, ["gpt-6.1-sol", "claude-sonnet-5-5"]],
   ]);
   const vendor = (model: string) => model.split("-")[0];
   expect(rows.map(({ row, review }) => `${row}:${review}`)).toEqual(
@@ -91,8 +91,10 @@ it("ships the exact ISS-203 matrix with two independent reviewers per policy", a
   for (const row of [...rows, SELF_ROUTING]) {
     expect(() => validateRoutingRow(row)).not.toThrow();
     expect(vendor(row.author.at(-1)!.model)).not.toBe(vendor(row.author[0]!.model));
-    for (const placement of [...row.author, ...row.reviewer])
+    for (const placement of [...row.author, ...row.reviewer]) {
       expect(["low", "medium", "high", "xhigh"]).toContain(placement.effort);
+      expect(["gpt-6-sol", "claude-sonnet-5"]).not.toContain(placement.model);
+    }
     expect(row.reviewer).toHaveLength(2);
     expect(new Set(row.reviewer.map((p) => p.model)).size).toBe(2);
     expect(row.reviewer.every((p) => row.author.every((a) => a.model !== p.model))).toBe(true);
