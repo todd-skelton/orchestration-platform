@@ -172,6 +172,11 @@ have been lost, resumes its existing reconciliation, checks and mutations; it
 does not rewrite an in-flight publication merely because main moved. An exact
 published conflict follows ISS-147 after publication reconciliation.
 
+For an admitted queued merge with complete saved green checks, the next
+observation stays in `confirmMerge` while the PR is pending. It returns the
+existing observing result without re-reading OPEN-only hosted checks; a
+confirmed merge records the ordinary receipt and proceeds through cleanup.
+
 The self adapter's `afterMirror` board gate validates candidate planning locally
 and checks only keys changed by its planning delta against the live board and
 project. Ownership compares both sides of the diff, including deleted rows,

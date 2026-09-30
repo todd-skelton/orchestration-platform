@@ -1242,6 +1242,44 @@ export async function deliveryStep(
   validatePublicationRecord(config, plan, planDigest, publication, adapter);
 
   let merge = savedMerge;
+  const queuedMerge =
+    plan.mergePolicy !== null &&
+    typeof plan.mergePolicy === "object" &&
+    !Array.isArray(plan.mergePolicy) &&
+    (plan.mergePolicy as { method?: unknown }).method === "queue";
+  const queuedIntent = queuedMerge
+    ? await optionalRecord(directory, "merge-intent")
+    : ABSENT_RECORD;
+  if (
+    merge === ABSENT_RECORD &&
+    queuedMerge &&
+    queuedIntent !== ABSENT_RECORD &&
+    checks?.every((check) => check.bucket === "pass")
+  ) {
+    // A queued PR remains in the existing merge reconciler while pending. Its
+    // next observation may confirm the merge; do not re-enter OPEN-only checks.
+    const reconciled = await confirmMerge(
+      directory,
+      config,
+      adapter,
+      publication,
+      plan.mergePolicy,
+    );
+    if (!reconciled)
+      return {
+        status: "observing-hosted-checks",
+        run: config.run,
+        issue: config.issue,
+        head: config.candidateHead,
+        reviewId: source.reviewId,
+        publication: { number: publication.number, url: publication.url },
+        checks,
+        retries: config.retries,
+      };
+    demand(reconciled.number === publication.number, "malformed-merge-receipt");
+    validateMergeRecord(config, reconciled);
+    merge = reconciled;
+  }
   if (merge === ABSENT_RECORD && checks?.every((check) => check.bucket === "pass")) {
     // A successful remote merge may have lost both its response and local receipt.
     // Reconcile that outcome before the OPEN-only checks path, using saved proof.
