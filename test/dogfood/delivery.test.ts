@@ -5,7 +5,10 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, expect, it, vi } from "vitest";
-import { githubDeliveryAdapter } from "../../scripts/dogfood/delivery-adapter.mjs";
+import {
+  githubDeliveryAdapter,
+  type GithubDeliveryCommands,
+} from "../../scripts/dogfood/delivery-adapter.mjs";
 import {
   aggregate as windowsAggregate,
   shards as windowsShards,
@@ -36,6 +39,7 @@ import {
 const head = "a".repeat(40);
 const mergeCommit = "b".repeat(40);
 const roots: string[] = [];
+let aggregateCommands: GithubDeliveryCommands;
 const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 
 it.each(["before", "after", "lost-edit", "no-op", "exhaust-before", "exhaust-after"])(
@@ -308,6 +312,251 @@ async function fixture(candidate = head) {
   return { config, plan, publication, adapter, policy, calls, state };
 }
 
+async function queuedFixture() {
+  const f = await aggregateFixture(undefined, ["PR Required", "Synthetic Required"]);
+  f.config.run = "synthetic-iss220-queue-race";
+  f.plan.mergePolicy = { method: "queue" };
+  f.publication.planDigest = digest(f.plan);
+  f.evidence.runs[0]!.status = "completed";
+  f.evidence.checks = [f.check("PR Required", "pass"), f.check("Synthetic Required", "pass", 457)];
+  const row = {
+    number: f.publication.number,
+    url: f.publication.url,
+    headRefOid: head,
+    headRefName: f.publication.sourceBranch,
+    baseRefName: f.publication.baseBranch,
+    title: f.publication.title,
+    body: f.publication.body,
+    state: "OPEN",
+    mergeCommit: null as { oid: string } | null,
+    mergeQueueEntry: null as { state: string } | null,
+  };
+  const order: string[] = [];
+  const controls = {
+    afterPending: () => {},
+    beforeIdentity: () => {},
+    unavailable: false,
+  };
+  const ghJson = f.commands.ghJson;
+  f.commands.ghJson = async (config, args) => {
+    if (args[1] === "graphql") {
+      expect(args).toContain(`number=${f.publication.number}`);
+      expect(args).toContain("owner=fixture");
+      expect(args).toContain("name=repository");
+      order.push("merge-observation");
+      if (controls.unavailable) throw new Error("synthetic unavailable merge query");
+      const response = structuredClone(row);
+      if (row.state === "OPEN" && row.mergeQueueEntry) controls.afterPending();
+      return { data: { repository: { pullRequest: response } } };
+    }
+    if (args[0] === "pr") {
+      order.push("checks-identity");
+      controls.beforeIdentity();
+      return structuredClone(row);
+    }
+    order.push("checks-actions");
+    return ghJson(config, args);
+  };
+  f.adapter.observeMerge = f.provider.observeMerge;
+  f.adapter.merge = async () => {
+    order.push("enqueue");
+    row.mergeQueueEntry = { state: "QUEUED" };
+  };
+  const step = () => deliveryStep(f.config, f.adapter, f.policy);
+  const merged = () => {
+    row.state = "MERGED";
+    row.mergeCommit = { oid: mergeCommit };
+    row.mergeQueueEntry = null;
+  };
+  const read = (name: string) => readFile(resolve(f.config.stateDirectory, `${name}.json`), "utf8");
+  const absent = async (...names: string[]) => {
+    for (const name of names) await expect(read(name)).rejects.toMatchObject({ code: "ENOENT" });
+  };
+  // Opaque predecessor records are preservation controls, never delivery authority.
+  for (const name of ["attempt", "author-terminal", "reviewer-terminal", "candidate"])
+    await writeState(f.config, name, { synthetic: name, attempts: 3, retries: 1 });
+  const preservedNames = [
+    "attempt",
+    "author-terminal",
+    "reviewer-terminal",
+    "candidate",
+    "delivery-source",
+    "gate-1",
+    "gate-2",
+    "gate-3",
+    "gate-4",
+    "publication",
+    "merge-intent",
+    "merge-queue-admission",
+  ];
+  const snapshot = () => Promise.all(preservedNames.map(read));
+  await expect(step()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+  expect(order.filter((entry) => entry === "checks-identity")).toHaveLength(2);
+  expect(order.filter((entry) => entry === "enqueue")).toHaveLength(1);
+  expect(JSON.parse(await read("hosted-checks"))).toMatchObject({
+    head,
+    checks: [
+      { name: "PR Required", bucket: "pass" },
+      { name: "Synthetic Required", bucket: "pass" },
+    ],
+  });
+  const preserved = await snapshot();
+  order.length = 0;
+  return { ...f, row, controls, order, step, merged, read, absent, snapshot, preserved };
+}
+
+it.each(["first", "second"])(
+  "ISS-220 avoids the %s OPEN-only checks race after pending",
+  async (window) => {
+    const f = await queuedFixture();
+    let identities = 0;
+    // Exercise the old fallthrough directly: its checks observation sees OPEN,
+    // then the provider moves to MERGED before the next identity read.
+    f.controls.afterPending = () => {
+      if (window === "first") f.merged();
+    };
+    f.controls.beforeIdentity = () => {
+      if (++identities === 2 && window === "second") f.merged();
+    };
+    await f.provider.observeMerge(f.config, f.publication, f.plan.mergePolicy);
+    await expect(f.provider.checks(f.config, f.publication)).rejects.toThrow(
+      "hosted-observation-unavailable",
+    );
+    f.row.state = "OPEN";
+    f.row.mergeCommit = null;
+    f.row.mergeQueueEntry = { state: "QUEUED" };
+    identities = 0;
+    f.order.length = 0;
+    f.controls.afterPending = () => {
+      if (window === "first") f.merged();
+    };
+    f.controls.beforeIdentity = () => {
+      if (++identities === 2 && window === "second") f.merged();
+    };
+    // The continuation must stop at pending before either OPEN-only identity read.
+    await expect(f.step()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+    expect(f.order).toEqual(["merge-observation"]);
+    expect(identities).toBe(0);
+    await f.absent("merge", "cleanup");
+    // Explicit provider advancement also covers the now-unreachable second-read hook.
+    f.merged();
+    await expect(f.step()).resolves.toMatchObject({ status: "complete", mergeCommit });
+    expect(JSON.parse(await f.read("merge"))).toEqual({
+      number: f.publication.number,
+      head,
+      mergeCommit,
+    });
+    expect(f.order).toEqual(["merge-observation", "merge-observation"]);
+    expect(f.calls.filter((call) => call === "publish")).toHaveLength(1);
+    expect(f.calls.filter((call) => call === "cleanup")).toHaveLength(1);
+    expect(await f.snapshot()).toEqual(f.preserved);
+  },
+);
+
+it("ISS-220 retains stable pending, already merged, unfinished cleanup and repeated completion", async () => {
+  const f = await queuedFixture();
+  for (let i = 0; i < 2; i++)
+    await expect(f.step()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+  expect(f.order).toEqual(["merge-observation", "merge-observation"]);
+  f.merged();
+  const cleanup = f.adapter.cleanup;
+  f.adapter.cleanup = async () => {
+    throw new Error("synthetic interruption before cleanup");
+  };
+  await expect(f.step()).rejects.toThrow("cleanup-unconfirmed-reconcile-before-retry");
+  expect(JSON.parse(await f.read("merge"))).toEqual({
+    number: f.publication.number,
+    head,
+    mergeCommit,
+  });
+  await f.absent("cleanup");
+  f.adapter.cleanup = cleanup;
+  f.controls.unavailable = true; // Retained merge needs only unfinished cleanup.
+  for (let i = 0; i < 2; i++)
+    await expect(f.step()).resolves.toMatchObject({ status: "complete", mergeCommit });
+  expect(f.order).toEqual(Array(3).fill("merge-observation"));
+  expect(f.calls.filter((call) => call === "cleanup")).toHaveLength(1);
+  expect(f.calls.filter((call) => call === "publish")).toHaveLength(1);
+  expect(await f.snapshot()).toEqual(f.preserved);
+});
+
+it.each([
+  ["closed", { state: "CLOSED" }],
+  ["head", { headRefOid: "f".repeat(40) }],
+  ["number", { number: 45 }],
+  ["repository-url", { url: "https://github.com/foreign/repository/pull/44" }],
+  ["url-number", { url: "https://github.com/fixture/repository/pull/45" }],
+  ["source-branch", { headRefName: "other" }],
+  ["base-branch", { baseRefName: "other" }],
+  ["title", { title: "other" }],
+  ["body", { body: "other" }],
+  ["missing-merge-commit", { mergeCommit: null }],
+  ["invalid-merge-commit", { mergeCommit: { oid: "invalid" } }],
+  ["unknown-state", { state: "UNKNOWN" }],
+  ["unavailable", {}],
+] as const)("ISS-220 refuses %s at merge confirmation", async (name, change) => {
+  const f = await queuedFixture();
+  f.merged();
+  Object.assign(f.row, change);
+  f.controls.unavailable = name === "unavailable";
+  await expect(f.step()).rejects.toMatchObject({ reason: "merge-state-unknown" });
+  await f.absent("merge", "cleanup");
+  expect(f.order).toEqual(["merge-observation"]);
+  expect(f.calls.filter((call) => call === "publish")).toHaveLength(1);
+  expect(f.calls).not.toContain("cleanup");
+  expect(await f.snapshot()).toEqual(f.preserved);
+});
+
+it.each(["removed", "lost-enqueue"])("ISS-220 refuses %s without another enqueue", async (mode) => {
+  const f = await queuedFixture();
+  f.row.mergeQueueEntry = null;
+  if (mode === "lost-enqueue")
+    await rm(resolve(f.config.stateDirectory, "merge-queue-admission.json"));
+  await expect(f.step()).rejects.toMatchObject({
+    reason: mode === "removed" ? "merge-queue-removed" : "merge-queue-admission-unconfirmed",
+  });
+  expect(f.order).toEqual(["merge-observation"]);
+  await f.absent("merge", "cleanup");
+  expect(f.calls).not.toContain("cleanup");
+});
+
+it.each(["absent", "empty", "partial", "wrong-head", "pending", "no-intent"])(
+  "ISS-220 requires complete green and intent: %s",
+  async (mode) => {
+    const f = await queuedFixture();
+    const saved = JSON.parse(await f.read("hosted-checks"));
+    if (mode === "absent") await rm(resolve(f.config.stateDirectory, "hosted-checks.json"));
+    else if (mode === "no-intent") await rm(resolve(f.config.stateDirectory, "merge-intent.json"));
+    else {
+      if (mode === "empty") saved.checks = [];
+      if (mode === "partial") saved.checks.pop();
+      if (mode === "wrong-head") saved.head = "f".repeat(40);
+      if (mode === "pending") saved.checks[0].bucket = "pending";
+      await writeState(f.config, "hosted-checks", saved);
+    }
+    // Current checks are pending: old admission alone cannot manufacture green.
+    f.evidence.runs[0]!.status = "in_progress";
+    f.evidence.checks[0]!.bucket = "pending";
+    if (["empty", "partial", "wrong-head"].includes(mode)) {
+      await expect(f.step()).rejects.toMatchObject({
+        reason:
+          mode === "wrong-head"
+            ? "hosted-head-drift"
+            : `missing-or-duplicate-check:${mode === "empty" ? "PR Required" : "Synthetic Required"}`,
+      });
+      expect(f.order).toEqual([]);
+    } else {
+      await expect(f.step()).resolves.toMatchObject({
+        status: "observing-hosted-checks",
+        checks: [expect.objectContaining({ bucket: "pending" }), expect.anything()],
+      });
+      expect(f.order.filter((entry) => entry === "checks-identity")).toHaveLength(2);
+    }
+    expect(f.order).not.toContain("enqueue");
+    await f.absent("merge", "cleanup");
+  },
+);
+
 async function writeState(config: DeliveryConfig, name: string, value: unknown) {
   await writeFile(resolve(config.stateDirectory, `${name}.json`), `${JSON.stringify(value)}\n`);
 }
@@ -370,7 +619,7 @@ async function aggregateFixture(
     })[check.bucket];
   const jobLog = (check: CheckEvidence) => evidence.jobLogs[jobId(check)] ?? evidence.log;
   const provider = githubDeliveryAdapter(
-    {
+    (aggregateCommands = {
       async gh(_config, args) {
         requests.push(args);
         let log: string;
@@ -444,7 +693,7 @@ async function aggregateFixture(
           body: f.publication.body,
         };
       },
-    },
+    }),
     "git",
     pause,
   );
@@ -455,7 +704,7 @@ async function aggregateFixture(
     bucket,
     link: `https://github.com/${f.config.repository}/actions/runs/123/job/${job}`,
   });
-  return { ...f, evidence, check, requests, provider };
+  return { ...f, evidence, check, requests, provider, commands: aggregateCommands };
 }
 
 // ISS-185 captured facts: iss183-ci-attribution-2132.json (21:30:58.920Z),

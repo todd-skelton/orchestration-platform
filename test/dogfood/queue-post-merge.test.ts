@@ -29,11 +29,15 @@ const base = "b".repeat(40);
 const mergeCommit = "c".repeat(40);
 const revision = "d".repeat(40);
 
-async function fixture(localBranch = true, retained: "source" | "refresh" | "recovery" = "source") {
+async function fixture(
+  localBranch = true,
+  retained: "source" | "refresh" | "recovery" = "source",
+  queued = false,
+) {
   // macOS temp paths can be aliases; delivery requires canonical workspace paths.
   const root = await realpath(await mkdtemp(resolve(tmpdir(), "retained-post-merge-")));
   roots.push(root);
-  const run = "synthetic-iss184";
+  const run = queued ? "synthetic-iss220-post-merge" : "synthetic-iss184";
   const stateRoot = resolve(root, "runtime");
   const directory = resolve(stateRoot, run, "cs-8041-attempt-1");
   const origin = resolve(directory, "source");
@@ -86,6 +90,7 @@ async function fixture(localBranch = true, retained: "source" | "refresh" | "rec
     cleanup: { worktrees: [worktree, reviewWorktree], branch: sourceBranch },
   };
   const effects = { publish: 0, merge: 0, cleanup: 0, eligibility: 0, hook: 0 };
+  const queue = { confirmed: !queued, observations: 0, checks: 0 };
   let publication: any;
   const adapter: DeliveryAdapter = {
     publicationUrl: (_config, number) => `https://github.com/chase-sets/chase-sets/pull/${number}`,
@@ -136,6 +141,7 @@ async function fixture(localBranch = true, retained: "source" | "refresh" | "rec
       };
     },
     async checks() {
+      queue.checks++;
       return {
         head,
         checks: [
@@ -148,9 +154,11 @@ async function fixture(localBranch = true, retained: "source" | "refresh" | "rec
       };
     },
     async observeMerge() {
-      return effects.merge
+      queue.observations++;
+      if (!effects.merge) return { state: "needs-mutation" };
+      return queue.confirmed
         ? { state: "confirmed", value: { number: 8055, head, mergeCommit } }
-        : { state: "needs-mutation" };
+        : { state: "pending" };
     },
     async merge() {
       effects.merge++;
@@ -238,13 +246,15 @@ async function fixture(localBranch = true, retained: "source" | "refresh" | "rec
     });
     await save(resolve(origin, "gate-stop-continuation.json"), { delivery: priorDelivery });
   }
-  await expect(
+  const step = () =>
     deliveryStep(config, adapter, {
       async plan() {
         return plan;
       },
-    }),
-  ).resolves.toMatchObject({ status: "complete", mergeCommit });
+    });
+  await expect(step()).resolves.toMatchObject(
+    queued ? { status: "observing-hosted-checks" } : { status: "complete", mergeCommit },
+  );
   const loop: LoopConfig = {
     schemaVersion: "dogfood-loop/v1",
     run,
@@ -310,6 +320,8 @@ async function fixture(localBranch = true, retained: "source" | "refresh" | "rec
     supervisor,
     repository,
     effects,
+    queue,
+    step,
     directory,
     source,
     save,
@@ -326,6 +338,65 @@ async function bytes(directory: string): Promise<Record<string, string>> {
   }
   return result;
 }
+
+async function completeQueuedDelivery() {
+  const f = await fixture(true, "source", true);
+  const preserved = await bytes(f.directory);
+  expect(f.queue).toEqual({ confirmed: false, observations: 2, checks: 1 });
+  expect(f.effects).toEqual({ publish: 1, merge: 1, cleanup: 0, eligibility: 0, hook: 0 });
+
+  // The first ordinary continuation remains pending in confirmMerge. It must
+  // not read hosted checks again, enqueue again, clean up, or call afterMerge.
+  await expect(f.step()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+  expect(f.queue).toEqual({ confirmed: false, observations: 3, checks: 1 });
+  expect(f.effects).toEqual({ publish: 1, merge: 1, cleanup: 0, eligibility: 0, hook: 0 });
+  await expect(retainedPostMergeDelivery(f.loop, f.cycle.selection)).resolves.toBeUndefined();
+  expect(await bytes(f.directory)).toEqual(preserved);
+
+  f.queue.confirmed = true;
+  const completed = await f.step();
+  expect(completed).toMatchObject({ status: "complete", head, mergeCommit });
+  expect(f.queue).toEqual({ confirmed: true, observations: 4, checks: 1 });
+  expect(f.effects).toEqual({ publish: 1, merge: 1, cleanup: 1, eligibility: 0, hook: 0 });
+  expect(JSON.parse(await readFile(resolve(f.source, "merge.json"), "utf8"))).toEqual({
+    number: 8055,
+    head,
+    mergeCommit,
+  });
+  for (const [path, value] of Object.entries(preserved))
+    expect(await readFile(path, "utf8")).toBe(value);
+
+  const retained = await retainedPostMergeDelivery(f.loop, f.cycle.selection);
+  expect(retained!.delivery).toEqual(completed);
+  expect(retained!.history).toEqual(f.history);
+  return { ...f, retained: retained! };
+}
+
+it("ISS-220 queued confirmation leaves a pending deployment hook before cycle completion", async () => {
+  const f = await completeQueuedDelivery();
+  const preserved = await bytes(f.directory);
+  const entered = Promise.withResolvers<void>();
+  const release = Promise.withResolvers<void>();
+  const original = f.repository.afterMerge.bind(f.repository);
+  vi.spyOn(f.repository, "afterMerge").mockImplementation(async (value) => {
+    await original(value);
+    entered.resolve();
+    await release.promise;
+  });
+  const hook = f.repository.afterMerge(f.retained);
+  await entered.promise;
+  expect(f.effects.hook).toBe(1);
+  expect(await f.next()).toEqual(f.cycle);
+  await expect(
+    readFile(resolve(f.loop.stateRoot, f.loop.run, "cycle-1-complete.json")),
+  ).rejects.toMatchObject({ code: "ENOENT" });
+  expect(await bytes(f.directory)).toEqual(preserved);
+  release.resolve();
+  await hook;
+  await completeCycle(f.loop, f.cycle, f.retained.history, f.supervisor);
+  expect(await f.next()).toBeUndefined();
+  expect(await bytes(f.directory)).toEqual(preserved);
+});
 
 it.each([false, true])(
   "resumes only the pending native hook with a closed issue and absent worktrees (new branch: %s)",
@@ -427,9 +498,9 @@ it("retains external-closure behavior when there is no native merged/cleaned obl
 });
 
 it.each([false, true])(
-  "the native supervisor command retains post-merge accounting before composition (hook fails: %s)",
+  "ISS-220 native supervisor retains queued post-merge accounting before composition (hook fails: %s)",
   async (fails) => {
-    const f = await fixture();
+    const f = await completeQueuedDelivery();
     const preserved = await bytes(f.directory);
     const runState = resolve(f.loop.stateRoot, f.loop.run);
     const request = resolve(f.loop.stateRoot, "loop.json");
@@ -482,6 +553,9 @@ it.each([false, true])(
     const first = await command();
     if (fails) {
       expect(JSON.parse(first.stderr)).toMatchObject({ reason: "deploy-not-verified" });
+      expect(await readFile(resolve(runState, "command-calls.log"), "utf8")).toContain(
+        `post-merge:${mergeCommit}\n`,
+      );
       const stopped = JSON.parse(await readFile(resolve(runState, "cycle-1-stop-1.json"), "utf8"));
       expect(stopped).toMatchObject({
         attempts: 1,
