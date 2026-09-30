@@ -1091,7 +1091,9 @@ routing and supervisor exit-code propagation are unchanged. The binding records
 the run, config path, invocation, boot ID, PID/cgroup/mount namespace
 identities, cgroup path and device/inode, the wrapper's PID and `/proc`
 starttime, and the UTC creation time. No live PID is moved by inference. A
-non-Linux host, a non-cgroup2 `/sys/fs/cgroup`, an unwritable root, a
+non-Linux host, a config whose `run` the supervisor would refuse (including
+`.` and `..`, so no record or leaf is created outside `<stateRoot>/<run>`), a
+non-cgroup2 `/sys/fs/cgroup`, an unwritable root, a
 failed enrollment read-back or a failed publication refuses the launch with
 `ownership-launch-refused` before any child exists; there is no fallback to
 parent-chain attribution, and a reserved invocation directory left by an
@@ -1101,7 +1103,14 @@ the same run gets its own leaf and observes old survivors without adopting
 them. Workers keep their existing sandbox and environment allowlist, which
 grants no cgroup write access; `ORCHESTRATION_CGROUP_ROOT` is a test
 injection of a plain directory, recorded as `substrate: injected-directory`,
-and never reaches a worker.
+and never reaches a worker. That directory records only the wrapper's own
+enrollment write and can never learn a descendant, so a binding with that
+substrate is composition evidence: an external consumer must require
+`substrate: cgroup-v2` in every binding it acts on, and the human rendering
+marks any other substrate `not kernel evidence`. The canonical
+`start-loop.ps1`/`run-loop.sh` environment does not set that variable; a
+production census bound to an injected directory is a misconfigured launch,
+not a complete boundary.
 
 `loop:status` (hence `status-loop.ps1`) gains the additive `processOwnership`
 field with `status`, an optional bounded `diagnostic`, UTC `observationStart`
@@ -1116,7 +1125,8 @@ an unresolved or foreign binding, an unreadable `cgroup.procs` or member row,
 a changed membership set or a same-PID/different-starttime member makes the
 whole observation `unavailable` with every `members` null while readable
 historical bindings stay visible. An empty `members` array is reported only
-with complete current kernel evidence; a missing directory or binding is
+with complete current evidence of the bound substrate, and only a `cgroup-v2`
+binding makes that kernel evidence; a missing directory or binding is
 `ownership-record-missing` or `ownership-invocation-unresolved`, not
 emptiness. A live supervisor outside every bound membership (a direct
 `loop:supervise` start beside retained bindings) is

@@ -4,7 +4,17 @@
 // reparenting and setsid retain real cgroup membership is host kernel
 // qualification, never proven here or by a fabricated /proc tuple.
 import { execFile, spawn } from "node:child_process";
-import { cp, mkdir, mkdtemp, open, readFile, rename, rm, writeFile } from "node:fs/promises";
+import {
+  cp,
+  mkdir,
+  mkdtemp,
+  open,
+  readdir,
+  readFile,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { promisify } from "node:util";
@@ -222,7 +232,7 @@ linux(
       `Process ownership observed; census ${after.processOwnership.observationStart}`,
     );
     expect(human).toContain(
-      `Invocation ${witness.binding!.invocation} (injected-directory) boot ${witness.binding!.bootId}`,
+      `Invocation ${witness.binding!.invocation} (injected-directory; not kernel evidence) boot ${witness.binding!.bootId}`,
     );
     // The survivor was orphaned when its worker exited; identity is unchanged.
     const observedSurvivor = after.processOwnership.invocations[0].members.find(
@@ -639,9 +649,25 @@ linux(
     });
     await f.standIn([]);
     expect(await observe(f)).toMatchObject({ status: "observed", invocations: [{ members: [] }] });
-    expect(formatStatus(await observeStatus(f.config, { preview, supervisor: exited }))).toContain(
-      "Current membership empty (complete kernel evidence)",
+    const empty = await observeStatus(f.config, { preview, supervisor: exited });
+    expect(formatStatus(empty)).toContain(
+      "Current membership empty (complete injected-directory evidence)",
     );
+    expect(formatStatus(empty)).toContain("(injected-directory; not kernel evidence)");
+    // Rendering only: the same observation shape bound to a cgroup-v2 leaf is
+    // the one an external consumer may read as kernel evidence.
+    const rendered = formatStatus({
+      ...empty,
+      processOwnership: {
+        ...empty.processOwnership,
+        invocations: empty.processOwnership.invocations.map((row: { binding: object }) => ({
+          ...row,
+          binding: { ...row.binding, substrate: "cgroup-v2" },
+        })),
+      },
+    });
+    expect(rendered).toContain("Current membership empty (complete kernel evidence)");
+    expect(rendered).not.toContain("not kernel evidence");
     f.send("supervisor", "exit");
     await completion;
   },
@@ -790,10 +816,32 @@ linux(
     expect(result.invocations).toHaveLength(1);
     expect(result.invocations[0]).toMatchObject({ binding: null, members: null });
     await rm(f.cgroupRoot);
-    const invalid = f.launch();
+    // The config is invalid before the launcher starts, so the wrapper never
+    // enrolls or starts the stub supervisor.
     await writeFile(f.config, "{}");
-    const config = await invalid.completion;
+    const config = await f.launch().completion;
     expect(config.code).toBe(1);
+    expect(config.stdout).toBe("");
     expect(config.stderr).toContain("ownership-config-invalid");
+    await expect(f.witness()).rejects.toMatchObject({ code: "ENOENT" });
+    // queue.ts refuses "." and ".." as a run; the wrapper must not create
+    // records or a leaf outside <stateRoot>/<run> before the supervisor does.
+    for (const run of [".", ".."]) {
+      await writeFile(
+        f.config,
+        JSON.stringify({ schemaVersion: "dogfood-loop/v1", run, stateRoot: f.stateRoot }),
+      );
+      // Refusal must win against the first child: an unguarded wrapper would
+      // enroll and start the stub supervisor instead.
+      const dot = await Promise.race([
+        f.launch().completion.then((refused) => ({ refused, started: null })),
+        f.take("supervisor").then((started) => ({ refused: null, started })),
+      ]);
+      expect(dot.started, `run ${JSON.stringify(run)} refused before any child`).toBeNull();
+      expect(dot.refused).toMatchObject({ code: 1, stdout: "" });
+      expect(dot.refused!.stderr).toContain("ownership-config-invalid");
+    }
+    expect(await readdir(f.stateRoot)).toEqual([f.run]);
+    expect(await readdir(f.root)).not.toContain("cgroups");
   },
 );

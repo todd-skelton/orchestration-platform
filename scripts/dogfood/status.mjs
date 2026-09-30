@@ -498,12 +498,17 @@ export function formatStatus(value) {
         lines.push(`  Invocation ${invocation}: binding unresolved; membership unavailable`);
         continue;
       }
+      // Only a cgroup-v2 leaf is kernel membership; an injected directory is
+      // test composition and can never learn a descendant.
+      const kernel = binding.substrate === "cgroup-v2";
       lines.push(
-        `  Invocation ${binding.invocation} (${binding.substrate}) boot ${binding.bootId}; leaf ${binding.cgroupPath} device ${binding.cgroupIdentity.device} inode ${binding.cgroupIdentity.inode}; PID namespace ${binding.namespaces.pid}; wrapper PID ${binding.wrapper.pid} starttime ${binding.wrapper.starttime} (historical); created ${binding.createdAt}`,
+        `  Invocation ${binding.invocation} (${binding.substrate}${kernel ? "" : "; not kernel evidence"}) boot ${binding.bootId}; leaf ${binding.cgroupPath} device ${binding.cgroupIdentity.device} inode ${binding.cgroupIdentity.inode}; PID namespace ${binding.namespaces.pid}; wrapper PID ${binding.wrapper.pid} starttime ${binding.wrapper.starttime} (historical); created ${binding.createdAt}`,
       );
       if (members === null) lines.push("    Current membership unavailable");
       else if (!members.length)
-        lines.push("    Current membership empty (complete kernel evidence)");
+        lines.push(
+          `    Current membership empty (complete ${kernel ? "kernel" : binding.substrate} evidence)`,
+        );
       for (const member of members ?? [])
         lines.push(
           `    PID ${member.pid} starttime ${member.starttime} PPID ${member.ppid} PGID ${member.pgid} SID ${member.sid} state ${member.state}${["Z", "X", "x"].includes(member.state) ? " (zombie/exited, not live)" : ""}`,

@@ -221,6 +221,7 @@ export async function launchOwned(configPath, launcherPath, environment = proces
     config?.schemaVersion !== "dogfood-loop/v1" ||
     typeof config.run !== "string" ||
     !/^[\w.-]{1,64}$/.test(config.run) ||
+    [".", ".."].includes(config.run) ||
     typeof config.stateRoot !== "string" ||
     !isAbsolute(config.stateRoot)
   )
