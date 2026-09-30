@@ -832,6 +832,14 @@
       "summary": "Retry a classified GitHub transport failure across the whole checks identity bracket without weakening fail-closed observation.",
       "milestone": "M1",
       "blockedBy": []
+    },
+    {
+      "key": "ISS-224",
+      "file": "planning/drafts/ISS-224.md",
+      "title": "Record attached-parent supervisor loss outside runtime",
+      "summary": "Write one bounded Windows-side supervisor-loss note when the attached WSL child exits without a terminal status, without changing exit or routing behavior.",
+      "milestone": "M1",
+      "blockedBy": []
     }
   ]
 }
