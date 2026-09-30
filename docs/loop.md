@@ -159,6 +159,10 @@ only a proved pre-send failure plus fresh absence permits one additional post
 in that call. A comment HTTP 5xx is uncertain, never pre-send. Exhausted reads
 or an unresolved post retain the non-parking unknown stop and pending intent;
 saved records and restart reconciliation are unchanged.
+ISS-223 applies the same classification and three-attempt, 1-second/2-second
+bound to the whole hosted-check identity bracket in `checks()`, counted
+separately from startup waits; exhausted transport stops as
+`hosted-observation-unavailable` with the sanitized category diagnostic.
 ISS-217's candidate repair retains the sanitized `GithubCommandFailure.message`
 category for failed issue commands, and `malformed issue observation` for acquired
 responses that fail parsing or shape checks. The existing diagnostic reaches the

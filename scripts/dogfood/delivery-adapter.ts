@@ -1415,7 +1415,9 @@ export function githubDeliveryAdapter(
         const { mergeable: _mergeable, mergeStateStatus: _mergeStateStatus, ...identity } = row;
         return identity;
       };
-      for (let retry = 0; ; retry += 1) {
+      let startupInvisibleRetries = 0;
+      let transportRetries = 0;
+      for (;;) {
         try {
           const before = await readIdentity();
           const { checks, workflowPending, startupInvisible } = await attributedChecks(
@@ -1427,7 +1429,8 @@ export function githubDeliveryAdapter(
           if (JSON.stringify(before) !== JSON.stringify(after))
             throw new Error("publication moved");
           // ISS-143: GitHub can expose advisory checks before any required check or workflow run.
-          if (startupInvisible && retry < 12) {
+          if (startupInvisible && startupInvisibleRetries < 12) {
+            startupInvisibleRetries += 1;
             await pause(10_000);
             continue;
           }
@@ -1444,6 +1447,15 @@ export function githubDeliveryAdapter(
             ["published-candidate-conflict", "publication-state-unknown"].includes(error.reason)
           )
             throw error;
+          const classified = new GithubCommandFailure(error);
+          if (classified.transport) {
+            if (transportRetries < 2) {
+              await pause((transportRetries + 1) * 1000);
+              transportRetries += 1;
+              continue;
+            }
+            throw new DeliveryBlocked("hosted-observation-unavailable", classified.message);
+          }
           const failure = error as { stderr?: string; message?: string };
           const detail = [failure.stderr, failure.message].find(
             (value) => typeof value === "string" && value.trim() !== "",

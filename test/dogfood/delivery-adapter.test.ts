@@ -254,6 +254,277 @@ function hostedResponse(
   return [{ workflow_runs: [run] }];
 }
 
+// ISS-223: synthetic identities through the public checks boundary. The callback
+// changes one read at a time; every other response remains the same.
+function transportObservation(
+  read: (index: number, response: any) => any = (_index, response) => response,
+  gitExecutable = "unused-git",
+) {
+  const current = { ...config(tmpdir()), repository: "fixture/repository" };
+  const publication = {
+    ...publicationEvidence(current),
+    repository: current.repository,
+    url: "https://github.com/fixture/repository/pull/44",
+  };
+  const requests: string[] = [];
+  const gh = vi.fn(async (): Promise<string> => {
+    throw new Error("unexpected mutation");
+  });
+  const pause = vi.fn(async (_ms: number) => {});
+  const adapter = githubDeliveryAdapter(
+    {
+      gh,
+      async ghJson(_config, args) {
+        requests.push(
+          args[0] === "pr" ? "pr view" : args[1]!.includes("/jobs?") ? "jobs" : "actions/runs",
+        );
+        return read(
+          requests.length - 1,
+          args[0] === "pr"
+            ? publicationRow(publication)
+            : hostedResponse(current, publication, args),
+        );
+      },
+    },
+    gitExecutable,
+    pause,
+  );
+  const expected = {
+    head: publication.head,
+    checks: current.requiredChecks.map((name, index) => ({
+      name,
+      bucket: "pass" as const,
+      link: `https://github.com/fixture/repository/actions/runs/123/job/${456 + index}`,
+      actions: { run: 123, attempt: 1, job: 456 + index, workflow: 7 },
+    })),
+  };
+  return { current, publication, requests, gh, pause, adapter, expected };
+}
+
+const stoppedPost =
+  'Post "https://api.github.com/graphql": dial tcp 140.82.113.6:443: connect: network is unreachable';
+const stoppedGet =
+  'Get "https://api.github.com/repos/fixture/repository/actions/runs/123/jobs?filter=latest&per_page=100": dial tcp 140.82.113.6:443: connect: network is unreachable';
+const healthyBracket = ["pr view", "actions/runs", "jobs", "actions/runs", "pr view"];
+
+it.each([false, true])(
+  "ISS-223 whole bracket recovers two transports after startup wait=%s",
+  async (startup) => {
+    const offset = startup ? 3 : 0;
+    const f = transportObservation((index, response) => {
+      if (startup && index === 1) return [{ workflow_runs: [] }];
+      if (index === offset) throw githubReadFailure(stoppedPost);
+      if (index === offset + 3) throw githubReadFailure(stoppedGet);
+      return response;
+    });
+    const original = structuredClone(f.publication);
+    const outcome = await f.adapter.checks(f.current, f.publication).then(
+      (result) => ({ result }),
+      (error) => ({ error }),
+    );
+    expect
+      .soft(f.requests)
+      .toEqual([
+        ...(startup ? ["pr view", "actions/runs", "pr view"] : []),
+        "pr view",
+        "pr view",
+        "actions/runs",
+        "jobs",
+        ...healthyBracket,
+      ]);
+    expect.soft(f.pause.mock.calls.flat()).toEqual([...(startup ? [10_000] : []), 1000, 2000]);
+    expect(outcome).toEqual({ result: f.expected });
+    expect(f.gh).not.toHaveBeenCalled();
+    expect(f.publication).toEqual(original);
+    // A later ordinary observation has no retained retry or partial result.
+    await expect(f.adapter.checks(f.current, f.publication)).resolves.toEqual(f.expected);
+    expect(f.requests.slice(-5)).toEqual(healthyBracket);
+  },
+);
+
+it.each([0, 1, 2, 3, 4])("ISS-223 transport at read %s restarts from identity", async (at) => {
+  const f = transportObservation((index, response) => {
+    if (index === at) throw githubReadFailure(stoppedGet);
+    return response;
+  });
+  await expect(f.adapter.checks(f.current, f.publication)).resolves.toEqual(f.expected);
+  expect(f.requests).toEqual([...healthyBracket.slice(0, at + 1), ...healthyBracket]);
+  expect(f.pause.mock.calls.flat()).toEqual([1000]);
+  expect(f.gh).not.toHaveBeenCalled();
+});
+
+it("ISS-223 startup wait cannot reset consumed transport retries", async () => {
+  const f = transportObservation((index, response) => {
+    if ([0, 4, 5].includes(index)) throw githubReadFailure(stoppedPost);
+    if (index === 2) return [{ workflow_runs: [] }];
+    return response;
+  });
+  await expect(f.adapter.checks(f.current, f.publication)).rejects.toMatchObject({
+    reason: "hosted-observation-unavailable",
+    diagnostics: "GitHub connection failed before send",
+  });
+  expect(f.requests).toEqual([
+    "pr view",
+    "pr view",
+    "actions/runs",
+    "pr view",
+    "pr view",
+    "pr view",
+  ]);
+  expect(f.pause.mock.calls.flat()).toEqual([1000, 10_000, 2000]);
+  expect(f.gh).not.toHaveBeenCalled();
+});
+
+it("ISS-223 transport retries leave all twelve startup waits available", async () => {
+  const f = transportObservation((index, response) => {
+    if (index < 2) throw githubReadFailure(stoppedPost);
+    if (Array.isArray(response)) return [{ workflow_runs: [] }];
+    return response;
+  });
+  await expect(f.adapter.checks(f.current, f.publication)).rejects.toMatchObject({
+    reason: "hosted-observation-unavailable",
+    diagnostics: "current publication workflow absent after 12 startup waits",
+  });
+  expect(f.requests).toEqual([
+    "pr view",
+    "pr view",
+    ...Array.from({ length: 13 }, () => ["pr view", "actions/runs", "pr view"]).flat(),
+  ]);
+  expect(f.pause.mock.calls.flat()).toEqual([1000, 2000, ...Array(12).fill(10_000)]);
+  expect(f.gh).not.toHaveBeenCalled();
+});
+
+it.each([stoppedPost, 'Post "https://api.github.com/graphql?token=SECRET": EOF'])(
+  "ISS-223 transport exhaustion is bounded and a later observation can recover: %s",
+  async (stderr) => {
+    let failing = true;
+    const f = transportObservation((_index, response) => {
+      if (failing) throw githubReadFailure(stderr);
+      return response;
+    });
+    await expect(f.adapter.checks(f.current, f.publication)).rejects.toMatchObject({
+      reason: "hosted-observation-unavailable",
+      diagnostics:
+        stderr === stoppedPost
+          ? "GitHub connection failed before send"
+          : "GitHub transport response unavailable",
+    });
+    expect(f.requests).toEqual(["pr view", "pr view", "pr view"]);
+    expect(f.pause.mock.calls.flat()).toEqual([1000, 2000]);
+    failing = false;
+    await expect(f.adapter.checks(f.current, f.publication)).resolves.toEqual(f.expected);
+    expect(f.requests.slice(3)).toEqual(healthyBracket);
+    expect(f.gh).not.toHaveBeenCalled();
+  },
+);
+
+it.each([
+  ["authorization", githubReadFailure("gh: Forbidden (HTTP 403)"), "gh: Forbidden (HTTP 403)"],
+  ["parse", new SyntaxError("invalid JSON"), "invalid JSON"],
+  ["unclassified", new Error("network is unreachable"), "network is unreachable"],
+  [
+    "partial response",
+    Object.assign(githubReadFailure(stoppedPost), { stdout: "partial" }),
+    stoppedPost,
+  ],
+] as const)(
+  "ISS-223 non-transport %s refuses at its first read",
+  async (_name, error, diagnostic) => {
+    const f = transportObservation(() => {
+      throw error;
+    });
+    await expect(f.adapter.checks(f.current, f.publication)).rejects.toMatchObject({
+      reason: "hosted-observation-unavailable",
+      diagnostics: diagnostic,
+    });
+    expect(f.requests).toEqual(["pr view"]);
+    expect(f.pause).not.toHaveBeenCalled();
+    expect(f.gh).not.toHaveBeenCalled();
+  },
+);
+
+it.each([
+  ["malformed workflow", 1, "malformed workflow observation"],
+  ["malformed jobs", 2, "malformed workflow jobs: 123"],
+  ["contradictory jobs", 2, "contradictory workflow job: 123/456"],
+  ["identity drift", 4, "publication moved"],
+] as const)("ISS-223 %s refuses without a transport retry", async (mode, at, diagnostics) => {
+  const f = transportObservation((index, response) => {
+    if (index !== at) return response;
+    if (mode === "identity drift") return { ...response, title: "changed title" };
+    if (mode === "contradictory jobs") response[0].jobs[0].head_sha = "f".repeat(40);
+    else return {};
+    return response;
+  });
+  await expect(f.adapter.checks(f.current, f.publication)).rejects.toMatchObject({
+    reason: "hosted-observation-unavailable",
+    diagnostics,
+  });
+  expect(f.requests).toEqual(healthyBracket.slice(0, at + 1));
+  expect(f.pause).not.toHaveBeenCalled();
+  expect(f.gh).not.toHaveBeenCalled();
+});
+
+it.each(["published-candidate-conflict", "publication-state-unknown"])(
+  "ISS-223 %s bypasses transport retries",
+  async (reason) => {
+    workspaceGit.mockImplementation((args) => {
+      if (args[0] === "remote") return "https://github.com/fixture/repository.git\n";
+      expect(args).toEqual(["ls-remote", "--heads", "origin", "refs/heads/codex/iss-074-delivery"]);
+      return `${reason === "published-candidate-conflict" ? head : "f".repeat(40)}\t${args[3]}\n`;
+    });
+    const f = transportObservation(
+      (_index, response) => ({ ...response, mergeStateStatus: "DIRTY" }),
+      "workspace-git",
+    );
+    await expect(f.adapter.checks(f.current, f.publication)).rejects.toMatchObject({ reason });
+    expect(f.requests).toEqual(["pr view"]);
+    expect(f.pause).not.toHaveBeenCalled();
+    expect(f.gh).not.toHaveBeenCalled();
+  },
+);
+
+it.each(["selected-run", "log"])(
+  "ISS-223 failedCheckLog retries nested checks but its %s failure stays single-shot",
+  async (boundary) => {
+    const f = transportObservation((index, response) => {
+      if (index === 0) throw githubReadFailure(stoppedPost);
+      if (index === 6 && boundary === "selected-run") throw githubReadFailure(stoppedGet);
+      return response;
+    });
+    f.gh.mockRejectedValue(githubReadFailure(stoppedGet));
+    const check = f.expected.checks[0]!;
+    await expect(f.adapter.failedCheckLog!(f.current, check, f.publication)).rejects.toMatchObject({
+      reason: `hosted-check-log-unavailable:${check.name}`,
+      diagnostics: stoppedGet,
+    });
+    expect(f.requests).toEqual(["pr view", ...healthyBracket, "actions/runs"]);
+    expect(f.pause.mock.calls.flat()).toEqual([1000]);
+    expect(f.gh).toHaveBeenCalledTimes(boundary === "log" ? 1 : 0);
+    if (boundary === "log")
+      expect(f.gh).toHaveBeenCalledWith(f.current, [
+        "run",
+        "view",
+        "123",
+        "--attempt",
+        "1",
+        "--log-failed",
+      ]);
+  },
+);
+
+it.each(["squash", "queue"])("ISS-223 %s merge observation stays single-shot", async (method) => {
+  const f = transportObservation(() => {
+    throw githubReadFailure(stoppedPost);
+  });
+  await expect(f.adapter.observeMerge(f.current, f.publication, { method })).resolves.toEqual({
+    state: "unknown",
+  });
+  expect(f.requests).toHaveLength(1);
+  expect(f.pause).not.toHaveBeenCalled();
+  expect(f.gh).not.toHaveBeenCalled();
+});
+
 // ISS-188: entirely synthetic identities; no Git, provider or mutation calls.
 function statusObservation(beforeStatus = "in_progress", afterStatus = "completed") {
   const current = { ...config(tmpdir()), repository: "fixture/repository" };
