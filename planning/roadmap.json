@@ -824,6 +824,14 @@
       "file": "planning/drafts/ISS-222.md",
       "milestone": "M1",
       "blockedBy": []
+    },
+    {
+      "key": "ISS-223",
+      "file": "planning/drafts/ISS-223.md",
+      "title": "Retry classified GitHub transport during hosted-check observation",
+      "summary": "Retry a classified GitHub transport failure across the whole checks identity bracket without weakening fail-closed observation.",
+      "milestone": "M1",
+      "blockedBy": []
     }
   ]
 }
