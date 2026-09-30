@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { PassThrough } from "node:stream";
@@ -1622,6 +1622,215 @@ it("observes a missing exit receipt for the module window before a dead author r
     kill.mockRestore();
   }
 });
+// ISS-222: all polls use a new adapter, as supervision does. Only the fake
+// process table and clock vary; observe() reads and parses real fixture files.
+async function firstDeathFixture(role: "author" | "reviewer", completed = true) {
+  const root = await realpath(await mkdtemp(resolve(tmpdir(), "dogfood-first-death-")));
+  cleanup.push(root);
+  const current = { ...config, stateDirectory: root };
+  const attempt = {
+    id,
+    pid: 999_999,
+    trace: resolve(root, `${role}.jsonl`),
+    launchedAt: 1_000,
+  };
+  const verdict =
+    role === "author"
+      ? { run: current.run, role, head, verdict: "PASS", summary: "" }
+      : { run: current.run, role, head, verdict: "PASS", findings: [], g0: "simplest" };
+  const traceBytes = trace([
+    rows[0]!,
+    ...(completed
+      ? [
+          {
+            type: "item.completed",
+            item: { type: "agent_message", text: JSON.stringify(verdict) },
+          },
+          { type: "turn.completed" },
+        ]
+      : []),
+  ]);
+  const attemptBytes = JSON.stringify(attempt);
+  const attemptPath = resolve(root, `${role}-attempt.json`);
+  await writeFile(attempt.trace, traceBytes);
+  await writeFile(attemptPath, attemptBytes);
+  return {
+    root,
+    attempt,
+    sidecar: resolve(root, `${role}.first-death.json`),
+    receipt: resolve(root, `${role}.exit.json`),
+    observe: (at: number) => codexAdapter("git", () => at).observe(role, current, attempt),
+    async unchanged() {
+      expect(JSON.stringify(attempt)).toBe(attemptBytes);
+      expect(await readFile(attemptPath, "utf8")).toBe(attemptBytes);
+      expect(await readFile(attempt.trace, "utf8")).toBe(traceBytes);
+    },
+  };
+}
+it.each(["author", "reviewer"] as const)(
+  "reads a receipt written after first death through a fresh %s adapter",
+  async (role) => {
+    const f = await firstDeathFixture(role);
+    const kill = vi.spyOn(process, "kill").mockImplementation(() => {
+      throw Object.assign(new Error("gone"), { code: "ESRCH" });
+    });
+    try {
+      // Poll N: the terminal turn exists, but the observer has not renamed
+      // exit.json yet. Launch was 99 seconds ago; first death is now.
+      await expect(f.observe(100_000)).resolves.toEqual({ id, status: "running" });
+      expect(await readFile(f.sidecar, "utf8")).toBe("100000");
+      await expect(readFile(f.receipt, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+      // The child-exit receipt arrives between polls N and N+1.
+      const receiptBytes = '{"code":0}\n';
+      await writeFile(f.receipt, receiptBytes);
+      await expect(f.observe(100_001)).resolves.toMatchObject({ id, status: "passed", head });
+      // A receipt is never filtered by the grace clock, even on a late poll.
+      await expect(f.observe(130_000)).resolves.toMatchObject({ id, status: "passed", head });
+      expect(kill).toHaveBeenCalledExactlyOnceWith(f.attempt.pid, 0);
+      expect(await readFile(f.receipt, "utf8")).toBe(receiptBytes);
+      expect(await readFile(f.sidecar, "utf8")).toBe("100000");
+      await f.unchanged();
+      expect((await readdir(f.root)).sort()).toEqual(
+        [
+          `${role}-attempt.json`,
+          `${role}.exit.json`,
+          `${role}.first-death.json`,
+          `${role}.jsonl`,
+        ].sort(),
+      );
+    } finally {
+      kill.mockRestore();
+    }
+  },
+);
+it.each(["author", "reviewer"] as const)(
+  "bounds a never-arriving %s receipt from first death across fresh adapters",
+  async (role) => {
+    const f = await firstDeathFixture(role);
+    const kill = vi.spyOn(process, "kill").mockImplementation(() => {
+      throw Object.assign(new Error("gone"), { code: "ESRCH" });
+    });
+    try {
+      await expect(f.observe(100_000)).resolves.toEqual({ id, status: "running" });
+      const firstDeathBytes = await readFile(f.sidecar, "utf8");
+      expect(firstDeathBytes).toBe("100000");
+      await expect(f.observe(129_999)).resolves.toEqual({ id, status: "running" });
+      await expect(f.observe(130_000)).rejects.toThrow("exit-receipt-timeout");
+      await expect(f.observe(130_001)).rejects.toThrow("exit-receipt-timeout");
+      expect(kill).toHaveBeenCalledExactlyOnceWith(f.attempt.pid, 0);
+      expect(await readFile(f.sidecar, "utf8")).toBe(firstDeathBytes);
+      await f.unchanged();
+    } finally {
+      kill.mockRestore();
+    }
+  },
+);
+it.each(["dead", "reused live PID"])(
+  "uses a sidecar saved before any adapter exists after restart (%s)",
+  async (mode) => {
+    const f = await firstDeathFixture("reviewer");
+    // No adapter has observed this attempt in this process. Preserve even
+    // the whitespace, so a rewrite cannot masquerade as retained state.
+    const firstDeathBytes = " 200000\n";
+    await writeFile(f.sidecar, firstDeathBytes);
+    const kill = vi.spyOn(process, "kill").mockImplementation(() => {
+      if (mode === "reused live PID") return true;
+      throw Object.assign(new Error("gone"), { code: "ESRCH" });
+    });
+    try {
+      await expect(f.observe(229_999)).resolves.toEqual({ id, status: "running" });
+      await expect(f.observe(230_000)).rejects.toThrow("exit-receipt-timeout");
+      expect(kill).not.toHaveBeenCalled();
+      expect(await readFile(f.sidecar, "utf8")).toBe(firstDeathBytes);
+      await f.unchanged();
+    } finally {
+      kill.mockRestore();
+    }
+  },
+);
+it.each(["never", "non-zero receipt"])(
+  "waits after a long-running receiptless ISS-141 author's death (%s)",
+  async (mode) => {
+    const f = await firstDeathFixture("author", false);
+    const kill = vi.spyOn(process, "kill").mockImplementation(() => {
+      throw Object.assign(new Error("gone"), { code: "ESRCH" });
+    });
+    try {
+      await expect(f.observe(100_000)).resolves.toEqual({ id, status: "running" });
+      if (mode === "non-zero receipt") {
+        await writeFile(f.receipt, '{"code":1}\n');
+        // The unchanged launcher-failed parser path has no ISS-141 summary.
+        await expect(f.observe(100_001)).resolves.toEqual({ id, status: "dead" });
+        expect(await readFile(f.receipt, "utf8")).toBe('{"code":1}\n');
+      } else {
+        await expect(f.observe(129_999)).resolves.toEqual({ id, status: "running" });
+        await expect(f.observe(130_000)).resolves.toEqual({
+          id,
+          status: "dead",
+          summary: "Author process exited without an exit receipt or terminal turn.",
+        });
+      }
+      expect(kill).toHaveBeenCalledExactlyOnceWith(f.attempt.pid, 0);
+      expect(await readFile(f.sidecar, "utf8")).toBe("100000");
+      await f.unchanged();
+    } finally {
+      kill.mockRestore();
+    }
+  },
+);
+it.each(["EPERM", "EACCES", "EIO", undefined])(
+  "leaves first-probe liveness unknown for %s without recording death",
+  async (code) => {
+    const f = await firstDeathFixture("reviewer");
+    const error = Object.assign(new Error("unknown process"), { code });
+    const kill = vi.spyOn(process, "kill").mockImplementation(() => {
+      throw error;
+    });
+    try {
+      await expect(f.observe(100_000)).rejects.toBe(error);
+      expect(kill).toHaveBeenCalledExactlyOnceWith(f.attempt.pid, 0);
+      await expect(readFile(f.sidecar, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+      await f.unchanged();
+    } finally {
+      kill.mockRestore();
+    }
+  },
+);
+it.each([false, true])(
+  "keeps malformed exit receipts fail-closed (recorded death: %s)",
+  async (saved) => {
+    const f = await firstDeathFixture("reviewer");
+    if (saved) await writeFile(f.sidecar, "100000");
+    await writeFile(f.receipt, "not-json");
+    const kill = vi.spyOn(process, "kill").mockImplementation(() => true);
+    try {
+      await expect(f.observe(130_000)).rejects.toBeInstanceOf(SyntaxError);
+      expect(kill).not.toHaveBeenCalled();
+      expect(await readFile(f.receipt, "utf8")).toBe("not-json");
+      if (saved) expect(await readFile(f.sidecar, "utf8")).toBe("100000");
+      else await expect(readFile(f.sidecar, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+      await f.unchanged();
+    } finally {
+      kill.mockRestore();
+    }
+  },
+);
+it.each(["not-json", ""])(
+  "fails closed on a malformed first-death sidecar (%j)",
+  async (contents) => {
+    const f = await firstDeathFixture("reviewer");
+    await writeFile(f.sidecar, contents);
+    const kill = vi.spyOn(process, "kill").mockImplementation(() => true);
+    try {
+      await expect(f.observe(100_000)).rejects.toBeInstanceOf(SyntaxError);
+      expect(kill).not.toHaveBeenCalled();
+      expect(await readFile(f.sidecar, "utf8")).toBe(contents);
+      await f.unchanged();
+    } finally {
+      kill.mockRestore();
+    }
+  },
+);
 it.each([
   "live",
   "unknown process",
@@ -1684,6 +1893,16 @@ it.each([
           head,
         });
       }
+    } else if (mode === "completed turn") {
+      await expect(
+        codexAdapter("git", () => now).observe("author", current, attempt),
+      ).resolves.toMatchObject({
+        status: "running",
+      });
+      now = 90_000;
+      await expect(
+        codexAdapter("git", () => now).observe("author", current, attempt),
+      ).rejects.toThrow("exit-receipt-timeout");
     } else {
       await expect(adapter.observe("author", current, attempt)).rejects.toThrow(
         mode === "unknown process"

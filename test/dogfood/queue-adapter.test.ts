@@ -1077,6 +1077,9 @@ it.each([
           ...(mode === "spent retry" ? { retries: 1 } : {}),
         }),
       );
+    // This retry fixture starts after the observed-death receipt grace has expired.
+    if (interrupted)
+      await writeFile(resolve(current.paths.source, "interrupted-author.first-death.json"), "1");
     const patch =
       "diff --git a/fixture.ts b/fixture.ts\n--- a/fixture.ts\n+++ b/fixture.ts\n@@ -1 +1 @@\n-process.cwd()\n+import.meta.url\n";
     let dirty = interrupted;
