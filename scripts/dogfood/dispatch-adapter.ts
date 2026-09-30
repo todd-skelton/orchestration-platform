@@ -1,6 +1,6 @@
 import { execFile, spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { readFile, writeFile } from "node:fs/promises";
+import { readFile, rename, writeFile } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
@@ -669,25 +669,41 @@ export function codexAdapter(gitExecutable = "git", now = Date.now): Adapter {
         throw error;
       }
       if (!exit && terminal.status !== "dead") {
+        // ISS-222: the grace starts at observed death, retained across adapter/restart boundaries.
+        const firstDeathPath = attemptArtifact(attempt, "first-death.json");
+        let firstDeath: number | undefined;
+        try {
+          firstDeath = JSON.parse(await readFile(firstDeathPath, "utf8"));
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+        }
+        if (firstDeath !== undefined) {
+          if (now() - firstDeath < EXIT_RECEIPT_WINDOW_MS)
+            return { id: attempt.id, status: "running" };
+          // ISS-141: the stopped host left a known author without a receipt or terminal turn.
+          if (
+            role === "author" &&
+            !events(trace, false).some((row) =>
+              ["turn.completed", "turn.failed"].includes(row.type),
+            )
+          )
+            return {
+              id: attempt.id,
+              status: "dead",
+              summary: "Author process exited without an exit receipt or terminal turn.",
+            };
+          throw new QueueBlocked("exit-receipt-timeout");
+        }
         try {
           process.kill(attempt.pid, 0);
         } catch (error) {
           if ((error as NodeJS.ErrnoException).code === "ESRCH") {
-            if (now() - attempt.launchedAt < EXIT_RECEIPT_WINDOW_MS)
-              return { id: attempt.id, status: "running" };
-            // ISS-141: the stopped host left a known author without a receipt or terminal turn.
-            if (
-              role === "author" &&
-              !events(trace, false).some((row) =>
-                ["turn.completed", "turn.failed"].includes(row.type),
-              )
-            )
-              return {
-                id: attempt.id,
-                status: "dead",
-                summary: "Author process exited without an exit receipt or terminal turn.",
-              };
-            throw new QueueBlocked("exit-receipt-timeout");
+            await writeFile(`${firstDeathPath}.tmp`, JSON.stringify(now()), {
+              flag: "wx",
+              flush: true,
+            });
+            await rename(`${firstDeathPath}.tmp`, firstDeathPath);
+            return { id: attempt.id, status: "running" };
           }
           throw error;
         }
