@@ -103,6 +103,18 @@ it("observes an active author without mutation and does not count polling/log gr
   expect(later.progress).toEqual({ ...first.progress, ageSeconds: 80 });
   expect(formatStatus(later)).toContain("worker health unknown");
   expect(formatStatus(later)).toContain("current, not reserved");
+  // ISS-219: a legacy run has no invocation binding; ownership is unavailable,
+  // never backfilled, and the additive field does not disturb existing readers.
+  expect(later.processOwnership).toMatchObject({
+    status: "unavailable",
+    diagnostic:
+      process.platform === "linux" ? "ownership-record-missing" : "ownership-linux-unsupported",
+    invocations: [],
+  });
+  expect(formatStatus(later)).toContain(
+    `Process ownership unavailable (${later.processOwnership.diagnostic}); census ${later.processOwnership.observationStart} to ${later.processOwnership.observationEnd}; 0 retained invocation(s); identities only, no stop authority`,
+  );
+  expect(later.unavailable).not.toContainEqual(expect.stringContaining("ownership"));
   const completion = { run, status: "complete", cursor: 1, items: 1, participants: 2 };
   await f.events(
     { ...completion, observedAt: new Date(now - 10_000).toISOString() },
@@ -475,5 +487,29 @@ it.skipIf(process.platform === "win32")(
       status: "unavailable",
       diagnostic: expect.stringContaining("private-process-namespace"),
     });
+  },
+);
+
+it.skipIf(process.platform !== "linux")(
+  "reports an unresolved ownership invocation without inventing membership or mutating records",
+  async () => {
+    const f = await fixture();
+    // A reserved invocation directory without a published binding: an
+    // interrupted preparation, never an empty successful set.
+    await mkdir(resolve(f.state, "process-ownership/preparing"), { recursive: true });
+    const before = await snapshot(f.root);
+    const value = await f.observe();
+    expect(await snapshot(f.root)).toEqual(before);
+    expect(value.processOwnership).toEqual({
+      status: "unavailable",
+      diagnostic: "ownership-invocation-unresolved",
+      observationStart: expect.any(String),
+      observationEnd: expect.any(String),
+      invocations: [{ invocation: "preparing", binding: null, members: null }],
+    });
+    expect(formatStatus(value)).toContain(
+      "  Invocation preparing: binding unresolved; membership unavailable",
+    );
+    expect(formatStatus(value)).not.toContain("PID 10 ");
   },
 );

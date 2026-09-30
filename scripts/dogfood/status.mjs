@@ -5,6 +5,7 @@ import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { observePause } from "./pause.mjs";
+import { observeProcessOwnership } from "./process-ownership.mjs";
 
 const exec = promisify(execFile);
 const commandOptions = { timeout: 20_000, maxBuffer: 16 * 1024 * 1024, windowsHide: true };
@@ -194,6 +195,24 @@ export async function observeStatus(configPath, options = {}) {
     }
   };
   const supervisor = await (options.supervisor ?? observeSupervisor)(configPath);
+  // ISS-219: one bounded read-only census of every retained invocation leaf.
+  // A live supervisor outside every bound membership (a direct loop:supervise
+  // start beside retained bindings) is not ownership evidence: the whole
+  // observation becomes unavailable rather than an observed set omitting it.
+  let processOwnership = await observeProcessOwnership(loop.stateRoot, loop.run);
+  if (
+    processOwnership.status === "observed" &&
+    ["running", "paused"].includes(supervisor.status) &&
+    !processOwnership.invocations.some((row) =>
+      row.members.some((member) => member.pid === supervisor.pid),
+    )
+  )
+    processOwnership = {
+      ...processOwnership,
+      status: "unavailable",
+      diagnostic: "ownership-supervisor-outside-boundary",
+      invocations: processOwnership.invocations.map((row) => ({ ...row, members: null })),
+    };
   let pause;
   try {
     pause = { status: "observed", ...(await observePause(loop)) };
@@ -406,6 +425,7 @@ export async function observeStatus(configPath, options = {}) {
     scope: { adapter: loop.adapter, targetMilestone: loop.targetMilestone ?? null },
     status,
     supervisor,
+    processOwnership,
     pause,
     lastLogObservation: event
       ? { status: event.status, observedAt: event.observedAt ?? null }
@@ -468,6 +488,28 @@ export function formatStatus(value) {
     `Progress ${value.progress.at ?? "unknown"}; age ${value.progress.ageSeconds === null ? "unknown" : `${value.progress.ageSeconds}s`} (${value.progress.event ?? "no timestamped event"})`,
   ];
   if (value.stop) lines.push(`Stop ${value.stop.reason}: ${value.stop.operatorAction}`);
+  const ownership = value.processOwnership;
+  if (ownership) {
+    lines.push(
+      `Process ownership ${ownership.status}${ownership.diagnostic ? ` (${ownership.diagnostic})` : ""}; census ${ownership.observationStart} to ${ownership.observationEnd}; ${ownership.invocations.length} retained invocation(s); identities only, no stop authority`,
+    );
+    for (const { invocation, binding, members } of ownership.invocations) {
+      if (!binding) {
+        lines.push(`  Invocation ${invocation}: binding unresolved; membership unavailable`);
+        continue;
+      }
+      lines.push(
+        `  Invocation ${binding.invocation} (${binding.substrate}) boot ${binding.bootId}; leaf ${binding.cgroupPath} device ${binding.cgroupIdentity.device} inode ${binding.cgroupIdentity.inode}; PID namespace ${binding.namespaces.pid}; wrapper PID ${binding.wrapper.pid} starttime ${binding.wrapper.starttime} (historical); created ${binding.createdAt}`,
+      );
+      if (members === null) lines.push("    Current membership unavailable");
+      else if (!members.length)
+        lines.push("    Current membership empty (complete kernel evidence)");
+      for (const member of members ?? [])
+        lines.push(
+          `    PID ${member.pid} starttime ${member.starttime} PPID ${member.ppid} PGID ${member.pgid} SID ${member.sid} state ${member.state}${["Z", "X", "x"].includes(member.state) ? " (zombie/exited, not live)" : ""}`,
+        );
+    }
+  }
   if (value.pause?.status === "unavailable")
     lines.push(`Pause unavailable: ${value.pause.diagnostic}`);
   else if (value.pause?.requestedAt)
