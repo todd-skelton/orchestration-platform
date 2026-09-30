@@ -176,6 +176,9 @@ For an admitted queued merge with complete saved green checks, the next
 observation stays in `confirmMerge` while the PR is pending. It returns the
 existing observing result without re-reading OPEN-only hosted checks; a
 confirmed merge records the ordinary receipt and proceeds through cleanup.
+An absent previously admitted entry stops as `merge-queue-removed`, including
+removal caused by a conflict; it does not enter automatic conflict recovery
+through the hosted-check reader. The operator must inspect that removal.
 
 The self adapter's `afterMirror` board gate validates candidate planning locally
 and checks only keys changed by its planning delta against the live board and

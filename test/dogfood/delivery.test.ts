@@ -433,7 +433,7 @@ it.each(["first", "second"])(
     f.controls.beforeIdentity = () => {
       if (++identities === 2 && window === "second") f.merged();
     };
-    // Baseline: the actual checks adapter throws publication moved at the named read.
+    // The continuation must stop at pending before either OPEN-only identity read.
     await expect(f.step()).resolves.toMatchObject({ status: "observing-hosted-checks" });
     expect(f.order).toEqual(["merge-observation"]);
     expect(identities).toBe(0);
