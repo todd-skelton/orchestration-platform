@@ -968,9 +968,9 @@ it.each([
     expected: [
       "gpt-6-luna/high",
       "gpt-6-luna/xhigh",
-      "gpt-6-sol/medium",
-      "claude-sonnet-5/medium",
-      "claude-sonnet-5/medium",
+      "gpt-6.1-sol/medium",
+      "claude-sonnet-5-5/medium",
+      "claude-sonnet-5-5/medium",
     ],
   },
   {

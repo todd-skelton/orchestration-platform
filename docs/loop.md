@@ -625,7 +625,7 @@ ISS-158 replaces fixed seats with per-row ladders after the repeated dead
 Astra/high launches in `m1-iss154-20260915T1004` and #7844's exhausted
 `m2-purchase-limit-20260915T0132` attempts. Set `routingRows` to the array in
 `adapters/chase-sets-routing.json`. Each row has only `row`, `review`, `author`
-and `reviewer`, with ordered placement arrays (current ISS-203 row 2 shown):
+and `reviewer`, with ordered placement arrays (ISS-203 row 2 with ISS-218 selectors shown):
 
 ```json
 {
@@ -634,8 +634,8 @@ and `reviewer`, with ordered placement arrays (current ISS-203 row 2 shown):
   "author": [
     { "model": "gpt-6-luna", "effort": "high" },
     { "model": "gpt-6-luna", "effort": "xhigh" },
-    { "model": "gpt-6-sol", "effort": "medium" },
-    { "model": "claude-sonnet-5", "effort": "medium" }
+    { "model": "gpt-6.1-sol", "effort": "medium" },
+    { "model": "claude-sonnet-5-5", "effort": "medium" }
   ],
   "reviewer": [
     { "model": "claude-opus-5-5", "effort": "high" },
@@ -665,7 +665,7 @@ Empty ladders, repeated placements and the old fixed-seat shape are rejected;
 there is no live-config migration. Reviewer models must be disjoint from all
 author models. `routing-reviewer-not-independent` rejects overlap, and
 `invalid-routing-fallback` rejects repeated reviewer models. The current self ladder
-is Astra/high, Astra/xhigh, Fable/high, with Opus 5.5/high then GPT-6 Sol/high review.
+is Astra/high, Astra/xhigh, Fable/high, with Opus 5.5/high then Sol 6.1/high review.
 Static `author` and `reviewer` config fields remain the self adapter's fallback
 only when its context has no routing row; Chase Sets requires `routingRows`.
 
@@ -679,12 +679,16 @@ review; Opus/max is removed and later failures clamp at Astra/high. Rows 4,
 review 11 and medium for review 12, with models disjoint from every author rung.
 Every author tail is the other vendor; row 15's benchmark-based Opus/max skip
 joins the historical row-10 Sol/xhigh exception to effort-before-model.
-Sonnet review tails provide weaker refusal-only continuity, never a quality
-escalation. Reviewer exhaustion still stops the host with the pool reset time.
+Sonnet review tails retain refusal-only continuity, never a quality escalation
+or a successor strength claim. Reviewer exhaustion still stops the host with
+the pool reset time.
 
 These placements use the September 23 research report cited in ISS-203, not
-local quality certification. Weighted API benchmark USD/task is not subscription
-spend or accepted-artifact cost; provider-fallback Opus/Fable cells do not
+local quality certification. Its Sol and Sonnet comparisons describe
+`gpt-6-sol` and `claude-sonnet-5`, not the ISS-218 successors; no score,
+cost, sample count, benchmark, verdict or capability evidence transfers.
+Weighted API benchmark USD/task is not subscription spend or accepted-artifact
+cost; provider-fallback Opus/Fable cells do not
 establish pure-model performance, reviewer recall, UI fit or a service bar.
 The documented same-row checkpoint and quality, latency, resource and exhaustion
 triggers require operator judgment, not automatic routing or trial authority.
@@ -705,9 +709,10 @@ remain intact: same-config replay keeps its rung, and changed ladders still refu
 Historically, ISS-202 applied Todd's successor ruling to the then-existing native ladders:
 `gpt-5.6-luna` becomes `gpt-6-luna`, `gpt-5.6-sol` becomes `gpt-6-sol`, and
 `claude-opus-5` becomes `claude-opus-5-5`, preserving roles, efforts and order.
-Current ladder short labels Luna/Sol mean GPT-6 and Opus means Opus 5.5;
-historical text and records retain their original identities. Replacement
-transfers no predecessor benchmark, score, verdict or capability evidence,
+In current ladders Luna means Luna 6, Sol means Sol 6.1, Sonnet means
+Sonnet 5.5 and Opus means Opus 5.5; historical text and records retain their
+original identities. Replacement transfers no predecessor benchmark, score,
+verdict or capability evidence,
 and native Opus row 14/15 roles grant no incumbent permission or new roles.
 Cutover is quiescent and for authorized fresh runs/paths only, after independent
 exact-head review and three-OS bootstrap green, with supervisors absent.
@@ -721,6 +726,28 @@ Same-config replay retains its saved placement/rung; changed ladders retain
 Preserved-run continuation needs separate disposition: no automatic resume,
 budget reset or exhausted-lineage re-entry. Generic operator strings remain
 open configuration and static configs are not rewritten.
+
+ISS-218 applies Todd's September 28 Sonnet retirement and September 29 Sol
+replacement ruling on [#8403](https://github.com/chase-sets/chase-sets/issues/8403)
+and [its Sol ruling](https://github.com/chase-sets/chase-sets/issues/8403#issuecomment-5900473741).
+Only the selectors change: `gpt-6-sol` to `gpt-6.1-sol` and
+`claude-sonnet-5` to `claude-sonnet-5-5`. All fourteen Chase pairs and self
+keep their roles, efforts, order and lengths, including Sonnet review tails.
+Immediately before a separately authorized quiescent install, after independent
+exact-head PASS and final-head three-OS bootstrap green with supervisors and
+workers absent, the host captures `gpt-6.1-sol/medium`, `gpt-6.1-sol/high`,
+`claude-sonnet-5-5/medium` and `claude-sonnet-5-5/high` through the target
+executor's actual native Codex CLI/account_pool path. Each capture retains
+requested/reported identity, effort, observed UTC instant, exit/result and
+evidence path. Unavailable/refused admission stops installation, without
+matrix changes or predecessor fallback. Skill catalogues, earlier probes and
+fixtures establish neither timely native admission nor quality. This grants
+no provider probe, installation or start authority. Only authorized fresh
+runs/paths use the new defaults; saved configs, fingerprints, participant
+identities and charges remain byte-identical. Changed-ladder resume still
+refuses, with no automatic resume, version-changing dead-worker retry,
+budget reset, exhausted-lineage re-entry or #457 renewal. Observing a pinned
+worker permits no retired-worker relaunch; preserved runs need separate disposition.
 
 Each launch persists a zero-based rung index before dispatch, then retains it
 with the worker attempt and participant placement. Resume uses the recorded
