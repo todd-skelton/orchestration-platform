@@ -59,7 +59,11 @@ import {
   type SupervisedCycle,
   type SupervisionAdapter,
 } from "../../scripts/dogfood/supervision.js";
-import { SELF_ROUTING, type RoutingRow } from "../../scripts/dogfood/routing.mjs";
+import {
+  parseRoutingMarker,
+  SELF_ROUTING,
+  type RoutingRow,
+} from "../../scripts/dogfood/routing.mjs";
 import { sourceFailureFixture, repairFailureFixture, snapshot } from "./fixtures/source-failure.js";
 import { startCaseTiming, type CaseTiming } from "./fixtures/iss212-timing.js";
 
@@ -3468,16 +3472,18 @@ it("composes all shipped Chase pairs before setup and reconstructs the same sele
   );
   const expected = [
     [2, "gpt-6-luna", "high", "claude-opus-5-5"],
-    [3, "claude-opus-5-5", "medium", "gpt-6-sol"],
+    [3, "claude-opus-5-5", "medium", "gpt-6.1-sol"],
     [4, "gpt-6-astra", "medium", "claude-opus-5-5"],
     [7, "gpt-6-astra", "high", "claude-opus-5-5"],
-    [10, "gpt-6-sol", "high", "claude-opus-5-5"],
-    [14, "claude-opus-5-5", "medium", "gpt-6-sol"],
-    [15, "claude-opus-5-5", "high", "gpt-6-sol"],
+    [10, "gpt-6.1-sol", "high", "claude-opus-5-5"],
+    [14, "claude-opus-5-5", "medium", "gpt-6.1-sol"],
+    [15, "claude-opus-5-5", "high", "gpt-6.1-sol"],
   ] as const;
   for (const [row, author, effort, reviewer] of expected) {
     for (const review of [11, 12] as const) {
-      const routing = { row, review };
+      const routing = parseRoutingMarker(
+        `<!-- routing: ${JSON.stringify({ version: 1, row, review })} -->`,
+      );
       const selected = f.selected;
       const loop = {
         ...f.loop,
@@ -3508,6 +3514,274 @@ it("composes all shipped Chase pairs before setup and reconstructs the same sele
     }
   }
 });
+
+it.each([
+  ...([11, 12] as const).flatMap((review) => [
+    { row: 2, review, rung: 2, author: "gpt-6.1-sol", effort: "medium", reviewer: "gpt-6-astra" },
+    {
+      row: 2,
+      review,
+      rung: 3,
+      author: "claude-sonnet-5-5",
+      effort: "medium",
+      reviewer: "gpt-6-astra",
+    },
+    {
+      row: 10,
+      review,
+      rung: 0,
+      author: "gpt-6.1-sol",
+      effort: "high",
+      reviewer: "claude-sonnet-5-5",
+    },
+    {
+      row: 3,
+      review,
+      rung: 0,
+      author: "claude-opus-5-5",
+      effort: "medium",
+      reviewer: "claude-sonnet-5-5",
+    },
+  ]),
+  {
+    row: "self" as const,
+    review: 11,
+    rung: 0,
+    author: "gpt-6-astra",
+    effort: "high",
+    reviewer: "gpt-6.1-sol",
+  },
+])(
+  "ISS-218 composes and launches successors at $row/$review author rung $rung and refused review tail",
+  async ({ row, review, rung, author, effort, reviewer }) => {
+    const f = await loopFixture();
+    const rows: RoutingRow[] = JSON.parse(
+      await readFile(new URL("../../adapters/chase-sets-routing.json", import.meta.url), "utf8"),
+    );
+    const routing =
+      row === "self"
+        ? { row: "self" as const }
+        : parseRoutingMarker(`<!-- routing: ${JSON.stringify({ version: 1, row, review })} -->`);
+    const policy: RepositoryAdapter = {
+      ...repositoryPolicy,
+      issueContext: async (input) => ({ ...(await repositoryPolicy.issueContext(input)), routing }),
+    };
+    const loop = { ...f.loop, adapter: row === "self" ? "self" : "chase-sets", routingRows: rows };
+    const queue = await queueConfigFromLoop(loop, f.repository, f.selected, policy);
+    const item = queue.items[0]!;
+    expect(await queueConfigFromLoop(loop, f.repository, f.selected, policy)).toEqual(queue);
+    await setupStep(
+      item.setup,
+      gitSetupAdapter({
+        gitExecutable: f.gitExecutable,
+        async install(_launcher, _args, cwd) {
+          await mkdir(resolve(cwd, "node_modules"), { recursive: true });
+          await writeFile(resolve(cwd, "node_modules/.modules.yaml"), "fixture: true\n");
+          return "succeeded";
+        },
+      }),
+      f.repository,
+    );
+    const real = codexAdapter(f.gitExecutable);
+    const launches: string[] = [];
+    const requested: { model: string; effort: string; rung: number | undefined }[] = [];
+    const admitted: { model: string; effort: string; rung: number | undefined }[] = [];
+    const native: Adapter = {
+      ...real,
+      async preflight() {},
+      async waitForProvider() {},
+      async authorRung() {
+        return rung;
+      },
+      async launch(role, config) {
+        const placement = config[role];
+        const identity = { model: placement.model, effort: placement.effort, rung: placement.rung };
+        requested.push(identity);
+        if (role === "reviewer" && placement.rung === 0)
+          throw new QueueBlocked("provider-model-refused");
+        admitted.push(identity);
+        launches.push(role);
+        if (role === "author")
+          await writeFile(resolve(config.worktree, "docs/loop.md"), "Synthetic implementation\n");
+        return {
+          id: randomUUID(),
+          pid: 111,
+          trace: resolve(config.stateDirectory, `${role}.jsonl`),
+          launchedAt: 1,
+        };
+      },
+      async observe(role, config, attempt) {
+        return role === "author"
+          ? { id: attempt.id, status: "passed", head: config.base }
+          : { id: attempt.id, status: "running" };
+      },
+    };
+    for (let replay = 0; replay < 2; replay++)
+      await expect(
+        sourceStep(item.source, native, item.setup.pilotWorktree),
+      ).resolves.toMatchObject({ status: "observing-reviewer" });
+    expect(launches).toEqual(["author", "reviewer"]);
+    expect(admitted).toEqual([
+      { model: author, effort, rung },
+      { model: reviewer, effort: review === 11 ? "high" : "medium", rung: 1 },
+    ]);
+    for (const placement of requested)
+      expect(["gpt-6-sol", "claude-sonnet-5"]).not.toContain(placement.model);
+  },
+);
+
+it.each([false, true])(
+  "ISS-218 preserves literal pre-cutover workers and participants (review refusal: %s)",
+  async (refusal) => {
+    const f = await loopFixture();
+    // Literal row 10 from d9a78e0b3e237736d4e3d5bd5d2cf48aaae1ba11;
+    // independent of the defaults and the successor table under test.
+    const legacy: RoutingRow = {
+      row: 10,
+      review: 11,
+      author: [
+        { model: "gpt-6-sol", effort: "high" },
+        { model: "gpt-6-astra", effort: "high" },
+        { model: "claude-fable-5-1", effort: "high" },
+      ],
+      reviewer: [
+        { model: "claude-opus-5-5", effort: "high" },
+        { model: "claude-sonnet-5", effort: "high" },
+      ],
+    };
+    const loop = { ...f.loop, adapter: "chase-sets", routingRows: [legacy] };
+    const policy: RepositoryAdapter = {
+      ...repositoryPolicy,
+      issueContext: async (input) => ({
+        ...(await repositoryPolicy.issueContext(input)),
+        routing: parseRoutingMarker('<!-- routing: {"version":1,"row":10,"review":11} -->'),
+      }),
+    };
+    const queue = await queueConfigFromLoop(loop, f.repository, f.selected, policy);
+    const item = queue.items[0]!;
+    item.source.inheritedWorkerRetry = true;
+    const real = codexAdapter(f.gitExecutable);
+    const launches: string[] = [];
+    let observations = 0;
+    let launchCalls = 0;
+    let reviewComplete = false;
+    const native: Adapter = {
+      ...real,
+      async preflight() {},
+      async waitForProvider() {},
+      async launch(role, config) {
+        launchCalls++;
+        if (refusal && role === "reviewer" && config.reviewer.rung === 0)
+          throw new QueueBlocked("provider-model-refused");
+        launches.push(role);
+        if (role === "author")
+          await writeFile(
+            resolve(config.worktree, "docs/loop.md"),
+            "Synthetic retained implementation\n",
+          );
+        return {
+          id: randomUUID(),
+          pid: 111,
+          trace: resolve(config.stateDirectory, `${role}.jsonl`),
+          launchedAt: 1,
+        };
+      },
+      async observe(role, config, attempt) {
+        observations++;
+        expect(config[role]).toMatchObject(
+          role === "author"
+            ? { model: "gpt-6-sol", effort: "high", rung: 0 }
+            : {
+                model: refusal ? "claude-sonnet-5" : "claude-opus-5-5",
+                effort: "high",
+                rung: refusal ? 1 : 0,
+              },
+        );
+        if (role === "author") return { id: attempt.id, status: "passed", head: config.base };
+        if (!reviewComplete) return { id: attempt.id, status: "running" };
+        const head = await real.git(config.worktree, ["rev-parse", "HEAD"]);
+        return {
+          id: attempt.id,
+          status: "passed",
+          head,
+          summary: JSON.stringify({
+            run: config.run,
+            role,
+            head,
+            verdict: "PASS",
+            findings: [],
+            g0: "Synthetic retained review",
+          }),
+        };
+      },
+    };
+    const adapter = repositoryQueueAdapter(queue, f.repository, {
+      native,
+      gitExecutable: f.gitExecutable,
+      setup: gitSetupAdapter({
+        gitExecutable: f.gitExecutable,
+        async install(_launcher, _args, cwd) {
+          await mkdir(resolve(cwd, "node_modules"), { recursive: true });
+          await writeFile(resolve(cwd, "node_modules/.modules.yaml"), "fixture: true\n");
+          return "succeeded";
+        },
+      }),
+    });
+    await expect(queueStep(queue, adapter)).resolves.toMatchObject({
+      status: "observing-reviewer",
+    });
+    const refuseChangedSelectors = async (retained: Map<string, string>) => {
+      const participants = await adapter.history();
+      const observed = observations;
+      const launched = launchCalls;
+      // Only the selector changes, including Sonnet's unused rung without refusal.
+      for (const [role, index, successor] of [
+        ["author", 0, "gpt-6.1-sol"],
+        ["reviewer", 1, "claude-sonnet-5-5"],
+      ] as const) {
+        const placement = item.source[role].ladder![index]!;
+        const predecessor = placement.model;
+        placement.model = successor;
+        await expect(sourceStep(item.source, native, item.setup.pilotWorktree)).rejects.toThrow(
+          "conflicting-run-configuration",
+        );
+        expect(await snapshot(queue.stateDirectory)).toEqual(retained);
+        expect(await adapter.history()).toEqual(participants);
+        placement.model = predecessor;
+      }
+      expect(observations).toBe(observed);
+      expect(launchCalls).toBe(launched);
+    };
+    const observing = await snapshot(queue.stateDirectory);
+    for (let replay = 0; replay < 2; replay++) {
+      await expect(queueStep(queue, adapter)).resolves.toMatchObject({
+        status: "observing-reviewer",
+      });
+      expect(await snapshot(queue.stateDirectory)).toEqual(observing);
+    }
+    await refuseChangedSelectors(observing);
+    reviewComplete = true;
+    await expect(adapter.source(item)).resolves.toMatchObject({ status: "accepted", retries: 1 });
+    const retained = await snapshot(queue.stateDirectory);
+    const participants = await adapter.history();
+    expect(participants).toHaveLength(2);
+    expect(participants.map(({ placement, rung }) => ({ ...placement, rung }))).toEqual([
+      { model: "gpt-6-sol", effort: "high", rung: 0 },
+      {
+        model: refusal ? "claude-sonnet-5" : "claude-opus-5-5",
+        effort: "high",
+        rung: refusal ? 1 : 0,
+      },
+    ]);
+    for (let replay = 0; replay < 2; replay++) {
+      await expect(adapter.source(item)).resolves.toMatchObject({ status: "accepted", retries: 1 });
+      expect(await snapshot(queue.stateDirectory)).toEqual(retained);
+      expect(await adapter.history()).toEqual(participants);
+    }
+    await refuseChangedSelectors(retained);
+    expect(launches).toEqual(["author", "reviewer"]);
+  },
+);
 
 it("derives the complete internal queue from one compact loop config and selected issue", async () => {
   const { loop, repository, stateRoot, selected } = await loopFixture();
