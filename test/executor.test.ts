@@ -11,6 +11,7 @@ import { afterEach, expect, it } from "vitest";
 // credentials.
 const exec = promisify(execFile);
 const executor = resolve(import.meta.dirname, "../scripts/executor");
+const supervise = resolve(import.meta.dirname, "../scripts/dogfood/supervise.mjs");
 const bridge = resolve(executor, "pool-bridge.mjs");
 const cleanup: (() => Promise<void> | void)[] = [];
 afterEach(async () => {
@@ -299,6 +300,7 @@ it("the attached parent answers one native-db request and exits with the supervi
     '{"status":"observing-author","run":"synthetic-native-component","cursor":0}',
     '{"type":"item.completed","item":{"type":"agent_message","text":"{}"}}',
     expect.stringContaining('"status":"reply"'),
+    `loss=${resolve(nativeLossRoot, "loss")}`,
     "exit=0",
   ]);
   expect(JSON.parse(lines[2]!)).toEqual({
@@ -355,13 +357,39 @@ const lines = {
   repeated: [JSON.stringify({ status: "observing-author", run: "synthetic-run" }), JSON.stringify({ status: "complete" })],
   "no-status": [JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "{}" } })],
   malformed: ["not-json"],
+  "status-then-no-status": [
+    JSON.stringify({ status: "observing-author", run: "synthetic-run" }),
+    JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "{}" } }),
+  ],
+  "status-then-malformed": [
+    JSON.stringify({ status: "observing-author", run: "synthetic-run" }),
+    "not-json",
+    '{"status":',
+  ],
+  "status-then-unaccepted": [
+    JSON.stringify({ status: "observing-author", run: "synthetic-run" }),
+    JSON.stringify({ status: 42 }),
+    JSON.stringify({ status: "" }),
+    JSON.stringify({ status: "x".repeat(129) }),
+    JSON.stringify({ status: "complete\\n" }),
+    JSON.stringify({ status: "idle\\n", run: "synthetic-run" }),
+    JSON.stringify({ status: ["idle"] }),
+  ],
+  "status-then-bad-run": [
+    JSON.stringify({ status: "observing-author", run: "synthetic-run" }),
+    JSON.stringify({ status: "complete", run: 42 }),
+    JSON.stringify({ status: "complete", run: "" }),
+    JSON.stringify({ status: "complete", run: "other-run\\n" }),
+    JSON.stringify({ status: "complete", run: "bad run" }),
+  ],
   complete: [JSON.stringify({ status: "complete", run: "synthetic-run" })],
   idle: [JSON.stringify({ status: "idle", run: "synthetic-run" })],
   paused: [JSON.stringify({ status: "paused", run: "synthetic-run" })],
-  blocked: [JSON.stringify({ status: "blocked", run: "synthetic-run" })],
 };
 for (const line of lines[mode] ?? []) process.stdout.write(line + "\\n");
-setTimeout(() => process.exit(code), delay);
+process.exitCode = code;
+// Drain stdout and keep sequential attachments apart before the natural exit.
+setTimeout(() => {}, delay);
 `,
   );
   const config = 'C:/configs/ISS-224;quoted "loop".json';
@@ -423,18 +451,38 @@ setTimeout(() => process.exit(code), delay);
   await invoke("no-status", 0, null, null);
   await invoke("malformed", 0, null, null);
   await invoke("complete", 0, "complete", "synthetic-run");
+  await invoke("status-then-no-status", 0, "observing-author", "synthetic-run");
+  await invoke("status-then-malformed", 7, "observing-author", "synthetic-run");
+  await invoke("status-then-unaccepted", 0, "observing-author", "synthetic-run");
+  await invoke("status-then-bad-run", 7, "complete", "synthetic-run");
 
-  for (const terminal of ["idle", "paused", "blocked"] as const) {
+  // idle and paused come from the synthetic child; blocked is the real
+  // supervise.mjs usage stop (no config argument), which exits 1 and must be
+  // echoed exactly once on the parent stream.
+  const terminals = [
+    { terminal: "idle", argumentList: `'${child}', 'idle', '9', '20'`, code: 9 },
+    { terminal: "paused", argumentList: `'${child}', 'paused', '9', '20'`, code: 9 },
+    { terminal: "blocked", argumentList: `'${supervise}'`, code: 1 },
+  ];
+  for (const { terminal, argumentList, code } of terminals) {
     const lossName = `terminal-${terminal}`;
     const harness = await startLoopHarness([
-      `$loss = Join-Path '${childRoot}' '${lossName}'; $code = Start-AttachedSupervisor -Executable '${process.execPath}' -ArgumentList @('${child}', '${terminal}', '9', '20') -LossNoteDirectory $loss -Config '${config}'; [Console]::WriteLine(('RESULT:' + ([pscustomobject]@{code=$code; loss=$loss} | ConvertTo-Json -Compress)))`,
+      `$loss = Join-Path '${childRoot}' '${lossName}'; $code = Start-AttachedSupervisor -Executable '${process.execPath}' -ArgumentList @(${argumentList}) -LossNoteDirectory $loss -Config '${config}'; [Console]::WriteLine(('RESULT:' + ([pscustomobject]@{code=$code; loss=$loss} | ConvertTo-Json -Compress)))`,
     ]);
     if (!harness) throw new Error("PowerShell disappeared during terminal case");
     const result = await harness.run();
-    const marker = result.stdout.split(/\r?\n/).find((line) => line.startsWith("RESULT:"));
+    const outputLines = result.stdout.split(/\r?\n/);
+    const marker = outputLines.find((line) => line.startsWith("RESULT:"));
     expect(marker, result.stdout).toBeDefined();
     const row = JSON.parse(marker!.slice("RESULT:".length)) as { code: number; loss: string };
-    expect(row.code).toBe(9);
+    expect(row.code).toBe(code);
+    const echoed = outputLines.filter((line) => line.includes(`"status":"${terminal}"`));
+    expect(echoed).toHaveLength(1);
+    expect(JSON.parse(echoed[0]!)).toMatchObject({ status: terminal });
+    if (terminal === "blocked") {
+      expect(JSON.parse(echoed[0]!)).toMatchObject({ status: "blocked", reason: "usage" });
+      expect(result.stderr.split(/\r?\n/).filter((line) => line === echoed[0])).toHaveLength(1);
+    }
     await expect(readdir(row.loss)).rejects.toMatchObject({ code: "ENOENT" });
   }
 

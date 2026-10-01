@@ -234,10 +234,10 @@ function Start-AttachedSupervisor {
         if (
           $names -contains "status" -and
           $message.status -is [string] -and
-          $message.status -match '^[\x20-\x7E]{1,128}$'
+          $message.status -match '^[\x20-\x7E]{1,128}\z'
         ) {
           $lastObservedStatus = $message.status
-          if ($message.run -is [string] -and $message.run -match '^[A-Za-z0-9._:-]{1,128}$') {
+          if ($message.run -is [string] -and $message.run -match '^[A-Za-z0-9._:-]{1,128}\z') {
             $lastObservedRun = $message.run
           }
           if ($terminalStatuses -ccontains $message.status) { $terminalObserved = $true }

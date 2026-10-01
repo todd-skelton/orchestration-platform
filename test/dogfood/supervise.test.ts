@@ -334,6 +334,7 @@ it("keeps the stderr blocked line when the attached stdout closes", async () => 
     child.on("close", done);
   });
   expect(code).toBe(1);
+  expect(stderr).not.toContain("EPIPE");
   expect(stderr.trim().split("\n")).toHaveLength(1);
   expect(JSON.parse(stderr)).toMatchObject({ status: "blocked", reason: "usage" });
 });
