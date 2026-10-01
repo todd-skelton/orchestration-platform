@@ -954,6 +954,8 @@ hosted CI only.
   (ISS-164). `run-loop.sh` no longer detaches: it keeps the provider and tool
   setup and runs the attached supervisor, whose stdout is exclusively the
   protocol stream while its stderr and the pnpm banner go to `supervisor.log`.
+  The terminal `blocked` line is also written to stdout after stderr, with a
+  failed stdout write falling back to the retained stderr line.
 - Check: `wsl -d Ubuntu -- tail -n 3 /root/orchestration-m1/supervisor.log`.
   Every protocol line is also appended there, so the log still ends in the
   final status.

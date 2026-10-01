@@ -297,6 +297,48 @@ async function run(request: string) {
   };
 }
 
+it("exposes the usage blocked terminal on both protocol streams", async () => {
+  const result = await new Promise<{ code: number | null; stdout: string; stderr: string }>(
+    (done, reject) => {
+      const child = spawn(process.execPath, [command], {
+        windowsHide: true,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.setEncoding("utf8");
+      child.stderr.setEncoding("utf8");
+      child.stdout.on("data", (chunk) => (stdout += chunk));
+      child.stderr.on("data", (chunk) => (stderr += chunk));
+      child.on("error", reject);
+      child.on("close", (code) => done({ code, stdout, stderr }));
+    },
+  );
+  expect(result.code).toBe(1);
+  expect(result.stdout).toBe(result.stderr);
+  expect(result.stdout.trim().split("\n")).toHaveLength(1);
+  expect(JSON.parse(result.stdout)).toMatchObject({ status: "blocked", reason: "usage" });
+});
+
+it("keeps the stderr blocked line when the attached stdout closes", async () => {
+  const child = spawn(process.execPath, [command], {
+    windowsHide: true,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  child.stdout?.destroy();
+  let stderr = "";
+  child.stderr?.setEncoding("utf8");
+  child.stderr?.on("data", (chunk) => (stderr += chunk));
+  const code = await new Promise<number | null>((done, reject) => {
+    child.on("error", reject);
+    child.on("close", done);
+  });
+  expect(code).toBe(1);
+  expect(stderr).not.toContain("EPIPE");
+  expect(stderr.trim().split("\n")).toHaveLength(1);
+  expect(JSON.parse(stderr)).toMatchObject({ status: "blocked", reason: "usage" });
+});
+
 afterEach(async () => {
   await Promise.all(
     roots

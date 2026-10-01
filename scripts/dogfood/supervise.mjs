@@ -371,19 +371,23 @@ function blocked(error, lifecycleReason, lifecycleDiagnostics) {
       : error instanceof Error
         ? error.message
         : String(error);
-  writeFileSync(
-    process.stderr.fd,
-    `${JSON.stringify({
-      status: "blocked",
-      run: loop?.run,
-      pid: process.pid,
-      observedAt: new Date().toISOString(),
-      reason,
-      ...(diagnostics ? { diagnostics } : {}),
-      ...(lifecycleReason ? { lifecycleReason } : {}),
-      ...(lifecycleDiagnostics ? { lifecycleDiagnostics } : {}),
-    })}\n`,
-  );
+  const line = `${JSON.stringify({
+    status: "blocked",
+    run: loop?.run,
+    pid: process.pid,
+    observedAt: new Date().toISOString(),
+    reason,
+    ...(diagnostics ? { diagnostics } : {}),
+    ...(lifecycleReason ? { lifecycleReason } : {}),
+    ...(lifecycleDiagnostics ? { lifecycleDiagnostics } : {}),
+  })}\n`;
+  writeFileSync(process.stderr.fd, line);
+  // Keep the retained stderr copy authoritative while exposing the terminal
+  // status to the attached parent; a closed stdout must not become an
+  // unhandled EPIPE.
+  try {
+    writeFileSync(process.stdout.fd, line);
+  } catch {}
   process.exitCode = 1;
 }
 
