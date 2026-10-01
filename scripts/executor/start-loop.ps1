@@ -276,7 +276,7 @@ function Start-AttachedSupervisor {
       [System.IO.Directory]::CreateDirectory($LossNoteDirectory) | Out-Null
       $timestamp = $observedAt.ToString("yyyyMMddTHHmmssfff'Z'", [Globalization.CultureInfo]::InvariantCulture)
       $finalPath = Join-Path $LossNoteDirectory ("{0}-{1}.json" -f $timestamp, $PID)
-      $temporaryPath = "$finalPath.tmp"
+      $siblingPath = "$finalPath.tmp"
       $record = [ordered]@{
         schemaVersion = "supervisor-loss/v1"
         kind = "supervisor-loss"
@@ -289,7 +289,9 @@ function Start-AttachedSupervisor {
       }
       $bytes = $Utf8.GetBytes((ConvertTo-Json -InputObject $record -Compress -Depth 4))
       if ($bytes.Length -gt 4096) { throw "loss note exceeds 4096 bytes" }
-      $stream = [System.IO.File]::Open($temporaryPath, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+      $stream = [System.IO.File]::Open($siblingPath, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+      # Only a sibling this call created is removed on failure.
+      $temporaryPath = $siblingPath
       try {
         $stream.Write($bytes, 0, $bytes.Length)
         $stream.Flush($true)

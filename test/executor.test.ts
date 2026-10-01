@@ -222,7 +222,7 @@ it.for([
     expect(rows.map((row) => row.event)).toEqual(
       launch ? ["control", "bridge", "launch"] : ["control"],
     );
-    if (launch)
+    if (launch) {
       expect(rows[2]).toMatchObject({
         arguments: [
           "-d",
@@ -233,9 +233,17 @@ it.for([
           config,
         ],
         verifier: "C:/verifier space",
-        loss: resolve(root, "local app", "orchestration-platform\\supervisor-loss"),
         config,
       });
+      // pwsh's Join-Path emits the host separator, so both sides are compared
+      // with separators normalized rather than against a literal backslash.
+      expect(String(rows[2].loss).replaceAll("\\", "/")).toBe(
+        resolve(root, "local app", "orchestration-platform", "supervisor-loss").replaceAll(
+          "\\",
+          "/",
+        ),
+      );
+    }
   },
 );
 
@@ -503,6 +511,29 @@ setTimeout(() => {}, delay);
   expect(regularParentResult.stderr).toMatch(/supervisor-loss-note-write-failed:/);
   expect(regularParentResult.stderr.length).toBeLessThanOrEqual(2048);
   expect((await stat(resolve(childRoot, "regular-parent"))).isFile()).toBe(true);
+
+  // A config inside the 1024-character bound can still escape past the
+  // 4096-byte note cap (each control character serializes as six bytes); that
+  // fails closed as a note-write failure with the child code unchanged.
+  const escapedConfigHarness = await startLoopHarness([
+    `$loss = Join-Path '${childRoot}' 'escaped-config'; $code = Start-AttachedSupervisor -Executable '${process.execPath}' -ArgumentList @('${child}', 'status', '7', '20') -LossNoteDirectory $loss -Config ([string]::new([char]1, 1024)); [Console]::WriteLine(('RESULT:' + ([pscustomobject]@{code=$code; loss=$loss} | ConvertTo-Json -Compress)))`,
+  ]);
+  if (!escapedConfigHarness) throw new Error("PowerShell disappeared during escaped-config case");
+  const escapedConfigResult = await escapedConfigHarness.run();
+  const escapedConfigMarker = escapedConfigResult.stdout
+    .split(/\r?\n/)
+    .find((line) => line.startsWith("RESULT:"));
+  expect(escapedConfigMarker).toBeDefined();
+  const escapedConfigRow = JSON.parse(escapedConfigMarker!.slice("RESULT:".length)) as {
+    code: number;
+    loss: string;
+  };
+  expect(escapedConfigRow.code).toBe(7);
+  expect(escapedConfigResult.stderr).toMatch(
+    /supervisor-loss-note-write-failed: loss note exceeds 4096 bytes/,
+  );
+  expect(escapedConfigResult.stderr.length).toBeLessThanOrEqual(2048);
+  expect(await readdir(escapedConfigRow.loss)).toEqual([]);
 
   const sequentialHarness = await startLoopHarness([
     `$loss = Join-Path '${childRoot}' 'sequential'; $first = Start-AttachedSupervisor -Executable '${process.execPath}' -ArgumentList @('${child}', 'status', '0', '80') -LossNoteDirectory $loss -Config '${config}'; $second = Start-AttachedSupervisor -Executable '${process.execPath}' -ArgumentList @('${child}', 'status', '0', '80') -LossNoteDirectory $loss -Config '${config}'; [Console]::WriteLine(('RESULT:' + ([pscustomobject]@{first=$first; second=$second; loss=$loss} | ConvertTo-Json -Compress)))`,
