@@ -192,7 +192,7 @@ it.for([
           "C:/verifier space",
           ...(flag ? [flag] : []),
         ],
-        { windowsHide: true },
+        { windowsHide: true, env: { ...process.env, LOCALAPPDATA: resolve(root, "local app") } },
       );
       let stdout = "";
       child.stdout.on("data", (data) => (stdout += data));
@@ -232,7 +232,7 @@ it.for([
           config,
         ],
         verifier: "C:/verifier space",
-        loss: expect.stringContaining("orchestration-platform"),
+        loss: resolve(root, "local app", "orchestration-platform\\supervisor-loss"),
         config,
       });
   },
@@ -269,6 +269,8 @@ it("starts one bridge per missing port before launching the loop", async (contex
 it("the attached parent answers one native-db request and exits with the supervisor", async (context) => {
   const child = resolve(tmpdir(), `start-loop-child-${process.pid}.mjs`);
   cleanup.push(() => rm(child, { force: true }));
+  const nativeLossRoot = await mkdtemp(resolve(tmpdir(), "native-db-loss-"));
+  cleanup.push(() => rm(nativeLossRoot, { recursive: true, force: true }));
   // Stand-in for wsl.exe: one status line, one request, echo the reply's
   // status as a second line, then exit 0. Worker-shaped JSON is a status line.
   await writeFile(
@@ -287,7 +289,7 @@ it("the attached parent answers one native-db request and exits with the supervi
     ].join("\n"),
   );
   const harness = await startLoopHarness([
-    `$loss = Join-Path '${tmpdir()}' 'native-db-loss'; $code = Start-AttachedSupervisor -Executable '${process.execPath}' -ArgumentList @('${child}', '${tmpdir()}') -LossNoteDirectory $loss -Config '/root/native config.json'; Write-Host "loss=$loss"`,
+    `$loss = Join-Path '${nativeLossRoot}' 'loss'; $code = Start-AttachedSupervisor -Executable '${process.execPath}' -ArgumentList @('${child}', '${tmpdir()}') -LossNoteDirectory $loss -Config '/root/native config.json'; Write-Host "loss=$loss"`,
     'Write-Host "exit=$code"',
   ]);
   if (!harness) return context.skip();
@@ -327,11 +329,149 @@ it("the attached parent answers one native-db request and exits with the supervi
     schemaVersion: "supervisor-loss/v1",
     kind: "supervisor-loss",
     classification: "supervisor loss/unknown outcome",
-    run: null,
+    run: "synthetic-native-component",
     config: "/root/native config.json",
     lastObservedStatus: "reply",
     childExitCode: 0,
   });
+});
+
+it("records attached loss controls at the real PowerShell boundary", async (context) => {
+  const shell = await powershell();
+  if (!shell) return context.skip();
+  const childRoot = await mkdtemp(resolve(tmpdir(), "supervisor-loss-child-"));
+  cleanup.push(() =>
+    rm(childRoot, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }),
+  );
+  const child = resolve(childRoot, "child.mjs");
+  await writeFile(
+    child,
+    `
+const mode = process.argv[2];
+const code = Number(process.argv[3] ?? 0);
+const delay = Number(process.argv[4] ?? 0);
+const lines = {
+  status: [JSON.stringify({ status: "observing-author", run: "synthetic-run" })],
+  repeated: [JSON.stringify({ status: "observing-author", run: "synthetic-run" }), JSON.stringify({ status: "complete" })],
+  "no-status": [JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "{}" } })],
+  malformed: ["not-json"],
+  complete: [JSON.stringify({ status: "complete", run: "synthetic-run" })],
+  idle: [JSON.stringify({ status: "idle", run: "synthetic-run" })],
+  paused: [JSON.stringify({ status: "paused", run: "synthetic-run" })],
+  blocked: [JSON.stringify({ status: "blocked", run: "synthetic-run" })],
+};
+for (const line of lines[mode] ?? []) process.stdout.write(line + "\\n");
+setTimeout(() => process.exit(code), delay);
+`,
+  );
+  const config = 'C:/configs/ISS-224;quoted "loop".json';
+  let sequence = 0;
+
+  const invoke = async (
+    mode: string,
+    code: number,
+    expectedStatus: string | null,
+    expectedRun: string | null,
+  ) => {
+    const lossName = `${mode}-${code}-${sequence++}`;
+    const harness = await startLoopHarness([
+      `$loss = Join-Path '${childRoot}' '${lossName}'; $code = Start-AttachedSupervisor -Executable '${process.execPath}' -ArgumentList @('${child}', '${mode}', '${code}', '20') -LossNoteDirectory $loss -Config '${config}'; [Console]::WriteLine(('RESULT:' + ([pscustomobject]@{code=$code; loss=$loss} | ConvertTo-Json -Compress)))`,
+    ]);
+    if (!harness) throw new Error("PowerShell disappeared during attached-boundary case");
+    const started = Date.now();
+    const result = await harness.run();
+    const finished = Date.now();
+    const marker = result.stdout.split(/\r?\n/).find((line) => line.startsWith("RESULT:"));
+    expect(marker, result.stdout).toBeDefined();
+    const row = JSON.parse(marker!.slice("RESULT:".length)) as { code: number; loss: string };
+    expect(row.code).toBe(code);
+    const files = await readdir(row.loss);
+    expect(files).toHaveLength(1);
+    expect(files[0]).toMatch(/^\d{8}T\d{9}Z-\d+\.json$/);
+    expect(files.filter((file) => file.endsWith(".tmp"))).toHaveLength(0);
+    const note = JSON.parse(await readFile(resolve(row.loss, files[0]!), "utf8")) as Record<
+      string,
+      unknown
+    >;
+    expect(Object.keys(note).sort()).toEqual([
+      "childExitCode",
+      "classification",
+      "config",
+      "kind",
+      "lastObservedStatus",
+      "observedAt",
+      "run",
+      "schemaVersion",
+    ]);
+    expect(note).toMatchObject({
+      schemaVersion: "supervisor-loss/v1",
+      kind: "supervisor-loss",
+      classification: "supervisor loss/unknown outcome",
+      run: expectedRun,
+      config,
+      lastObservedStatus: expectedStatus,
+      childExitCode: code,
+    });
+    const observedAt = Date.parse(String(note.observedAt));
+    expect(observedAt).toBeGreaterThanOrEqual(started);
+    expect(observedAt).toBeLessThanOrEqual(finished);
+  };
+
+  await invoke("status", 0, "observing-author", "synthetic-run");
+  await invoke("status", 7, "observing-author", "synthetic-run");
+  await invoke("repeated", 0, "complete", "synthetic-run");
+  await invoke("no-status", 0, null, null);
+  await invoke("malformed", 0, null, null);
+  await invoke("complete", 0, "complete", "synthetic-run");
+
+  for (const terminal of ["idle", "paused", "blocked"] as const) {
+    const lossName = `terminal-${terminal}`;
+    const harness = await startLoopHarness([
+      `$loss = Join-Path '${childRoot}' '${lossName}'; $code = Start-AttachedSupervisor -Executable '${process.execPath}' -ArgumentList @('${child}', '${terminal}', '9', '20') -LossNoteDirectory $loss -Config '${config}'; [Console]::WriteLine(('RESULT:' + ([pscustomobject]@{code=$code; loss=$loss} | ConvertTo-Json -Compress)))`,
+    ]);
+    if (!harness) throw new Error("PowerShell disappeared during terminal case");
+    const result = await harness.run();
+    const marker = result.stdout.split(/\r?\n/).find((line) => line.startsWith("RESULT:"));
+    expect(marker, result.stdout).toBeDefined();
+    const row = JSON.parse(marker!.slice("RESULT:".length)) as { code: number; loss: string };
+    expect(row.code).toBe(9);
+    await expect(readdir(row.loss)).rejects.toMatchObject({ code: "ENOENT" });
+  }
+
+  const regularParentHarness = await startLoopHarness([
+    `$parent = Join-Path '${childRoot}' 'regular-parent'; [IO.File]::WriteAllText($parent, 'x'); $loss = Join-Path $parent 'loss'; $code = Start-AttachedSupervisor -Executable '${process.execPath}' -ArgumentList @('${child}', 'status', '7', '20') -LossNoteDirectory $loss -Config '${config}'; [Console]::WriteLine(('RESULT:' + ([pscustomobject]@{code=$code; loss=$loss} | ConvertTo-Json -Compress)))`,
+  ]);
+  if (!regularParentHarness) throw new Error("PowerShell disappeared during regular-parent case");
+  const regularParentResult = await regularParentHarness.run();
+  const regularParentMarker = regularParentResult.stdout
+    .split(/\r?\n/)
+    .find((line) => line.startsWith("RESULT:"));
+  expect(regularParentMarker).toBeDefined();
+  const regularParentRow = JSON.parse(regularParentMarker!.slice("RESULT:".length)) as {
+    code: number;
+    loss: string;
+  };
+  expect(regularParentRow.code).toBe(7);
+  expect(regularParentResult.stderr).toMatch(/supervisor-loss-note-write-failed:/);
+  expect(regularParentResult.stderr.length).toBeLessThanOrEqual(2048);
+  expect((await stat(resolve(childRoot, "regular-parent"))).isFile()).toBe(true);
+
+  const sequentialHarness = await startLoopHarness([
+    `$loss = Join-Path '${childRoot}' 'sequential'; $first = Start-AttachedSupervisor -Executable '${process.execPath}' -ArgumentList @('${child}', 'status', '0', '80') -LossNoteDirectory $loss -Config '${config}'; $second = Start-AttachedSupervisor -Executable '${process.execPath}' -ArgumentList @('${child}', 'status', '0', '80') -LossNoteDirectory $loss -Config '${config}'; [Console]::WriteLine(('RESULT:' + ([pscustomobject]@{first=$first; second=$second; loss=$loss} | ConvertTo-Json -Compress)))`,
+  ]);
+  if (!sequentialHarness) throw new Error("PowerShell disappeared during sequential case");
+  const sequentialResult = await sequentialHarness.run();
+  const sequentialMarker = sequentialResult.stdout
+    .split(/\r?\n/)
+    .find((line) => line.startsWith("RESULT:"));
+  expect(sequentialMarker).toBeDefined();
+  const sequentialRow = JSON.parse(sequentialMarker!.slice("RESULT:".length)) as {
+    first: number;
+    second: number;
+    loss: string;
+  };
+  expect(sequentialRow).toMatchObject({ first: 0, second: 0 });
+  expect(await readdir(sequentialRow.loss)).toHaveLength(2);
 });
 
 it.skipIf(process.platform !== "linux")(

@@ -239,8 +239,6 @@ function Start-AttachedSupervisor {
           $lastObservedStatus = $message.status
           if ($message.run -is [string] -and $message.run -match '^[A-Za-z0-9._:-]{1,128}$') {
             $lastObservedRun = $message.run
-          } else {
-            $lastObservedRun = $null
           }
           if ($terminalStatuses -ccontains $message.status) { $terminalObserved = $true }
         }

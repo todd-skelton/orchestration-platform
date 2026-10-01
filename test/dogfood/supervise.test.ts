@@ -320,6 +320,24 @@ it("exposes the usage blocked terminal on both protocol streams", async () => {
   expect(JSON.parse(result.stdout)).toMatchObject({ status: "blocked", reason: "usage" });
 });
 
+it("keeps the stderr blocked line when the attached stdout closes", async () => {
+  const child = spawn(process.execPath, [command], {
+    windowsHide: true,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  child.stdout?.destroy();
+  let stderr = "";
+  child.stderr?.setEncoding("utf8");
+  child.stderr?.on("data", (chunk) => (stderr += chunk));
+  const code = await new Promise<number | null>((done, reject) => {
+    child.on("error", reject);
+    child.on("close", done);
+  });
+  expect(code).toBe(1);
+  expect(stderr.trim().split("\n")).toHaveLength(1);
+  expect(JSON.parse(stderr)).toMatchObject({ status: "blocked", reason: "usage" });
+});
+
 afterEach(async () => {
   await Promise.all(
     roots
