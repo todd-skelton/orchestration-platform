@@ -1068,6 +1068,93 @@ literal paths with spaces and shell metacharacters; they skip where `pwsh` is
 absent, including this worker. This observation supplies no host installation or
 live-start authority.
 
+### Native run process ownership
+
+ISS-219 addresses the `m2-rollback-drill-r2-20260930` Launch B abort, where
+the host gate found a SID/PGID member its frozen parent-chain census could not
+account for. The loop now exposes kernel-backed membership identities for
+external stops; it still sends no signal, holds no stop authority and issues no
+stop verdict.
+
+The canonical Linux entry `scripts/executor/run-loop.sh` runs only shell
+builtins and parameter expansions before it `exec`s the tools' Node on
+`scripts/dogfood/process-ownership.mjs`. That wrapper reads the loop config,
+creates one fresh leaf `/sys/fs/cgroup/orchestration-platform/<invocation>`,
+writes only its own PID to that leaf's `cgroup.procs`, reads the membership
+back to confirm exactly itself, and then publishes
+`<stateRoot>/<run>/process-ownership/<invocation>/binding.json` by exclusive
+temporary write, fsync and rename. Only after publication does it start the
+existing attached launcher body (`ip`/`awk`/`sed`, `pnpm`, `tee`, the
+supervisor and every adapter, observer, worker and tool descendant) as its
+first child with inherited stdio, so the ISS-164 protocol stream, `supervisor.log`
+routing and supervisor exit-code propagation are unchanged. The binding records
+the run, config path, invocation, boot ID, PID/cgroup/mount namespace
+identities, cgroup path and device/inode, the wrapper's PID and `/proc`
+starttime, and the UTC creation time. No live PID is moved by inference. A
+non-Linux host, a config whose `run` the supervisor would refuse (including
+`.` and `..`, so no record or leaf is created outside `<stateRoot>/<run>`), a
+non-cgroup2 `/sys/fs/cgroup`, an unwritable root, a
+failed enrollment read-back or a failed publication refuses the launch with
+`ownership-launch-refused` before any child exists; there is no fallback to
+parent-chain attribution, and a reserved invocation directory left by an
+interrupted preparation remains unresolved rather than empty. Leaves and
+bindings are never reused, overwritten or reclaimed; a later invocation of
+the same run gets its own leaf and observes old survivors without adopting
+them. Workers keep their existing sandbox and environment allowlist, which
+grants no cgroup write access; `ORCHESTRATION_CGROUP_ROOT` is a test
+injection of a plain directory, recorded as `substrate: injected-directory`,
+and never reaches a worker. That directory records only the wrapper's own
+enrollment write and can never learn a descendant, so a binding with that
+substrate is composition evidence: an external consumer must require
+`substrate: cgroup-v2` in every binding it acts on, and the human rendering
+marks any other substrate `not kernel evidence`. The canonical
+`start-loop.ps1`/`run-loop.sh` environment does not set that variable; a
+production census bound to an injected directory is a misconfigured launch,
+not a complete boundary.
+
+`loop:status` (hence `status-loop.ps1`) gains the additive `processOwnership`
+field with `status`, an optional bounded `diagnostic`, UTC `observationStart`
+and `observationEnd`, and `invocations`: every retained invocation of the run
+with its historical `binding` and its current `members`. A member row is the
+kernel's `cgroup.procs` entry joined to `/proc/<pid>/stat`: `pid`, `starttime`
+(decimal ticks since boot, not wall clock), `ppid`, `pgid`, `sid` and `state`;
+`Z`/`X` states are reported distinctly, never as live. The census is one bounded
+read, taken twice with no retry-until-quiet loop, freeze, signal or pause: a
+changed invocation set, boot or namespace, a moved or non-leaf cgroup object,
+an unresolved or foreign binding, an unreadable `cgroup.procs` or member row,
+a changed membership set or a same-PID/different-starttime member makes the
+whole observation `unavailable` with every `members` null while readable
+historical bindings stay visible. An empty `members` array is reported only
+with complete current evidence of the bound substrate, and only a `cgroup-v2`
+binding makes that kernel evidence; a missing directory or binding is
+`ownership-record-missing` or `ownership-invocation-unresolved`, not
+emptiness. A live supervisor outside every bound membership (a direct
+`loop:supervise` start beside retained bindings) is
+`ownership-supervisor-outside-boundary`; the supervisor search can refuse
+evidence but never adds a member. Legacy runs, direct `loop:supervise`
+starts and non-Linux hosts read as `unavailable` (`ownership-record-missing`,
+`ownership-linux-unsupported`) with no backfill, and the field never changes
+progress, pause/resume, no-second-supervisor checks or any receipt.
+
+The binding is historical: the wrapper tuple proves neither current liveness
+nor exit. `members` is a current sample bound to the recorded boot,
+namespaces and cgroup object. It is not a freeze, and it does not translate
+into permission to signal a session or process group that also holds a
+nonmember; a same-SID/PGID process absent from `cgroup.procs` is not a
+recorded member, and no record retroactively admits the drill's PID
+1525967. Repository tests prove ordering, refusal, reparented and detached
+descendants and fail-closed guards through the real launcher entry, adapter
+Git path, observer and status collector with an injected plain directory;
+that fork, reparenting and `setsid` retain real cgroup membership is proven
+only by a separately authorized host kernel qualification of the exact
+reviewed launcher in a disposable WSL2 run, which must capture enrollment,
+reparenting, detached grandchildren, launcher loss and post-exit membership
+with the worker sandbox visible and unable to migrate. An external consumer
+must freshly read status in the launch namespace and revalidate every member
+immediately before an independently authorized signal, aborting on new,
+unrecorded or ambiguous members. Landing this grants no installation, drill,
+host POST-predicate change or ISS-111 adoption completion.
+
 ### Opt-in attention watcher
 
 ISS-138 addresses the repeated host inspection in ISS-129, ISS-132, ISS-134

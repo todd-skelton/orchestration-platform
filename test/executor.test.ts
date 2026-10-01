@@ -1,5 +1,5 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { createServer, get, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
@@ -319,6 +319,9 @@ it.skipIf(process.platform !== "linux")(
     await mkdir(resolve(taskRoot, "codex-home"), { recursive: true });
     await mkdir(resolve(taskRoot, "repo"));
     await mkdir(fakes);
+    // ISS-219: the entry execs the tools' Node before any other subprocess.
+    await mkdir(resolve(taskRoot, "tools/node-v24.15.0-linux-x64/bin"), { recursive: true });
+    await symlink(process.execPath, resolve(taskRoot, "tools/node-v24.15.0-linux-x64/bin/node"));
     const result = resolve(root, "result.json");
     await writeFile(
       resolve(taskRoot, "codex-home/config.toml"),
@@ -331,19 +334,28 @@ it.skipIf(process.platform !== "linux")(
     // stderr, which must reach the log rather than the protocol stream.
     await writeFile(
       resolve(binDir, "pnpm"),
-      `#!/bin/sh\nprintf '{"args":"%s","base":"%s","status":"%s","auth":"%s","home":"%s","cwd":"%s"}' "$*" "$CODEX_PROVIDER_BASE_URL" "$CODEX_POOL_STATUS_URL" "$CODEX_PROVIDER_AUTH_COMMAND" "$CODEX_HOME" "$(pwd)" > '${result}'\necho 'banner' >&2\nread -r reply\nprintf '{"status":"idle","reply":"%s"}\\n' "$reply"\nexit 3\n`,
+      `#!/bin/sh\nprintf '{"args":"%s","base":"%s","status":"%s","auth":"%s","home":"%s","cwd":"%s","ppid":"%s","bindings":"%s"}' "$*" "$CODEX_PROVIDER_BASE_URL" "$CODEX_POOL_STATUS_URL" "$CODEX_PROVIDER_AUTH_COMMAND" "$CODEX_HOME" "$(pwd)" "$PPID" "$(ls '${resolve(root, "state/attached/process-ownership")}'/*/binding.json | wc -l)" > '${result}'\necho 'banner' >&2\nread -r reply\nprintf '{"status":"idle","reply":"%s"}\\n' "$reply"\nexit 3\n`,
       { mode: 0o700 },
     );
     await writeFile(resolve(fakes, "ip"), "#!/bin/sh\necho 'default via 10.9.8.7 dev eth0'\n", {
       mode: 0o700,
     });
     const config = resolve(root, "loop.json");
-    await writeFile(config, "{}\n");
+    await writeFile(
+      config,
+      `${JSON.stringify({ schemaVersion: "dogfood-loop/v1", run: "attached", stateRoot: resolve(root, "state") })}\n`,
+    );
     const outcome = await new Promise<{ code: number | null; stdout: string; stderr: string }>(
       (done, reject) => {
         const child = spawn("bash", [resolve(executor, "run-loop.sh"), config], {
           stdio: ["pipe", "pipe", "pipe"],
-          env: { ...process.env, TASK_ROOT: taskRoot, PATH: `${fakes}:${process.env.PATH}` },
+          env: {
+            ...process.env,
+            TASK_ROOT: taskRoot,
+            PATH: `${fakes}:${process.env.PATH}`,
+            // A plain injected directory; the real /sys/fs/cgroup is never touched.
+            ORCHESTRATION_CGROUP_ROOT: resolve(root, "cgroups"),
+          },
         });
         let stdout = "";
         let stderr = "";
@@ -362,15 +374,38 @@ it.skipIf(process.platform !== "linux")(
       stdout: '{"status":"idle","reply":"reply-line"}\n',
       stderr: "",
     });
-    const recorded = await readFile(result, "utf8");
-    expect(JSON.parse(recorded)).toEqual({
+    const recorded = JSON.parse(await readFile(result, "utf8"));
+    expect(recorded).toEqual({
       args: `--silent loop:supervise ${config}`,
       base: "http://10.9.8.7:8317/v1",
       status: "http://10.9.8.7:8318/api/status",
       auth: resolve(taskRoot, "pool-key.sh"),
       home: resolve(taskRoot, "codex-home"),
       cwd: resolve(taskRoot, "repo"),
+      ppid: expect.stringMatching(/^\d+$/),
+      bindings: "1",
     });
+    // The supervisor saw the published binding; its parent shell is the
+    // wrapper's first child, and the wrapper enrolled only itself.
+    const [invocation] = await readdir(resolve(root, "state/attached/process-ownership"));
+    const binding = JSON.parse(
+      await readFile(
+        resolve(root, "state/attached/process-ownership", invocation!, "binding.json"),
+        "utf8",
+      ),
+    );
+    expect(binding).toMatchObject({
+      schemaVersion: "dogfood-process-ownership/v1",
+      run: "attached",
+      configPath: config,
+      invocation,
+      substrate: "injected-directory",
+      cgroupPath: resolve(root, "cgroups", invocation!),
+      wrapper: { pid: expect.any(Number), starttime: expect.stringMatching(/^\d+$/) },
+    });
+    expect(await readFile(resolve(binding.cgroupPath, "cgroup.procs"), "utf8")).toBe(
+      `${binding.wrapper.pid}\n`,
+    );
     expect(await readFile(resolve(taskRoot, "codex-home/config.toml"), "utf8")).toBe(
       'base_url = "http://10.9.8.7:8317/v1"\n',
     );
@@ -380,6 +415,22 @@ it.skipIf(process.platform !== "linux")(
     const script = await readFile(resolve(executor, "run-loop.sh"), "utf8");
     for (const word of ["setsid", "nohup", "disown", "LOOP_DETACHED"])
       expect(script).not.toContain(word);
+    // Before the exec only builtins and parameter expansions run: no command
+    // substitution, pipeline or external command precedes enrollment.
+    const [head] = script.split("# ISS-219 ATTACHED BODY\n");
+    const commands = head!
+      .split("\n")
+      .filter((line) => line && !line.startsWith("#"))
+      .map((line) => line.trim());
+    expect(commands).toEqual([
+      "set -eu",
+      'TASK_ROOT="${TASK_ROOT:-/root/orchestration-m1}"',
+      'CONFIG="${1:-$TASK_ROOT/loop.json}"',
+      'SELF="${BASH_SOURCE[0]}"',
+      '[[ "$SELF" == */* ]] || SELF="./$SELF"',
+      'exec "$TASK_ROOT/tools/node-v24.15.0-linux-x64/bin/node" "${SELF%/*}/../dogfood/process-ownership.mjs" "$CONFIG" "$SELF"',
+    ]);
+    for (const line of commands) expect(line).not.toMatch(/\$\(|`|[^|]\|[^|]/);
   },
 );
 

@@ -7,6 +7,20 @@ set -eu
 # TASK_ROOT is overridable so a local test can exercise this path with fakes.
 TASK_ROOT="${TASK_ROOT:-/root/orchestration-m1}"
 CONFIG="${1:-$TASK_ROOT/loop.json}"
+# ISS-219: everything above this exec is a shell builtin or parameter expansion,
+# so no run subprocess exists before the wrapper has entered its own cgroup-v2
+# leaf and published the invocation binding. The wrapper then runs the attached
+# body below as its first child with inherited stdio.
+SELF="${BASH_SOURCE[0]}"
+[[ "$SELF" == */* ]] || SELF="./$SELF"
+exec "$TASK_ROOT/tools/node-v24.15.0-linux-x64/bin/node" "${SELF%/*}/../dogfood/process-ownership.mjs" "$CONFIG" "$SELF"
+
+# ISS-219 ATTACHED BODY
+# The wrapper starts this body only after enrollment and publication, as
+# `bash -c <body> <launcher> <config>`; nothing above it runs here.
+set -eu
+TASK_ROOT="${TASK_ROOT:-/root/orchestration-m1}"
+CONFIG="$1"
 # One log per config, including Chase Sets runs under orchestration-m2.
 LOG="$(cd "$(dirname "$CONFIG")" && pwd)/supervisor.log"
 HOST=$(ip route | awk '/default/{print $3; exit}')
