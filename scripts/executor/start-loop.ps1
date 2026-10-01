@@ -193,7 +193,9 @@ function Start-AttachedSupervisor {
   param(
     [Parameter(Mandatory)][string]$Executable,
     [Parameter(Mandatory)][string[]]$ArgumentList,
-    [string]$VerifierWorktree = ""
+    [string]$VerifierWorktree = "",
+    [Parameter(Mandatory)][string]$LossNoteDirectory,
+    [Parameter(Mandatory)][string]$Config
   )
   $info = [System.Diagnostics.ProcessStartInfo]::new($Executable)
   foreach ($argument in $ArgumentList) { $info.ArgumentList.Add($argument) }
@@ -214,6 +216,10 @@ function Start-AttachedSupervisor {
   $stderr = $process.StandardError.ReadToEndAsync()
   $boundRun = ""
   $lastCorrelation = [long]0
+  $lastObservedStatus = $null
+  $lastObservedRun = $null
+  $terminalObserved = $false
+  $terminalStatuses = @("idle", "paused", "blocked")
   try {
     while ($null -ne ($line = $process.StandardOutput.ReadLine())) {
       $message = $null
@@ -225,6 +231,19 @@ function Start-AttachedSupervisor {
       $names = @($message.PSObject.Properties.Name)
       if ($names -notcontains "schemaVersion" -or $message.schemaVersion -ne $NativeDbRequestSchema) {
         Write-Host $line
+        if (
+          $names -contains "status" -and
+          $message.status -is [string] -and
+          $message.status -match '^[\x20-\x7E]{1,128}$'
+        ) {
+          $lastObservedStatus = $message.status
+          if ($message.run -is [string] -and $message.run -match '^[A-Za-z0-9._:-]{1,128}$') {
+            $lastObservedRun = $message.run
+          } else {
+            $lastObservedRun = $null
+          }
+          if ($terminalStatuses -ccontains $message.status) { $terminalObserved = $true }
+        }
         continue
       }
       $diagnostic = Test-NativeDbRequest -Message $message -BoundRun $boundRun -LastCorrelation $lastCorrelation
@@ -248,9 +267,50 @@ function Start-AttachedSupervisor {
     }
   }
   $process.WaitForExit()
+  $observedAt = [DateTimeOffset]::UtcNow
+  $childExitCode = [int]$process.ExitCode
   $errors = $stderr.GetAwaiter().GetResult()
   if ($errors) { [Console]::Error.Write($errors) }
-  return $process.ExitCode
+  if (-not $terminalObserved) {
+    $temporaryPath = $null
+    try {
+      if ($Config.Length -gt 1024) { throw "config exceeds 1024 characters" }
+      [System.IO.Directory]::CreateDirectory($LossNoteDirectory) | Out-Null
+      $timestamp = $observedAt.ToString("yyyyMMddTHHmmssfff'Z'", [Globalization.CultureInfo]::InvariantCulture)
+      $finalPath = Join-Path $LossNoteDirectory ("{0}-{1}.json" -f $timestamp, $PID)
+      $temporaryPath = "$finalPath.tmp"
+      $record = [ordered]@{
+        schemaVersion = "supervisor-loss/v1"
+        kind = "supervisor-loss"
+        classification = "supervisor loss/unknown outcome"
+        run = $lastObservedRun
+        config = $Config
+        observedAt = $observedAt.ToString("yyyy-MM-dd'T'HH:mm:ss.fff'Z'", [Globalization.CultureInfo]::InvariantCulture)
+        lastObservedStatus = $lastObservedStatus
+        childExitCode = $childExitCode
+      }
+      $bytes = $Utf8.GetBytes((ConvertTo-Json -InputObject $record -Compress -Depth 4))
+      if ($bytes.Length -gt 4096) { throw "loss note exceeds 4096 bytes" }
+      $stream = [System.IO.File]::Open($temporaryPath, [System.IO.FileMode]::CreateNew, [System.IO.FileAccess]::Write, [System.IO.FileShare]::None)
+      try {
+        $stream.Write($bytes, 0, $bytes.Length)
+        $stream.Flush($true)
+      } finally {
+        $stream.Dispose()
+      }
+      [System.IO.File]::Move($temporaryPath, $finalPath, $false)
+    } catch {
+      try {
+        $diagnostic = ("supervisor-loss-note-write-failed: " + $_.Exception.Message)
+        if ($diagnostic.Length -gt 512) { $diagnostic = $diagnostic.Substring(0, 512) }
+        [Console]::Error.WriteLine($diagnostic)
+      } catch { }
+      if ($temporaryPath -and (Test-Path -LiteralPath $temporaryPath)) {
+        try { Remove-Item -LiteralPath $temporaryPath -Force -ErrorAction SilentlyContinue } catch { }
+      }
+    }
+  }
+  return $childExitCode
 }
 
 # Dot-sourced by tests for its functions only; the canonical start runs below.
@@ -277,5 +337,7 @@ Start-PoolBridges -Bridge (Join-Path $PSScriptRoot "pool-bridge.mjs")
 $code = Start-AttachedSupervisor `
   -Executable "C:\Windows\System32\wsl.exe" `
   -ArgumentList @("-d", "Ubuntu", "--", "bash", "/root/orchestration-m1/repo/scripts/executor/run-loop.sh", $Config) `
-  -VerifierWorktree $VerifierWorktree
+  -VerifierWorktree $VerifierWorktree `
+  -LossNoteDirectory (Join-Path $env:LOCALAPPDATA "orchestration-platform\supervisor-loss") `
+  -Config $Config
 exit $code

@@ -170,8 +170,8 @@ it.for([
     $check = [pscustomobject]@{ExitCode=${code}}
     $check | Add-Member -MemberType ScriptMethod -Name WaitForExit -Value { }
     function Start-PoolBridges { param($Bridge) Write-Output '{"event":"bridge"}' }
-    function Start-AttachedSupervisor { param($Executable, $ArgumentList, $VerifierWorktree)
-      [Console]::WriteLine(([pscustomobject]@{event='launch'; arguments=$ArgumentList; verifier=$VerifierWorktree} | ConvertTo-Json -Compress))
+    function Start-AttachedSupervisor { param($Executable, $ArgumentList, $VerifierWorktree, $LossNoteDirectory, $Config)
+      [Console]::WriteLine(([pscustomobject]@{event='launch'; arguments=$ArgumentList; verifier=$VerifierWorktree; loss=$LossNoteDirectory; config=$Config} | ConvertTo-Json -Compress))
       return 0
     }
   `,
@@ -232,6 +232,8 @@ it.for([
           config,
         ],
         verifier: "C:/verifier space",
+        loss: expect.stringContaining("orchestration-platform"),
+        config,
       });
   },
 );
@@ -272,7 +274,7 @@ it("the attached parent answers one native-db request and exits with the supervi
   await writeFile(
     child,
     [
-      'process.stdout.write(JSON.stringify({ status: "observing-author", cursor: 0 }) + "\\n");',
+      'process.stdout.write(JSON.stringify({ status: "observing-author", run: "synthetic-native-component", cursor: 0 }) + "\\n");',
       'process.stdout.write(JSON.stringify({ type: "item.completed", item: { type: "agent_message", text: "{}" } }) + "\\n");',
       "process.stderr.write('pnpm banner\\n');",
       "const request = { schemaVersion: 'dogfood-native-db-request/v1', correlation: 1, profile: 'reconciliation-pg16/v1', run: 'synthetic-native-component', issue: 2147483647, attempt: 1, executorHead: 'a'.repeat(40), product: { repository: 'synthetic/native-component', head: 'b'.repeat(40), tree: 'c'.repeat(40) }, declaration: { version: 1, profile: 'reconciliation-pg16/v1', files: [{ file: 'one', cases: ['c'] }, { file: 'two', cases: ['c'] }, { file: 'three', cases: ['c'] }], mutants: [] }, patchDigests: [], stagedInputDirectory: process.argv[2] };",
@@ -285,14 +287,14 @@ it("the attached parent answers one native-db request and exits with the supervi
     ].join("\n"),
   );
   const harness = await startLoopHarness([
-    `$code = Start-AttachedSupervisor -Executable '${process.execPath}' -ArgumentList @('${child}', '${tmpdir()}')`,
+    `$loss = Join-Path '${tmpdir()}' 'native-db-loss'; $code = Start-AttachedSupervisor -Executable '${process.execPath}' -ArgumentList @('${child}', '${tmpdir()}') -LossNoteDirectory $loss -Config '/root/native config.json'; Write-Host "loss=$loss"`,
     'Write-Host "exit=$code"',
   ]);
   if (!harness) return context.skip();
   const { stdout, stderr } = await harness.run();
   const lines = stdout.trim().split(/\r?\n/);
   expect(lines).toEqual([
-    '{"status":"observing-author","cursor":0}',
+    '{"status":"observing-author","run":"synthetic-native-component","cursor":0}',
     '{"type":"item.completed","item":{"type":"agent_message","text":"{}"}}',
     expect.stringContaining('"status":"reply"'),
     "exit=0",
@@ -305,6 +307,31 @@ it("the attached parent answers one native-db request and exits with the supervi
     keys: "schemaVersion,correlation,status,owner,evidencePath,diagnostic",
   });
   expect(stderr).toContain("pnpm banner");
+  const lossLine = lines.find((line) => line.startsWith("loss="));
+  expect(lossLine).toBeDefined();
+  const lossDirectory = lossLine!.slice("loss=".length);
+  const lossFiles = await readdir(lossDirectory);
+  expect(lossFiles).toHaveLength(1);
+  const note = JSON.parse(await readFile(resolve(lossDirectory, lossFiles[0]!), "utf8"));
+  expect(Object.keys(note).sort()).toEqual([
+    "childExitCode",
+    "classification",
+    "config",
+    "kind",
+    "lastObservedStatus",
+    "observedAt",
+    "run",
+    "schemaVersion",
+  ]);
+  expect(note).toMatchObject({
+    schemaVersion: "supervisor-loss/v1",
+    kind: "supervisor-loss",
+    classification: "supervisor loss/unknown outcome",
+    run: null,
+    config: "/root/native config.json",
+    lastObservedStatus: "reply",
+    childExitCode: 0,
+  });
 });
 
 it.skipIf(process.platform !== "linux")(
