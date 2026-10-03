@@ -45,6 +45,32 @@ capability is added only when a real cycle records a blocker.
    that guards against a hostile state directory, a hand-edited receipt, or
    the loop disagreeing with itself is a finding, not a safeguard.
 
+### Failure classes
+
+ISS-225 makes `scripts/dogfood/fault-class.ts` own stop classification and parking.
+
+| Class | Who acts next | Disposition in this slice |
+| --- | --- | --- |
+| `attempt` | The loop: candidate or worker output was unacceptable | Parks |
+| `replan` | A person: the brief or authority must change | Parks |
+| `retry` | Nobody: unavailable or unknown external state can reconcile on same-run restart | Non-parking host stop |
+| `wait` | A person, provider window or authority outside the loop | Non-parking host stop |
+| `halt` | The host: records, configuration or executor disagree | Non-parking host stop |
+
+Resolution is exact reason, then exact prefix ending in `:`, then halt-only
+family, then `unclassified` (also `halt`). Families are prefixes `invalid-`,
+`malformed-`, `conflicting-`, `duplicate-`, `unexpected-` and suffixes `-drift`,
+`-mismatch`; exact entries win. A new stop reason lands with its table entry
+in the same change; the parsed literal inventory is the test ratchet.
+Parking means `attempt`, `replan`, or explicit `legacyParking`.
+
+The recorded legacy-parking backlog is `exit-receipt-timeout` (retry; ISS-222),
+`launcher-failed` (retry; ISS-162), `reviewer-malformed` (retry; restart recovery),
+prefix `hosted-check-log-unavailable:` (retry), and `deploy-not-verified` (wait).
+These still park until separately reviewed work resolves each entry.
+ISS-225 changes no park, retry, wait or stop behavior; classes authorize no
+automatic recovery and change no saved records or posted bodies.
+
 ### Review and corrective authors
 
 Reviewer prompts require the JSON object alone, with
