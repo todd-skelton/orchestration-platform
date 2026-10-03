@@ -147,7 +147,7 @@ describe("fault classification", () => {
       const classified = classifyStop(reason);
       counts[classified.faultClass]++;
       if (classified.faultClass === "halt")
-        expect(["exact", "family"], reason).toContain(classified.rule);
+        expect(["exact", "prefix", "family"], reason).toContain(classified.rule);
     }
     process.stdout.write(`Stop inventory: ${inventory.length}; ${JSON.stringify(counts)}\n`);
   });
@@ -174,6 +174,46 @@ describe("fault classification", () => {
     for (const reason of cases) {
       expect(isItemStopReason(reason), reason).toBe(frozenItemStopReason(reason));
       expect(parksItem(reason), reason).toBe(frozenItemStopReason(reason));
+    }
+  });
+
+  it("classifies suffixed halt reasons through prefix rules", () => {
+    const samples = new Set([
+      "ci-failed:bootstrap",
+      "dependency-state-drift:source",
+      "dependency-state-unconfirmed:source",
+      "gate-attribution-unknown:test",
+      "missing-or-ambiguous-check:bootstrap",
+      "missing-or-duplicate-check:bootstrap",
+      "self-sibling-refused:ISS-225",
+      "unowned-worktree:source",
+      "worktree-collision:source",
+      "worktree-state-drift:source",
+      "worktree-state-unknown:source",
+      ...stopRules.flatMap((entry) =>
+        entry.rule === "prefix" && entry.faultClass === "halt"
+          ? entry.reasons.map((prefix) => prefix + "sample")
+          : [],
+      ),
+    ]);
+    for (const reason of samples) {
+      expect(classifyStop(reason), reason).toEqual({
+        faultClass: "halt",
+        legacyParking: false,
+        rule: "prefix",
+      });
+      expect(isItemStopReason(reason), reason).toBe(frozenItemStopReason(reason));
+    }
+  });
+
+  it("classifies both refused prerequisite owner outcomes exactly", () => {
+    for (const reason of ["prerequisite-owner-live", "prerequisite-owner-unknown"]) {
+      expect(classifyStop(reason), reason).toEqual({
+        faultClass: "halt",
+        legacyParking: false,
+        rule: "exact",
+      });
+      expect(isItemStopReason(reason), reason).toBe(frozenItemStopReason(reason));
     }
   });
 
