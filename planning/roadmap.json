@@ -846,6 +846,14 @@
       "summary": "Write one bounded Windows-side supervisor-loss note when the attached WSL child exits without a terminal status, without changing exit or routing behavior.",
       "milestone": "M1",
       "blockedBy": []
+    },
+    {
+      "key": "ISS-225",
+      "file": "planning/drafts/ISS-225.md",
+      "title": "Classify every stop reason in one table that owns the park decision",
+      "summary": "Give every stop reason one of five classes in a single table that isItemStopReason reads, with an inventory ratchet and no behavior change.",
+      "milestone": "M1",
+      "blockedBy": []
     }
   ]
 }
