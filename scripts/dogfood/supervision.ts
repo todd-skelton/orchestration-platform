@@ -10,6 +10,8 @@ import { resolveRouting } from "./routing.mjs";
 import { pauseBeforeSelection } from "./pause.mjs";
 // @ts-expect-error Node 24 executes this private TypeScript module directly.
 import { GithubCommandFailure } from "./github-command-failure.ts";
+// @ts-expect-error Node 24 executes this private TypeScript module directly.
+import { parksItem } from "./fault-class.ts";
 
 const {
   continuationSlug,
@@ -69,35 +71,7 @@ export interface SupervisionAdapter {
 }
 
 export function isItemStopReason(reason: string) {
-  return (
-    [
-      "author-failed",
-      "author-malformed",
-      "operator-evidence-failed",
-      "continuation-failed",
-      "terminal-attempt-admission-mismatch",
-      "continuation-repair-not-authorized",
-      "implementation-attempt-ceiling-exhausted",
-      "reviewer-malformed",
-      "exit-receipt-timeout",
-      "launcher-failed",
-      "rebase-conflict",
-      "refresh-review-failed",
-      "gate-correction-failed",
-      "gate-correction-review-failed",
-      "gate-correction-not-authorized",
-      "conflict-resolution-failed",
-      "conflict-resolution-exhausted",
-      "conflict-resolution-scope-escape",
-      "conflict-resolution-unsupported",
-      "deploy-not-verified",
-      "source-finding-location-outside-candidate",
-    ].includes(reason) ||
-    reason.startsWith("gate-retry-exhausted:") ||
-    reason.startsWith("gate-correction-exhausted:") ||
-    reason.startsWith("hosted-check-failed:") ||
-    reason.startsWith("hosted-check-log-unavailable:")
-  );
+  return parksItem(reason);
 }
 
 function exactKeys(value: unknown, keys: string[]): value is Record<string, any> {
