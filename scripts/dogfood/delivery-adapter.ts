@@ -60,7 +60,107 @@ const STATIC_RUN_MARKER = /^\[VERIFY_STATIC_RUN\] (\S+)$/gm;
 // ISS-192: the Chase Sets scoped static runner is fail-fast and marks each link,
 // so the failing link is the last marked block.
 function staticScopedFailingLink(output: string): string | undefined {
-  return [...output.matchAll(STATIC_RUN_MARKER)].at(-1)?.[1];
+  return [
+    ...output
+      .replace(/\u001b\[[0-9;]*m/g, "")
+      .replaceAll("\r\n", "\n")
+      .matchAll(STATIC_RUN_MARKER),
+  ].at(-1)?.[1];
+}
+
+// ISS-228: derived from check-structure/{phases,run,brand-foil-sites}.mjs
+// at product 4f5a1782. This summary precedes the failure report, not a second
+// ignorable producer. Its successful partition must agree with its printed suffix.
+function successfulBrandFoil(line: string): boolean {
+  const match =
+    /^Brand foil: (\{.*\}); allowed \+ violations = union: (\d+) \+ (\d+) = (\d+)$/.exec(line);
+  if (!match) return false;
+  try {
+    const summary = JSON.parse(match[1]!);
+    const fields = [
+      "tracked",
+      "scanned",
+      "bytes",
+      "readFailures",
+      "nul",
+      "literal",
+      "raw",
+      "constructor",
+      "token",
+      "union",
+      "allowed",
+      "violations",
+    ];
+    const count = (n: unknown) => Number.isSafeInteger(n) && (n as number) >= 0;
+    if (
+      !fields.every((field) => count(summary[field])) ||
+      !summary.roles ||
+      typeof summary.roles !== "object" ||
+      Array.isArray(summary.roles) ||
+      !Object.values(summary.roles).every(count)
+    )
+      return false;
+    return (
+      summary.readFailures === 0 &&
+      summary.violations === 0 &&
+      summary.scanned === summary.tracked &&
+      summary.nul <= summary.scanned &&
+      summary.allowed + summary.violations === summary.union &&
+      summary.union <= summary.scanned &&
+      summary.literal <= summary.token &&
+      summary.constructor <= summary.token &&
+      summary.token <= summary.literal + summary.constructor &&
+      summary.token <= summary.union &&
+      summary.raw <= summary.union &&
+      summary.union <= summary.token + summary.raw &&
+      Object.values(summary.roles).reduce<number>((sum, n) => sum + (n as number), 0) ===
+        summary.union &&
+      [summary.allowed, summary.violations, summary.union].every(
+        (n, i) => String(n) === match[i + 2],
+      )
+    );
+  } catch {
+    return false;
+  }
+}
+
+function structureDiagnostics(output: string): string[] {
+  const lines = output
+    .split(/^(?=\[VERIFY_STATIC_RUN\] )/m)
+    .at(-1)!
+    .trimEnd()
+    .split("\n");
+  if (
+    lines[0] !== "[VERIFY_STATIC_RUN] check:structure" ||
+    lines[1] !==
+      "$ node ./scripts/check-structure.mjs && node ./scripts/check-structure/brand-foil-proof.mjs" ||
+    !successfulBrandFoil(lines[2] ?? "") ||
+    lines[3] !== "Structure check failed:"
+  )
+    return [];
+  let index = 4;
+  while (lines[index]?.trim() === "") index++;
+  const diagnostics: string[] = [];
+  while (lines[index]?.startsWith("- ")) {
+    const diagnostic = lines[index++]!.slice(2);
+    if (!/^.+: \S.*$/.test(diagnostic)) return [];
+    diagnostics.push(diagnostic);
+  }
+  while (lines[index]?.trim() === "") index++;
+  if (
+    lines[index++] !==
+    "See docs/architecture/bounded-context-structure.md#rules-the-structure-gate-enforces for the enforced rules and fixes."
+  )
+    return [];
+  for (let tail = 0; tail < 2; tail++) {
+    while (lines[index]?.trim() === "") index++;
+    if (lines[index++] !== "[ELIFECYCLE] Command failed with exit code 1.") return [];
+  }
+  return index === lines.length ? diagnostics : [];
+}
+
+function structurePath(diagnostic: string): string {
+  return diagnostic.slice(0, diagnostic.indexOf(": "));
 }
 
 // Recognize only a final block wholly made of `<path> is stale|missing` throws
@@ -98,18 +198,26 @@ function staticArtifactDiagnostics(output: string): string[] {
   return producer ? diagnostics : [];
 }
 
-// Deliberately recognize only completed compiler, formatter, assertion and
-// generated-artifact staleness diagnostics. Timeouts, resource failures and
+// Deliberately recognize only completed compiler, formatter, assertion,
+// generated-artifact staleness and structure diagnostics. Timeouts, resource failures and
 // mixed causes have no candidate attribution.
 export function gateDiagnostics(name: string, raw: string): string[] {
-  const output = raw.replace(/\u001b\[[0-9;]*m/g, "");
+  const output = raw.replace(/\u001b\[[0-9;]*m/g, "").replaceAll("\r\n", "\n");
   if (
     /timed?\s*out|TimeoutError:|(?:test|hook|command|process) timeout|timeout of \d+|ENOMEM|ENOSPC|EACCES|ENOENT|ECONN|heap out of memory|SIGKILL|Unhandled|unhandled|ELIFECYCLE.*signal|command not found|Cannot find (?:module|package)|ERR_PNPM|failed to (?:load|start|resolve)|Errors\s+[1-9]\d*\s+errors?|^(?:TypeError|ReferenceError|SyntaxError|FATAL ERROR):/im.test(
       output,
     )
   )
     return [];
-  if (name === STATIC_SCOPED_GATE) return staticArtifactDiagnostics(output);
+  if (name === STATIC_SCOPED_GATE) {
+    // A structure failure followed by any link contradicts the runner's fail-fast
+    // contract, even if that later link is a recognizable generated-artifact throw.
+    const blocks = output.split(/^(?=\[VERIFY_STATIC_RUN\] )/m);
+    if (blocks.slice(0, -1).some((block) => /^Structure check failed:$/m.test(block))) return [];
+    return staticScopedFailingLink(output) === "check:structure"
+      ? structureDiagnostics(output)
+      : staticArtifactDiagnostics(output);
+  }
   if (name === "typecheck")
     return [...output.matchAll(/^([^\r\n]+\(\d+,\d+\): error TS\d+: .+)$/gm)].map((m) => m[1]!);
   if (name === "format:check" && output.includes("Code style issues found"))
@@ -989,9 +1097,35 @@ export function githubDeliveryAdapter(
             : [];
         // Tie every diagnostic to a file in the committed candidate, not an external path.
         let committed = diagnostics.length > 0;
+        const structure =
+          name === STATIC_SCOPED_GATE && staticScopedFailingLink(output) === "check:structure";
         for (const diagnostic of diagnostics) {
-          const path = diagnostic.split(/\(\d+,\d+\):| > |\s+is\s+(?:stale|missing)$/)[0]!;
+          const path = structure
+            ? structurePath(diagnostic)
+            : diagnostic.split(/\(\d+,\d+\):| > |\s+is\s+(?:stale|missing)$/)[0]!;
           try {
+            if (structure) {
+              if (
+                !path ||
+                /[\\:\x00-\x1f\x7f]/.test(path) ||
+                path.split("/").some((part) => !part || part === "." || part === "..")
+              ) {
+                committed = false;
+                continue;
+              }
+              const entry = await git(
+                gitExecutable,
+                config,
+                ["ls-tree", "-z", head, "--", `:(literal)${path}`],
+                config.worktree,
+              );
+              if (
+                !["100644", "100755"].some((mode) => entry.startsWith(`${mode} blob `)) ||
+                entry.slice(entry.indexOf("\t") + 1) !== `${path}\0`
+              )
+                committed = false;
+              continue;
+            }
             await git(
               gitExecutable,
               config,
@@ -1051,6 +1185,14 @@ export function githubDeliveryAdapter(
             ? staticScopedFailingLink(await readFile(evidence.log, "utf8"))
             : undefined;
         if (name === STATIC_SCOPED_GATE && !link) return result;
+        const changed = link
+          ? await changedFiles(gitExecutable, config, main, evidence.head)
+          : undefined;
+        if (
+          link === "check:structure" &&
+          !evidence.diagnostics.every((diagnostic) => changed!.includes(structurePath(diagnostic)))
+        )
+          return result;
         // Dependencies and the script must be comparable. A changed toolchain stays unknown.
         for (const path of ["package.json", "pnpm-lock.yaml"]) {
           const before = await git(
@@ -1090,9 +1232,7 @@ export function githubDeliveryAdapter(
           const command = { ...evidence.command, cwd: tree };
           const env = link
             ? {
-                CHANGED_FILES_JSON: JSON.stringify(
-                  await changedFiles(gitExecutable, config, main, evidence.head),
-                ),
+                CHANGED_FILES_JSON: JSON.stringify(changed),
               }
             : undefined;
           const terminal = await gateCommand(command, log, env);

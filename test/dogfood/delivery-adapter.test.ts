@@ -803,7 +803,7 @@ it.each(["missing", "cancelled"])(
   },
 );
 
-const gateFaults = vi.hoisted(() => ({ cleanup: false }));
+const gateFaults = vi.hoisted(() => ({ cleanup: false, signal: false }));
 const workspaceGit = vi.hoisted(() => vi.fn<(args: string[], cwd: string) => string>());
 const workspaceCommands = vi.hoisted(() => ({
   observe: undefined as ((args: string[], cwd: string) => void) | undefined,
@@ -827,7 +827,22 @@ vi.mock("node:child_process", async (original) => {
       return execute(executable, args, options);
     },
   });
-  return { ...actual, execFile: injected };
+  return {
+    ...actual,
+    execFile: injected,
+    spawn(executable: string, args: string[], options: import("node:child_process").SpawnOptions) {
+      if (!gateFaults.signal) return actual.spawn(executable, args, options);
+      // Windows self-termination reports an ordinary exit code. Kill from the
+      // parent after the child confirms its complete output, so Node reports
+      // a real signal terminal on every OS without a timer race.
+      const child = actual.spawn(executable, args, {
+        ...options,
+        stdio: [...(options.stdio as number[]), "ipc"],
+      });
+      child.once("message", () => child.kill("SIGTERM"));
+      return child;
+    },
+  };
 });
 
 it.each(["startup", "log-io"])(
@@ -1026,6 +1041,109 @@ function staticBlock(producer: string, artifact: string, state: "stale" | "missi
 const staticPrefix =
   "[SKIPPED-BY-SCOPE] check:synthetic-budget: packages/synthetic/**\n[VERIFY_STATIC_SCOPE] scanned=2/3; skipped=1; excluded=0; changed=4; source=git merge-base.\n[VERIFY_STATIC_RUN] check:synthetic-inventory\n$ node ./scripts/check-synthetic-inventory.mjs\nSynthetic inventory covers all modules.\n";
 
+// Historical copied text only: cs-8287 candidate.log:1430-1441. No product execution.
+const historicalStructureBlock = `[VERIFY_STATIC_RUN] check:structure
+$ node ./scripts/check-structure.mjs && node ./scripts/check-structure/brand-foil-proof.mjs
+Brand foil: {"tracked":7192,"scanned":7192,"bytes":85321030,"readFailures":0,"nul":34,"literal":11,"raw":9,"constructor":3,"token":12,"union":14,"allowed":14,"violations":0,"roles":{"value-authority":3,"wordmark":2,"wordmark-raster-generator":2,"verification":4,"documentation":1,"detector-definition":2}}; allowed + violations = union: 14 + 0 = 14
+Structure check failed:
+
+- deployables/platform-worker/__tests__/fixtures/worker-extension/bounded-contexts/synthetic-worker-extension/module.ts: deployables must use package imports (./context.json)
+- deployables/platform-worker/__tests__/worker-graph-extension.ts: deployables must use package imports (./fixtures/worker-extension/bounded-contexts/synthetic-worker-extension/module)
+- deployables/platform-worker/__tests__/worker-graph-extension.ts: deployables must use package imports (./fixtures/worker-extension/bounded-contexts/synthetic-worker-extension/tests/worker-graph.extended.contract.json)
+
+See docs/architecture/bounded-context-structure.md#rules-the-structure-gate-enforces for the enforced rules and fixes.
+[ELIFECYCLE] Command failed with exit code 1.
+[ELIFECYCLE] Command failed with exit code 1.
+`;
+const syntheticStructureDiagnostics = [
+  "synthetic/module.ts: synthetic import policy (./context.json)",
+  "synthetic/graph.ts: a different ordinary rule (./module)",
+  "synthetic/graph.ts: preserve this message: including its colon (./contract.json)",
+];
+function structureBlock(diagnostics = syntheticStructureDiagnostics) {
+  return historicalStructureBlock.replace(
+    /(?:^- .+\n)+/m,
+    diagnostics.map((diagnostic) => `- ${diagnostic}\n`).join(""),
+  );
+}
+const structureUnknowns = [
+  [
+    "before list",
+    (s: string) => s.replace("Structure check failed:", "unexpected\nStructure check failed:"),
+  ],
+  [
+    "within list",
+    (s: string) => s.replace("- synthetic/graph.ts", "unexpected\n- synthetic/graph.ts"),
+  ],
+  ["after list", (s: string) => s + "unexpected\n"],
+  ["missing header", (s: string) => s.replace("Structure check failed:", "")],
+  ["missing footer", (s: string) => s.replace(/^See .+\n/m, "")],
+  ["empty list", (s: string) => s.replace(/^- .+\n/gm, "")],
+  [
+    "noncontiguous list",
+    (s: string) => s.replace("- synthetic/graph.ts", "\n- synthetic/graph.ts"),
+  ],
+  [
+    "wrong producer",
+    (s: string) => s.replace("node ./scripts/check-structure.mjs", "node ./scripts/other.mjs"),
+  ],
+  [
+    "wrong link",
+    (s: string) =>
+      s.replace("[VERIFY_STATIC_RUN] check:structure", "[VERIFY_STATIC_RUN] check:other"),
+  ],
+  [
+    "subsequent link",
+    (s: string) => s + staticBlock("generate-synthetic-index.mjs", "synthetic/module.ts", "stale"),
+  ],
+  [
+    "brand proof failure",
+    (s: string) =>
+      s.replace(
+        /Structure check failed:[\s\S]*?See .+\n/,
+        "Structure check passed.\nError: brand proof failed\n",
+      ),
+  ],
+  ["missing summary", (s: string) => s.replace(/^Brand foil:.+\n/m, "")],
+  ["malformed summary", (s: string) => s.replace('"tracked":7192', '"tracked":oops')],
+  ["read failures", (s: string) => s.replace('"readFailures":0', '"readFailures":1')],
+  ["brand violations", (s: string) => s.replace('"violations":0', '"violations":1')],
+  ["wrong partition", (s: string) => s.replace('"allowed":14', '"allowed":13')],
+  ["wrong suffix", (s: string) => s.replace("14 + 0 = 14", "13 + 0 = 14")],
+  ["missing tail", (s: string) => s.replace("[ELIFECYCLE] Command failed with exit code 1.\n", "")],
+  ["timeout", (s: string) => s + "Command timed out\n"],
+  ["resource", (s: string) => s + "ENOMEM\n"],
+] as const;
+
+it("ISS-228 recognizes the complete historical structure envelope and synthetic ordinary messages", () => {
+  const expected = historicalStructureBlock
+    .split("\n")
+    .filter((line) => line.startsWith("- "))
+    .map((line) => line.slice(2));
+  for (const block of [
+    historicalStructureBlock,
+    historicalStructureBlock.replaceAll("\n", "\r\n"),
+    `\u001b[31m${historicalStructureBlock}\u001b[0m`,
+  ])
+    expect(gateDiagnostics("verify:static:scoped", staticPrefix + block)).toEqual(expected);
+  expect(gateDiagnostics("verify:static:scoped", structureBlock())).toEqual(
+    syntheticStructureDiagnostics,
+  );
+  const emptyBrand = structureBlock().replace(
+    /^Brand foil:.+$/m,
+    'Brand foil: {"tracked":2,"scanned":2,"bytes":123,"readFailures":0,"nul":0,"literal":0,"raw":0,"constructor":0,"token":0,"union":0,"allowed":0,"violations":0,"roles":{}}; allowed + violations = union: 0 + 0 = 0',
+  );
+  expect(gateDiagnostics("verify:static:scoped", emptyBrand)).toEqual(
+    syntheticStructureDiagnostics,
+  );
+});
+
+it.each(structureUnknowns)("ISS-228 whole-block accounting refuses %s", (_name, change) => {
+  expect(gateDiagnostics("verify:static:scoped", staticPrefix + change(structureBlock()))).toEqual(
+    [],
+  );
+});
+
 it("recognizes generated-artifact staleness only when the failing static block is wholly accounted for", () => {
   const stale =
     staticPrefix +
@@ -1113,6 +1231,7 @@ it.each([
 ])(
   "attributes scoped static generated-artifact staleness %s through a non-vacuous base control",
   async (mode, expected) => {
+    vi.stubEnv("CHANGED_FILES_JSON", undefined);
     const { current, git } = await repositoryFixture(
       "https://github.com/todd-skelton/orchestration-platform.git",
     );
@@ -1267,6 +1386,221 @@ it.each([
     ).resolves.toEqual(result);
   },
 );
+
+it.each([
+  ["candidate", "candidate"],
+  ["renamed destination", "candidate"],
+  ["base", "base"],
+  ["vacuous", "unknown"],
+  ["missing marker", "unknown"],
+  ["base mixed", "unknown"],
+  ["base timeout", "unknown"],
+  ["base resource", "unknown"],
+  ["install", "host"],
+  ["cleanup", "host"],
+  ["unchanged", "unknown"],
+  ["working-tree-only", "unknown"],
+  ["symlink", "unknown"],
+  ["renamed source", "unknown"],
+  ["uncommitted", "unknown"],
+  ["deleted", "unknown"],
+  ["directory", "unknown"],
+  ["external", "unknown"],
+  ["drive", "unknown"],
+  ["UNC", "unknown"],
+  ["traversal", "unknown"],
+  ["nonnormal", "unknown"],
+  ["signal", "unknown"],
+  ["incomplete", "unknown"],
+  ...structureUnknowns.map(([name]) => [name, "unknown"]),
+])("ISS-228 real adapter structure attribution: %s -> %s", async (mode, expected) => {
+  const { current, git } = await repositoryFixture(
+    "https://github.com/todd-skelton/orchestration-platform.git",
+  );
+  const commit = async () => {
+    await git(["add", "-A"], current.worktree);
+    await git(
+      [
+        "-c",
+        "user.name=fixture",
+        "-c",
+        "user.email=fixture@example.test",
+        "commit",
+        "-m",
+        "synthetic structure attribution",
+      ],
+      current.worktree,
+    );
+    return git(["rev-parse", "HEAD"], current.worktree);
+  };
+  await writeFile(
+    resolve(current.worktree, "package.json"),
+    '{"scripts":{"verify:static:scoped":"node synthetic.mjs"}}',
+  );
+  await writeFile(resolve(current.worktree, "pnpm-lock.yaml"), "synthetic lock\n");
+  await mkdir(resolve(current.worktree, "synthetic"));
+  await writeFile(resolve(current.worktree, "synthetic/unchanged.ts"), "unchanged\n");
+  await writeFile(resolve(current.worktree, "synthetic/old.ts"), "rename me\n");
+  await writeFile(resolve(current.worktree, "synthetic/deleted.ts"), "delete me\n");
+  const main = await commit();
+  await writeFile(resolve(current.worktree, "synthetic/module.ts"), "synthetic module\n");
+  await writeFile(resolve(current.worktree, "synthetic/graph.ts"), "synthetic graph\n");
+  await git(["mv", "synthetic/old.ts", "synthetic/new.ts"], current.worktree);
+  await git(["rm", "synthetic/deleted.ts"], current.worktree);
+  current.candidateHead = await commit();
+  if (mode === "symlink") {
+    // core.symlinks=false keeps the worktree portable while the immutable tree
+    // really contains mode 120000; no Windows symlink privilege is required.
+    await git(["config", "core.symlinks", "false"], current.worktree);
+    await writeFile(resolve(current.worktree, "synthetic/link.ts"), "unchanged.ts");
+    await git(["add", "synthetic/link.ts"], current.worktree);
+    const blob = await git(["rev-parse", ":synthetic/link.ts"], current.worktree);
+    await git(
+      ["update-index", "--cacheinfo", `120000,${blob},synthetic/link.ts`],
+      current.worktree,
+    );
+    await git(
+      [
+        "-c",
+        "user.name=fixture",
+        "-c",
+        "user.email=fixture@example.test",
+        "commit",
+        "-m",
+        "synthetic symlink",
+      ],
+      current.worktree,
+    );
+    current.candidateHead = await git(["rev-parse", "HEAD"], current.worktree);
+  }
+  await git(["checkout", "--detach", current.candidateHead], current.reviewWorktree);
+  if (mode === "working-tree-only") {
+    const exclude = await git(["rev-parse", "--git-path", "info/exclude"], current.worktree);
+    await writeFile(resolve(current.worktree, exclude), "synthetic/absent.ts\n");
+    await writeFile(
+      resolve(current.worktree, "synthetic/absent.ts"),
+      "uncommitted synthetic file\n",
+    );
+  }
+  const paths: Record<string, string> = {
+    "renamed destination": "synthetic/new.ts",
+    "renamed source": "synthetic/old.ts",
+    "working-tree-only": "synthetic/absent.ts",
+    symlink: "synthetic/link.ts",
+    unchanged: "synthetic/unchanged.ts",
+    uncommitted: "synthetic/absent.ts",
+    deleted: "synthetic/deleted.ts",
+    directory: "synthetic",
+    external: "/synthetic/module.ts",
+    drive: "C:/synthetic/module.ts",
+    UNC: "\\\\server\\module.ts",
+    traversal: "synthetic/../synthetic/module.ts",
+    nonnormal: "./synthetic/module.ts",
+  };
+  const diagnostics = [...syntheticStructureDiagnostics];
+  if (paths[mode!]) diagnostics[1] = `${paths[mode!]}: a different ordinary rule (./module)`;
+  const transform = structureUnknowns.find(([name]) => name === mode)?.[1];
+  const block = transform ? transform(structureBlock(diagnostics)) : structureBlock(diagnostics);
+  const launcher = resolve(current.stateDirectory, "synthetic-structure-tool.mjs");
+  const commands = resolve(current.stateDirectory, "synthetic-commands.jsonl");
+  await writeFile(
+    launcher,
+    `
+    import {appendFileSync, existsSync} from "node:fs";
+    const mode = ${JSON.stringify(mode)};
+    appendFileSync(${JSON.stringify(commands)}, JSON.stringify({argv:process.argv.slice(2),cwd:process.cwd(),scope:process.env.CHANGED_FILES_JSON}) + "\\n");
+    if (process.argv[2] === "install") process.exit(mode === "install" ? 1 : 0);
+    if (existsSync("synthetic/module.ts")) {
+      console.log(${JSON.stringify(block)});
+      if (mode === "signal") {
+        setInterval(() => {}, 1000);
+        process.send("synthetic-output-complete");
+      }
+      else process.exit(1);
+    } else {
+      console.log("[VERIFY_STATIC_CHANGED] " + process.env.CHANGED_FILES_JSON);
+      if (mode === "base") { console.log(${JSON.stringify(structureBlock(["synthetic/unchanged.ts: synthetic main violation"]))}); process.exit(1); }
+      if (mode.startsWith("base ")) { console.log(${JSON.stringify(structureBlock())}); console.log(mode === "base timeout" ? "command timed out" : mode === "base resource" ? "ENOMEM" : "mixed failure"); process.exit(1); }
+      console.log(mode === "vacuous" ? "[SKIPPED-BY-SCOPE] check:structure: empty scope" : mode === "missing marker" ? "[VERIFY_STATIC_RUN] check:other" : "[VERIFY_STATIC_RUN] check:structure");
+    }
+  `,
+  );
+  // The control must override an inherited scope, never mistake it for the derived set.
+  vi.stubEnv("CHANGED_FILES_JSON", '["SYNTHETIC_AMBIENT_ONLY.ts"]');
+  vi.stubEnv("npm_execpath", launcher);
+  gateFaults.cleanup = mode === "cleanup";
+  gateFaults.signal = mode === "signal";
+  const adapter = githubDeliveryAdapter();
+  if (mode === "incomplete") {
+    const directory = resolve(
+      current.stateDirectory,
+      `gate-${createHash("sha256").update("verify:static:scoped").digest("hex")}`,
+    );
+    await mkdir(directory);
+    await writeFile(resolve(directory, "candidate.log"), block);
+    await expect(
+      adapter.runGate(current, "verify:static:scoped", current.candidateHead),
+    ).rejects.toMatchObject({ reason: "gate-attribution-unknown:verify:static:scoped" });
+    await expect(readFile(commands)).rejects.toMatchObject({ code: "ENOENT" });
+    return;
+  }
+  const failure = await adapter.runGate(current, "verify:static:scoped", current.candidateHead);
+  if (typeof failure !== "object" || failure.status !== "failed" || !failure.evidence)
+    throw new Error("missing synthetic failure");
+  const invalidPath = paths[mode!] && !["unchanged", "renamed destination"].includes(mode!);
+  const recognized = !transform && mode !== "signal";
+  expect(failure.evidence).toMatchObject({
+    cause: recognized && !invalidPath ? "diagnostic" : "unknown",
+    diagnostics: recognized ? diagnostics : [],
+  });
+  expect(failure.evidence.command).toEqual({
+    executable: process.execPath,
+    argv: [launcher, "run", "verify:static:scoped"],
+    cwd: current.worktree,
+  });
+  if (mode === "signal") {
+    expect(await readFile(failure.evidence.log, "utf8")).toContain(block);
+    expect(
+      JSON.parse(
+        await readFile(resolve(failure.evidence.log, "../candidate-terminal.json"), "utf8"),
+      ),
+    ).toMatchObject({ code: null, signal: "SIGTERM" });
+  }
+  const control = await adapter.attributeGate!(
+    current,
+    "verify:static:scoped",
+    failure.evidence,
+    main,
+  );
+  expect(control.cause).toBe(expected);
+  const calls = (await readFile(commands, "utf8"))
+    .trim()
+    .split("\n")
+    .map((line) => JSON.parse(line));
+  expect(calls[0].scope).toBe('["SYNTHETIC_AMBIENT_ONLY.ts"]');
+  if (invalidPath || !recognized || mode === "unchanged") expect(calls).toHaveLength(1);
+  else {
+    expect(calls[1].argv).toEqual(["install", "--offline", "--frozen-lockfile"]);
+    if (mode !== "install") {
+      expect(calls[2].argv).toEqual(["run", "verify:static:scoped"]);
+      expect(calls[2].cwd).not.toBe(current.worktree);
+      expect(JSON.parse(calls[2].scope).sort()).toEqual([
+        "synthetic/deleted.ts",
+        "synthetic/graph.ts",
+        "synthetic/module.ts",
+        "synthetic/new.ts",
+        "synthetic/old.ts",
+      ]);
+    }
+  }
+  await expect(
+    adapter.runGate(current, "verify:static:scoped", current.candidateHead),
+  ).resolves.toEqual(failure);
+  await expect(
+    adapter.attributeGate!(current, "verify:static:scoped", failure.evidence, main),
+  ).resolves.toEqual(control);
+  expect((await readFile(commands, "utf8")).trim().split("\n")).toHaveLength(calls.length);
+});
 
 function reviewerReport(
   current: DeliveryConfig,
@@ -1435,6 +1769,7 @@ async function cleanController(root: string) {
 
 afterEach(async () => {
   gateFaults.cleanup = false;
+  gateFaults.signal = false;
   workspaceCommands.observe = undefined;
   vi.unstubAllEnvs();
   for (const root of roots.splice(0))
