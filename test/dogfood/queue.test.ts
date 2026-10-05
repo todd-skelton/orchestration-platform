@@ -1670,6 +1670,9 @@ it.each([
     const f = await loopFixture();
     const git = async (tree: string, args: string[]) =>
       (await execute(f.gitExecutable, ["-C", tree, ...args])).stdout.trim();
+    // The refreshed base control nests beneath a SHA-named runtime directory.
+    // Its checkout exceeds MAX_PATH under the hosted Windows temp directory.
+    await git(f.repository, ["config", "core.longpaths", "true"]);
     await writeFile(
       resolve(f.repository, "package.json"),
       '{"scripts":{"verify:static:scoped":"node synthetic.mjs"}}',

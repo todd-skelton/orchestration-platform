@@ -1411,6 +1411,7 @@ function expectNoProviderAction(calls: string[]) {
 }
 
 afterEach(async () => {
+  vi.unstubAllEnvs();
   for (const root of roots.splice(0))
     await rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
 });
@@ -2356,9 +2357,7 @@ it("refuses candidate workspace drift before any gate or provider mutation", asy
   expect(f.calls.some((call) => call.startsWith("gate:") || call === "publish")).toBe(false);
 });
 
-// ISS-192: a recognized scoped static staleness failure leaves delivery as
-// diagnostic evidence, which is what admits the base control and single
-// gate-correction author; the retained cs-3779:1 shape stays unknown.
+// ISS-228: retain real structure evidence at either gate phase, including replay.
 it.each([
   [false, false],
   [false, true],
@@ -2446,6 +2445,9 @@ ${mixed ? "unexpected failure\n" : ""}`;
   },
 );
 
+// ISS-192: a recognized scoped static staleness failure leaves delivery as
+// diagnostic evidence, which is what admits the base control and single
+// gate-correction author; the retained cs-3779:1 shape stays unknown.
 it.each([
   ["recognized", "diagnostic", ["docs/SYNTHETIC_INDEX.md is stale"]],
   ["unrecognized", "unknown", []],

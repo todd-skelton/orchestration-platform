@@ -803,7 +803,7 @@ it.each(["missing", "cancelled"])(
   },
 );
 
-const gateFaults = vi.hoisted(() => ({ cleanup: false }));
+const gateFaults = vi.hoisted(() => ({ cleanup: false, signal: false }));
 const workspaceGit = vi.hoisted(() => vi.fn<(args: string[], cwd: string) => string>());
 const workspaceCommands = vi.hoisted(() => ({
   observe: undefined as ((args: string[], cwd: string) => void) | undefined,
@@ -827,7 +827,22 @@ vi.mock("node:child_process", async (original) => {
       return execute(executable, args, options);
     },
   });
-  return { ...actual, execFile: injected };
+  return {
+    ...actual,
+    execFile: injected,
+    spawn(executable: string, args: string[], options: import("node:child_process").SpawnOptions) {
+      if (!gateFaults.signal) return actual.spawn(executable, args, options);
+      // Windows self-termination reports an ordinary exit code. Kill from the
+      // parent after the child confirms its complete output, so Node reports
+      // a real signal terminal on every OS without a timer race.
+      const child = actual.spawn(executable, args, {
+        ...options,
+        stdio: [...(options.stdio as number[]), "ipc"],
+      });
+      child.once("message", () => child.kill("SIGTERM"));
+      return child;
+    },
+  };
 });
 
 it.each(["startup", "log-io"])(
@@ -1497,7 +1512,10 @@ it.each([
     if (process.argv[2] === "install") process.exit(mode === "install" ? 1 : 0);
     if (existsSync("synthetic/module.ts")) {
       console.log(${JSON.stringify(block)});
-      if (mode === "signal") process.kill(process.pid, "SIGTERM");
+      if (mode === "signal") {
+        setInterval(() => {}, 1000);
+        process.send("synthetic-output-complete");
+      }
       else process.exit(1);
     } else {
       console.log("[VERIFY_STATIC_CHANGED] " + process.env.CHANGED_FILES_JSON);
@@ -1511,6 +1529,7 @@ it.each([
   vi.stubEnv("CHANGED_FILES_JSON", '["SYNTHETIC_AMBIENT_ONLY.ts"]');
   vi.stubEnv("npm_execpath", launcher);
   gateFaults.cleanup = mode === "cleanup";
+  gateFaults.signal = mode === "signal";
   const adapter = githubDeliveryAdapter();
   if (mode === "incomplete") {
     const directory = resolve(
@@ -1539,6 +1558,14 @@ it.each([
     argv: [launcher, "run", "verify:static:scoped"],
     cwd: current.worktree,
   });
+  if (mode === "signal") {
+    expect(await readFile(failure.evidence.log, "utf8")).toContain(block);
+    expect(
+      JSON.parse(
+        await readFile(resolve(failure.evidence.log, "../candidate-terminal.json"), "utf8"),
+      ),
+    ).toMatchObject({ code: null, signal: "SIGTERM" });
+  }
   const control = await adapter.attributeGate!(
     current,
     "verify:static:scoped",
@@ -1742,6 +1769,7 @@ async function cleanController(root: string) {
 
 afterEach(async () => {
   gateFaults.cleanup = false;
+  gateFaults.signal = false;
   workspaceCommands.observe = undefined;
   vi.unstubAllEnvs();
   for (const root of roots.splice(0))
