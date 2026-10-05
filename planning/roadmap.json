@@ -856,6 +856,22 @@
       "blockedBy": []
     },
     {
+      "key": "ISS-226",
+      "file": "planning/drafts/ISS-226.md",
+      "title": "Reconcile interrupted work before admitting same-run recovery",
+      "summary": "Extend native same-run admission with vacancy and interrupted-phase reconciliation while preserving existing effects, accounting and authority fences.",
+      "milestone": "M1",
+      "blockedBy": []
+    },
+    {
+      "key": "ISS-227",
+      "file": "planning/drafts/ISS-227.md",
+      "title": "Recover an armed attached run after involuntary WSL loss within a fixed bound",
+      "summary": "Opt in the surviving attached Windows parent to at most two reconciled same-run starts, with durable bounds, cancellation and actionable local attention.",
+      "milestone": "M1",
+      "blockedBy": ["ISS-226"]
+    },
+    {
       "key": "ISS-228",
       "file": "planning/drafts/ISS-228.md",
       "title": "Attribute completed structure-check violations through the existing base control",
