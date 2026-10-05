@@ -894,6 +894,14 @@
       "summary": "Prove cancelled-job non-execution before log acquisition, retain executed failures and bound observation plus explicit same-run recovery without resetting attempts.",
       "milestone": "M1",
       "blockedBy": []
+    },
+    {
+      "key": "ISS-231",
+      "file": "planning/drafts/ISS-231.md",
+      "title": "Give chase-sets reviewers executor-native gate evidence and admit one verification-only continuation",
+      "summary": "Supply native exact-head gates before Chase Sets review and admit one explicit same-run verification-only continuation without authoring or attempt renewal.",
+      "milestone": "M1",
+      "blockedBy": []
     }
   ]
 }
