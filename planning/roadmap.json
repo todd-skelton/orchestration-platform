@@ -854,6 +854,14 @@
       "summary": "Give every stop reason one of five classes in a single table that isItemStopReason reads, with an inventory ratchet and no behavior change.",
       "milestone": "M1",
       "blockedBy": []
+    },
+    {
+      "key": "ISS-228",
+      "file": "planning/drafts/ISS-228.md",
+      "title": "Attribute completed structure-check violations through the existing base control",
+      "summary": "Recognize complete candidate-owned check:structure failures and reuse scoped-static base attribution without widening correction or saved-stop recovery authority.",
+      "milestone": "M1",
+      "blockedBy": []
     }
   ]
 }
