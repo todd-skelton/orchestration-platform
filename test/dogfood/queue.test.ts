@@ -1667,14 +1667,18 @@ describe.each([
 ] as const)(
   "ISS-228 native structure correction refreshed=%s afterMirror=%s outcome=%s",
   (refresh, afterMirror, mode) => {
-    let verify: () => Promise<void>;
-    // Source preparation and the delivery/correction lifecycle each keep the
-    // ordinary 30-second hook/test bound, including on hosted Windows.
+    let fixture: AsyncGenerator<void, void>;
+    // Source, retained stop and recovery each keep the ordinary 30-second
+    // hook/test bound. None of these phases skips native lifecycle work.
     beforeEach(async () => {
-      verify = await prepareStructureCorrection(refresh, afterMirror, mode);
+      fixture = prepareStructureCorrection(refresh, afterMirror, mode);
+      expect((await fixture.next()).done).toBe(false);
+    });
+    beforeEach(async () => {
+      expect((await fixture.next()).done).toBe(false);
     });
     it("attributes and resumes through the real adapter without renewing the allowance", async () => {
-      await verify();
+      expect((await fixture.next()).done).toBe(true);
     });
   },
 );
@@ -1716,17 +1720,21 @@ describe.each([
 ] as const)(
   "ISS-229 executor recovery refreshed=%s afterMirror=%s control=%s",
   (refresh, afterMirror, mode) => {
-    let verify: () => Promise<void>;
+    let fixture: AsyncGenerator<void, void>;
     beforeEach(async () => {
-      verify = await prepareStructureCorrection(refresh, afterMirror, mode, true);
+      fixture = prepareStructureCorrection(refresh, afterMirror, mode, true);
+      expect((await fixture.next()).done).toBe(false);
+    });
+    beforeEach(async () => {
+      expect((await fixture.next()).done).toBe(false);
     });
     it("retains one native lineage through admission, review, attribution and terminal replay", async () => {
-      await verify();
+      expect((await fixture.next()).done).toBe(true);
     });
   },
 );
 
-async function prepareStructureCorrection(
+async function* prepareStructureCorrection(
   refresh: boolean,
   afterMirror: boolean,
   mode: string,
@@ -1734,7 +1742,15 @@ async function prepareStructureCorrection(
 ) {
   // Keep the synthetic refreshed base checkout below Windows' path limit;
   // core.longpaths alone did not fix the attempt-2 hosted control failures.
-  const f = await loopFixture(false, undefined, "q-");
+  // Hosted Windows' user TEMP adds roughly 30 characters over RUNNER_TEMP.
+  // The continuation adds another directory below the ISS-228 fixture, so use
+  // the runner's disposable root for its real Git base checkout as well.
+  const f = await loopFixture(
+    false,
+    undefined,
+    "q-",
+    process.platform === "win32" ? (process.env.RUNNER_TEMP ?? tmpdir()) : tmpdir(),
+  );
   f.loop.run = executorRecovery ? "r" : "iss228";
   if (executorRecovery) {
     // The extra continuation segment must still leave the native base control
@@ -2082,6 +2098,7 @@ See docs/architecture/bounded-context-structure.md#rules-the-structure-gate-enfo
     const retained = JSON.parse(await readFile(path, "utf8"));
     await writeFile(path, JSON.stringify({ ...retained, retries: 1 }));
   }
+  yield;
   const advanceMain = async () => {
     const updater = resolve(f.repository, "..", "updater");
     await execute(f.gitExecutable, ["clone", remote, updater]);
@@ -2256,7 +2273,8 @@ See docs/architecture/bounded-context-structure.md#rules-the-structure-gate-enfo
     expect(comments).toHaveLength(1);
     q = await queueConfigFromLoop(grantLoop, executor, f.selected, repositoryPolicy);
   }
-  return async () => {
+  yield;
+  {
     const run = () => queueStep(q, adapter());
     if (executorRecovery) {
       const admitted = [
@@ -2451,15 +2469,16 @@ See docs/architecture/bounded-context-structure.md#rules-the-structure-gate-enfo
       expect(final.history.slice(0, retainedHistory.length)).toEqual(retainedHistory);
       expect(final.candidateAttempt).toBe(retainedCandidateAttempt);
     }
-  };
+  }
 }
 
 async function loopFixture(
   withRuntime = false,
   acceptanceCriteria = "- One file drives the run.\n- Preserve the Markdown list.\n  Keep this continuation intact.",
   prefix = "loop-config-fixture-",
+  temporaryRoot = tmpdir(),
 ) {
-  const root = await mkdtemp(resolve(tmpdir(), prefix));
+  const root = await mkdtemp(resolve(temporaryRoot, prefix));
   roots.push(root);
   const repository = resolve(root, "repository");
   const stateRoot = resolve(root, "state");
