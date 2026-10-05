@@ -1736,6 +1736,31 @@ Only the host, after reviewed three-OS-green ISS-156/157 landing, may install
 the stable executor with supervisors absent, supply the grant and resume the
 same run (ISS-157).
 
+ISS-229 adds only `executorRepair: { stoppedExecutorHead }` to that grant for
+ordinary delivery stopped at `gate-attribution-unknown:verify:static:scoped`
+with a complete final `check:structure` envelope. The host attests the exact
+stop-time executor commit in its grant, bound to retained invocation evidence;
+setup alone is not that witness. In the validated executor repository the
+historical setup plan must agree, its controller revision must precede or equal
+the witness, and `repairSha` must be included in the running executor but absent
+from the witness. No executor SHA is resolved in product Git. The original
+four-field product-repair grant keeps its ancestry requirements unchanged.
+Before the existing single reservation, read-only recognition checks the full
+saved terminal, command, head and log at the stopped delivery (including refresh
+or correction siblings), re-deriving every diagnostic and its committed changed
+path against the stopped base. Cached unknown diagnostics are neither trusted
+nor rewritten. Missing or unknown evidence leaves the stop inert.
+
+This continuation requires a fresh native exact-result DELTA even when product
+main and the integrated head do not change. New gates use its own evidence
+directory; only an actual same-command immutable-base control with the derived
+scope and positive structure execution marker can authorize the remaining shared
+ISS-152 correction. History, all spent allowances, publication leases and final
+delivery obligations remain unchanged. A new stop cannot spend a second recovery.
+Independent exact-head review, executed three-OS bootstrap, quiescent host
+installation and a separately authorized, contemporaneously evidenced host grant
+and same-run start remain required; this capability grants none of those actions.
+
 ## Milestones
 
 | Key | Title                       | Exit evidence                                                                                                                                                                                                                             |

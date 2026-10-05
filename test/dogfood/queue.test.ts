@@ -50,7 +50,7 @@ import type { RepositoryAdapter } from "../../scripts/dogfood/repository-adapter
 import { gitSetupAdapter } from "../../scripts/dogfood/setup-adapter.js";
 import { setupStep } from "../../scripts/dogfood/setup.js";
 import { githubDeliveryAdapter } from "../../scripts/dogfood/delivery-adapter.mjs";
-import type { PublicationEvidence } from "../../scripts/dogfood/delivery.mjs";
+import { DeliveryBlocked, type PublicationEvidence } from "../../scripts/dogfood/delivery.mjs";
 import {
   nextCycle,
   persistCycle,
@@ -1667,23 +1667,97 @@ describe.each([
 ] as const)(
   "ISS-228 native structure correction refreshed=%s afterMirror=%s outcome=%s",
   (refresh, afterMirror, mode) => {
-    let verify: () => Promise<void>;
-    // Source preparation and the delivery/correction lifecycle each keep the
-    // ordinary 30-second hook/test bound, including on hosted Windows.
+    let fixture: AsyncGenerator<void, void>;
+    // Source, retained stop and recovery each keep the ordinary 30-second
+    // hook/test bound. None of these phases skips native lifecycle work.
     beforeEach(async () => {
-      verify = await prepareStructureCorrection(refresh, afterMirror, mode);
+      fixture = prepareStructureCorrection(refresh, afterMirror, mode);
+      expect((await fixture.next()).done).toBe(false);
+    });
+    beforeEach(async () => {
+      expect((await fixture.next()).done).toBe(false);
     });
     it("attributes and resumes through the real adapter without renewing the allowance", async () => {
-      await verify();
+      expect((await fixture.next()).done).toBe(true);
     });
   },
 );
 
-async function prepareStructureCorrection(refresh: boolean, afterMirror: boolean, mode: string) {
+describe.each([
+  [false, false, "candidate"],
+  [true, true, "candidate"],
+  [false, true, "base"],
+  [false, false, "vacuous"],
+  [false, false, "spent"],
+  [false, false, "second failure"],
+  [false, false, "interrupted"],
+  [false, false, "host"],
+  [false, false, "review-fail"],
+  [false, false, "review-repaired"],
+  [true, true, "corrected source"],
+  [false, true, "published"],
+  ...[
+    "four-key",
+    "absent repair",
+    "included repair",
+    "nonancestor repair",
+    "missing witness",
+    "older witness",
+    "divergent witness",
+    "missing setup",
+    "malformed setup",
+    "wrong head",
+    "wrong command",
+    "wrong terminal head",
+    "missing terminal",
+    "signal",
+    "partial",
+    "unknown",
+    "unchanged",
+    "resource",
+    "other stop",
+  ].map((mode) => [false, false, mode] as const),
+] as const)(
+  "ISS-229 executor recovery refreshed=%s afterMirror=%s control=%s",
+  (refresh, afterMirror, mode) => {
+    let fixture: AsyncGenerator<void, void>;
+    beforeEach(async () => {
+      fixture = prepareStructureCorrection(refresh, afterMirror, mode, true);
+      expect((await fixture.next()).done).toBe(false);
+    });
+    beforeEach(async () => {
+      expect((await fixture.next()).done).toBe(false);
+    });
+    it("retains one native lineage through admission, review, attribution and terminal replay", async () => {
+      expect((await fixture.next()).done).toBe(true);
+    });
+  },
+);
+
+async function* prepareStructureCorrection(
+  refresh: boolean,
+  afterMirror: boolean,
+  mode: string,
+  executorRecovery = false,
+) {
   // Keep the synthetic refreshed base checkout below Windows' path limit;
   // core.longpaths alone did not fix the attempt-2 hosted control failures.
-  const f = await loopFixture(false, undefined, "q-");
-  f.loop.run = "iss228";
+  // Hosted Windows' user TEMP adds roughly 30 characters over RUNNER_TEMP.
+  // The continuation adds another directory below the ISS-228 fixture, so use
+  // the runner's disposable root for its real Git base checkout as well.
+  const f = await loopFixture(
+    false,
+    undefined,
+    "q-",
+    process.platform === "win32" ? (process.env.RUNNER_TEMP ?? tmpdir()) : tmpdir(),
+  );
+  f.loop.run = executorRecovery ? "r" : "iss228";
+  if (executorRecovery) {
+    // The extra continuation segment must still leave the native base control
+    // below Windows' path limit (the same constraint as ISS-228's fixture).
+    f.loop.stateRoot = resolve(f.repository, "..", "s");
+    f.loop.worktreeRoot = resolve(f.repository, "..", "w");
+  }
   const git = async (tree: string, args: string[]) =>
     (await execute(f.gitExecutable, ["-C", tree, ...args])).stdout.trim();
   await writeFile(
@@ -1697,6 +1771,21 @@ async function prepareStructureCorrection(refresh: boolean, afterMirror: boolean
   const remote = resolve(f.repository, "..", "remote.git");
   await execute(f.gitExecutable, ["clone", "--bare", f.repository, remote]);
   await git(f.repository, ["remote", "add", "origin", "https://github.com/fixture/repository.git"]);
+  const executor = executorRecovery ? resolve(f.repository, "..", "executor") : f.repository;
+  if (executorRecovery) {
+    await mkdir(executor);
+    await execute(f.gitExecutable, ["init", "-b", "main", executor]);
+    await appendFile(
+      resolve(executor, ".git/config"),
+      "[user]\n\tname = Fixture\n\temail = fixture@example.test\n",
+    );
+    await writeFile(resolve(executor, "executor.txt"), "synthetic independent executor\n");
+    await git(executor, ["add", "."]);
+    await git(executor, ["commit", "-m", "synthetic initial executor"]);
+    // Distinguish a stop witness older than setup from an unresolvable SHA.
+    await git(executor, ["commit", "--allow-empty", "-m", "synthetic setup executor"]);
+  }
+  const stoppedExecutorHead = await git(executor, ["rev-parse", "HEAD"]);
   vi.stubEnv("GIT_ALLOW_PROTOCOL", "file");
   const launcher = resolve(f.stateRoot, "synthetic-pnpm.mjs");
   await mkdir(f.stateRoot, { recursive: true });
@@ -1715,7 +1804,11 @@ See docs/architecture/bounded-context-structure.md#rules-the-structure-gate-enfo
     launcher,
     `
     import {existsSync, readFileSync} from "node:fs";
-    if (process.argv[2] === "install" || process.argv[3] !== "verify:static:scoped") process.exit(0);
+    if (process.argv[2] === "install") process.exit(${mode === "host" ? 1 : 0});
+    if (process.argv[3] !== "verify:static:scoped") process.exit(0);
+    if (${mode === "published"} && !existsSync(${JSON.stringify(resolve(f.stateRoot, "published-conflict"))})) {
+      console.log("[VERIFY_STATIC_RUN] check:structure"); process.exit(0);
+    }
     const candidate = existsSync("synthetic.ts");
     const broken = candidate && (readFileSync("synthetic.ts", "utf8").includes("broken") || ${mode === "second failure"});
     if (broken || ${mode === "base"}) {
@@ -1728,16 +1821,28 @@ See docs/architecture/bounded-context-structure.md#rules-the-structure-gate-enfo
   `,
   );
   vi.stubEnv("npm_execpath", launcher);
-  vi.stubEnv("CHANGED_FILES_JSON", '["SYNTHETIC_AMBIENT_ONLY.ts"]');
-  const q = await queueConfigFromLoop(f.loop, f.repository, f.selected, repositoryPolicy);
+  vi.stubEnv("CHANGED_FILES_JSON", executorRecovery ? undefined : '["SYNTHETIC_AMBIENT_ONLY.ts"]');
+  let q = await queueConfigFromLoop(f.loop, executor, f.selected, repositoryPolicy);
   const item = q.items[0]!;
   const launches: { stage: string; head: string; prompt: string }[] = [];
   let authorRunning = false,
-    reviewRunning = false;
+    reviewRunning = false,
+    deltaRunning = false,
+    stoppedRun = executorRecovery;
+  let interruptIntegration = false;
   const native: Adapter = {
     async preflight() {},
-    git: (tree, args) =>
-      git(tree, args[0] === "fetch" ? args.map((arg) => (arg === "origin" ? remote : arg)) : args),
+    async git(tree, args) {
+      const result = await git(
+        tree,
+        args[0] === "fetch" ? args.map((arg) => (arg === "origin" ? remote : arg)) : args,
+      );
+      if (interruptIntegration && args[0] === "rebase") {
+        interruptIntegration = false;
+        throw new QueueBlocked("rebase-conflict"); // lost native integration response
+      }
+      return result;
+    },
     async launch(role, config, prompt) {
       const correction = config.stateDirectory.endsWith("gate-correction");
       launches.push({
@@ -1748,13 +1853,21 @@ See docs/architecture/bounded-context-structure.md#rules-the-structure-gate-enfo
       if (role === "author")
         await writeFile(
           resolve(config.worktree, "synthetic.ts"),
-          correction ? "corrected synthetic feature\n" : "broken synthetic feature\n",
+          correction
+            ? mode === "corrected source"
+              ? "still broken synthetic feature\n"
+              : "corrected synthetic feature\n"
+            : config.stateDirectory === item.repair.stateDirectory
+              ? "repaired broken synthetic feature\n"
+              : "broken synthetic feature\n",
         );
       const trace = resolve(config.stateDirectory, `${role}.jsonl`);
       await writeFile(trace, "synthetic execution evidence\n");
       return { id: randomUUID(), pid: 111, trace, launchedAt: 1 };
     },
     async observe(role, config, attempt) {
+      if (deltaRunning && /gate-stop-continuation[\\/]refresh-/.test(config.stateDirectory))
+        return { id: attempt.id, status: "running" };
       if (
         config.stateDirectory.endsWith("gate-correction") &&
         (role === "author" ? authorRunning : reviewRunning)
@@ -1762,9 +1875,15 @@ See docs/architecture/bounded-context-structure.md#rules-the-structure-gate-enfo
         return { id: attempt.id, status: "running" };
       const head =
         role === "author" ? config.base : await git(config.worktree, ["rev-parse", "HEAD"]);
+      const reject =
+        (mode === "review-fail" &&
+          /gate-stop-continuation[\\/]refresh-/.test(config.stateDirectory)) ||
+        (mode === "review-repaired" &&
+          role === "reviewer" &&
+          config.stateDirectory === item.source.stateDirectory);
       return {
         id: attempt.id,
-        status: "passed",
+        status: reject ? "failed" : "passed",
         head,
         ...(role === "reviewer"
           ? {
@@ -1772,8 +1891,17 @@ See docs/architecture/bounded-context-structure.md#rules-the-structure-gate-enfo
                 run: config.run,
                 role,
                 head,
-                verdict: "PASS",
-                findings: [],
+                verdict: reject ? "FAIL" : "PASS",
+                findings: reject
+                  ? [
+                      {
+                        file: "synthetic.ts",
+                        line: 1,
+                        severity: "blocking",
+                        text: "Synthetic rejected integration.",
+                      },
+                    ]
+                  : [],
                 g0: "Synthetic independent exact-head review.",
               }),
             }
@@ -1789,13 +1917,27 @@ See docs/architecture/bounded-context-structure.md#rules-the-structure-gate-enfo
   const realGate = delivery.runGate;
   delivery.runGate = async (config, name, head) => {
     effects.push(`gate:${name}:${head}`);
-    return realGate(config, name, head);
+    const result = await realGate(config, name, head);
+    // Historical pre-ISS-228 recognition: actual command/terminal/full log, but
+    // cached unknown. Never fabricate candidate causality or a passing control.
+    if (
+      stoppedRun &&
+      (mode !== "corrected source" || config.stateDirectory.endsWith("gate-correction")) &&
+      typeof result === "object" &&
+      result.status === "failed" &&
+      result.evidence
+    )
+      return {
+        ...result,
+        evidence: { ...result.evidence, cause: "unknown" as const, diagnostics: [] },
+      };
+    return result;
   };
   const realAttribute = delivery.attributeGate!;
   delivery.attributeGate = async (...args) => {
     const result = await realAttribute(...args);
     effects.push(`attribution:${result.cause}`);
-    if (result.cause === "host") {
+    if (result.cause === "host" && mode !== "host") {
       const directory = resolve(result.log, "..");
       const evidence = await Promise.all(
         (await readdir(directory))
@@ -1811,17 +1953,28 @@ See docs/architecture/bounded-context-structure.md#rules-the-structure-gate-enfo
     cleaned = false,
     checksGreen = false;
   let publication: PublicationEvidence | undefined;
+  let publicationConflict = false;
   delivery.observeDraft = async () =>
     mirrored ? { state: "confirmed", value: { issue: 361 } } : { state: "needs-mutation" };
   delivery.applyDraft = async () => {
     mirrored = true;
     effects.push("mirror");
   };
-  delivery.observePublication = async () =>
+  delivery.observePublication = async (config) =>
     publication
-      ? { state: "confirmed", value: publication }
+      ? publication.head === config.candidateHead
+        ? { state: "confirmed", value: publication }
+        : { state: "needs-mutation", target: `pr:${publication.number}` }
       : { state: "needs-mutation", target: "absent" };
+  if (executorRecovery) delivery.conflictingPublication = async () => publicationConflict;
   delivery.publish = async (config, plan) => {
+    if (mode === "published" && publication) {
+      expect(config.refresh).toMatchObject({ number: publication.number, head: publication.head });
+      expect(
+        await git(config.worktree, ["merge-base", publication.head, config.candidateHead]),
+      ).toBe(publication.head);
+      expect(plan.sourceBranch).toBe(publication.sourceBranch);
+    }
     effects.push("publish");
     publication = {
       number: 400,
@@ -1843,6 +1996,7 @@ See docs/architecture/bounded-context-structure.md#rules-the-structure-gate-enfo
     };
   };
   delivery.checks = async (config) => {
+    if (publicationConflict) throw new DeliveryBlocked("published-candidate-conflict");
     effects.push(`checks:${config.candidateHead}`);
     return {
       head: config.candidateHead,
@@ -1871,11 +2025,11 @@ See docs/architecture/bounded-context-structure.md#rules-the-structure-gate-enfo
     effects.push("cleanup");
   };
   const adapter = () =>
-    repositoryQueueAdapter(q, f.repository, {
+    repositoryQueueAdapter(q, executor, {
       native,
       delivery,
       gitExecutable: f.gitExecutable,
-      async assertExecutor() {},
+      ...(executorRecovery ? {} : { async assertExecutor() {} }),
       setup: gitSetupAdapter({
         gitExecutable: f.gitExecutable,
         async install(_launcher, _args, tree) {
@@ -1935,13 +2089,17 @@ See docs/architecture/bounded-context-structure.md#rules-the-structure-gate-enfo
       },
     }),
   ).rejects.toThrow("synthetic source accepted");
-  const original = await snapshot(item.source.stateDirectory);
+  const acceptedDirectory = JSON.parse(
+    await readFile(resolve(q.stateDirectory, "attempt.json"), "utf8"),
+  ).stateDirectory as string;
+  let original = await snapshot(acceptedDirectory);
   if (mode === "spent") {
     const path = resolve(q.stateDirectory, "attempt.json");
     const retained = JSON.parse(await readFile(path, "utf8"));
     await writeFile(path, JSON.stringify({ ...retained, retries: 1 }));
   }
-  if (refresh) {
+  yield;
+  const advanceMain = async () => {
     const updater = resolve(f.repository, "..", "updater");
     await execute(f.gitExecutable, ["clone", remote, updater]);
     await writeFile(resolve(updater, "main.txt"), "synthetic later main\n");
@@ -1956,35 +2114,296 @@ See docs/architecture/bounded-context-structure.md#rules-the-structure-gate-enfo
       "synthetic main",
     ]);
     await git(updater, ["push", "origin", "main"]);
+  };
+  if (refresh) await advanceMain();
+  const recoveryRoot = resolve(acceptedDirectory, "gate-stop-continuation");
+  const correctionRoot = executorRecovery ? recoveryRoot : acceptedDirectory;
+  let oldSetup: Map<string, string> | undefined;
+  let retainedHistory: QueueParticipant[] = [];
+  let retainedStages: string[] = [];
+  let retainedCandidateAttempt = 1;
+  let grantLoop: LoopConfig | undefined;
+  if (executorRecovery) {
+    if (mode === "published") {
+      await expect(queueStep(q, adapter())).resolves.toMatchObject({
+        status: "observing-hosted-checks",
+      });
+      publicationConflict = true;
+      await expect(queueStep(q, adapter())).resolves.toMatchObject({
+        status: "observing-hosted-checks",
+      });
+      await advanceMain();
+      await writeFile(resolve(f.stateRoot, "published-conflict"), "synthetic conflict observed\n");
+    }
+    if (mode === "corrected source")
+      await expect(queueStep(q, adapter())).resolves.toMatchObject({ status: "observing-author" });
+    await expect(queueStep(q, adapter())).rejects.toMatchObject({
+      reason: "gate-attribution-unknown:verify:static:scoped",
+    });
+    publicationConflict = false;
+    stoppedRun = false;
+    const saved = JSON.parse(await readFile(resolve(q.stateDirectory, "attempt.json"), "utf8"));
+    retainedHistory = saved.history;
+    retainedStages = launches.map((launch) => launch.stage);
+    retainedCandidateAttempt = saved.candidateAttempt;
+    const priorRefresh =
+      refresh || mode === "published"
+        ? JSON.parse(await readFile(resolve(acceptedDirectory, "native-refresh.json"), "utf8"))
+        : undefined;
+    const priorCorrection =
+      mode === "corrected source"
+        ? JSON.parse(
+            await readFile(resolve(acceptedDirectory, "gate-correction-result.json"), "utf8"),
+          )
+        : undefined;
+    const stoppedDirectory = priorCorrection
+      ? resolve(acceptedDirectory, "gate-correction")
+      : (priorRefresh?.directory ?? acceptedDirectory);
+    const head = priorCorrection?.head ?? priorRefresh?.head ?? saved.head;
+    const artifacts = resolve(
+      stoppedDirectory,
+      `gate-${createHash("sha256").update("verify:static:scoped").digest("hex")}`,
+    );
+    const terminalPath = resolve(artifacts, "candidate-terminal.json");
+    const terminal = JSON.parse(await readFile(terminalPath, "utf8"));
+    if (mode === "wrong terminal head") terminal.head = f.selected.base;
+    if (mode === "wrong command") terminal.command.argv[terminal.command.argv.length - 1] = "test";
+    if (mode === "signal") {
+      terminal.code = null;
+      terminal.signal = "SIGTERM";
+    }
+    await writeFile(terminalPath, JSON.stringify(terminal));
+    if (mode === "missing terminal") await rm(terminalPath);
+    if (mode === "partial")
+      await writeFile(
+        resolve(artifacts, "candidate.log"),
+        block.slice(0, block.lastIndexOf("[ELIFECYCLE]")),
+      );
+    if (mode === "resource") await appendFile(resolve(artifacts, "candidate.log"), "ENOMEM\n");
+    if (mode === "other stop")
+      await writeFile(
+        resolve(acceptedDirectory, "gate-stop.json"),
+        JSON.stringify({ reason: "gate-host-failed:verify:static:scoped" }),
+      );
+    const setupPath = resolve(item.setup.stateDirectory, "setup-plan.json");
+    if (mode === "missing setup") await rm(setupPath);
+    if (mode === "malformed setup") {
+      const plan = JSON.parse(await readFile(setupPath, "utf8"));
+      delete plan.dependencies;
+      await writeFile(setupPath, JSON.stringify(plan));
+    }
+    original = await snapshot(acceptedDirectory);
+    oldSetup = await snapshot(item.setup.stateDirectory);
+    await writeFile(resolve(executor, "repair.txt"), "synthetic executor-only repair\n");
+    await git(executor, ["add", "."]);
+    await git(executor, ["commit", "-m", "synthetic landed executor repair"]);
+    const repairSha = await git(executor, ["rev-parse", "HEAD"]);
+    let divergent = "";
+    if (mode === "nonancestor repair" || mode === "divergent witness") {
+      await git(executor, ["checkout", "--detach", `${stoppedExecutorHead}^`]);
+      await git(executor, ["commit", "--allow-empty", "-m", "synthetic divergent executor"]);
+      divergent = await git(executor, ["rev-parse", "HEAD"]);
+      await git(executor, ["checkout", "main"]);
+    }
+    grantLoop = {
+      ...f.loop,
+      gateStopAuthorization: {
+        stateDirectory: acceptedDirectory,
+        candidateHead: mode === "wrong head" ? f.selected.base : head,
+        repairSha:
+          mode === "absent repair"
+            ? "f".repeat(40)
+            : mode === "included repair"
+              ? stoppedExecutorHead
+              : mode === "nonancestor repair"
+                ? divergent
+                : repairSha,
+        authorityUrl: "https://github.com/fixture/repository/issues/361#issuecomment-229",
+        ...(mode === "four-key"
+          ? {}
+          : {
+              executorRepair: {
+                stoppedExecutorHead:
+                  mode === "missing witness"
+                    ? "e".repeat(40)
+                    : mode === "older witness"
+                      ? await git(executor, ["rev-parse", `${stoppedExecutorHead}^`])
+                      : mode === "divergent witness"
+                        ? divergent
+                        : stoppedExecutorHead,
+              },
+            }),
+      },
+    };
+    q = await queueConfigFromLoop(grantLoop, executor, f.selected, repositoryPolicy);
+    const cycle = { selection: { cycle: 1, ...f.selected }, initialHistory: retainedHistory };
+    await persistCycle(f.loop, cycle);
+    const comments: string[] = [];
+    const supervisor: SupervisionAdapter = {
+      async issue() {
+        return { state: "OPEN", key: f.selected.key, labels: [], comments };
+      },
+      async currentMain() {
+        throw new Error("saved selection must retain its pin");
+      },
+      async removeReady() {
+        throw new Error("host stop must not park");
+      },
+      async close() {
+        throw new Error("host stop must not close");
+      },
+      async comment(_config, _number, body) {
+        comments.push(body);
+        throw new Error("lost synthetic note response");
+      },
+    };
+    const stopReason =
+      mode === "other stop"
+        ? "gate-host-failed:verify:static:scoped"
+        : "gate-attribution-unknown:verify:static:scoped";
+    await expect(
+      stopCycle(f.loop, cycle, stopReason, 1, supervisor, repositoryPolicy),
+    ).rejects.toThrow("lost synthetic note response");
+    for (let replay = 0; replay < 2; replay++) {
+      const resumed = (await nextCycle(grantLoop, executor, supervisor, repositoryPolicy))!;
+      await expect(
+        reconcilePendingStop(grantLoop, resumed, supervisor, repositoryPolicy),
+      ).resolves.toBeUndefined();
+    }
+    expect(comments).toHaveLength(1);
+    q = await queueConfigFromLoop(grantLoop, executor, f.selected, repositoryPolicy);
   }
-  return async () => {
+  yield;
+  {
     const run = () => queueStep(q, adapter());
-    if (!["candidate", "second failure"].includes(mode)) {
+    if (executorRecovery) {
+      const admitted = [
+        "candidate",
+        "second failure",
+        "base",
+        "vacuous",
+        "spent",
+        "interrupted",
+        "host",
+        "review-fail",
+        "review-repaired",
+        "corrected source",
+        "published",
+      ].includes(mode);
+      if (!admitted) {
+        const reason =
+          mode === "wrong head"
+            ? "gate-stop-head-mismatch"
+            : [
+                  "wrong command",
+                  "wrong terminal head",
+                  "missing terminal",
+                  "signal",
+                  "partial",
+                  "unknown",
+                  "unchanged",
+                  "resource",
+                ].includes(mode)
+              ? "gate-attribution-unknown:verify:static:scoped"
+              : mode === "other stop"
+                ? "gate-host-failed:verify:static:scoped"
+                : "gate-stop-repair-not-applicable";
+        const stoppedEffects = [...effects];
+        for (let replay = 0; replay < 2; replay++)
+          await expect(run()).rejects.toMatchObject({ reason });
+        expect(effects).toEqual(stoppedEffects);
+        expect(launches).toHaveLength(2 + (refresh ? 1 : 0));
+        await expect(
+          readFile(resolve(acceptedDirectory, "gate-stop-continuation.json")),
+        ).rejects.toMatchObject({ code: "ENOENT" });
+        expect(await snapshot(acceptedDirectory)).toEqual(original);
+        expect(await snapshot(item.setup.stateDirectory)).toEqual(oldSetup);
+        return;
+      }
+      deltaRunning = true;
+      const beforeReview = [...effects];
+      if (mode === "interrupted") {
+        interruptIntegration = true;
+        await expect(run()).rejects.toMatchObject({ reason: "rebase-conflict" });
+        expect(launches).toHaveLength(2);
+        await expect(
+          readFile(resolve(acceptedDirectory, "gate-stop-continuation.json")),
+        ).resolves.toBeDefined();
+      }
+      for (let replay = 0; replay < 2; replay++) {
+        // JSON round trip also proves nested grant replay compares values.
+        q = await queueConfigFromLoop(
+          JSON.parse(JSON.stringify(grantLoop)),
+          executor,
+          f.selected,
+          repositoryPolicy,
+        );
+        await expect(run()).resolves.toMatchObject({ status: "observing-reviewer" });
+      }
+      expect(effects).toEqual(beforeReview);
+      const reservation = JSON.parse(
+        await readFile(resolve(acceptedDirectory, "gate-stop-continuation.json"), "utf8"),
+      );
+      const integrated = JSON.parse(
+        await readFile(resolve(recoveryRoot, "native-refresh.json"), "utf8"),
+      );
+      expect(integrated.head).toBe(reservation.delivery.candidateHead); // actual no-op integration
+      expect(integrated.previousReview).toBe(reservation.sourceEvidence.reviewId);
+      expect(launches.at(-1)!.stage).toBe("refresh-reviewer");
+      expect(launches.at(-1)!.prompt).toContain("independent DELTA");
+      deltaRunning = false;
+      if (mode === "review-fail") {
+        for (let replay = 0; replay < 2; replay++)
+          await expect(run()).rejects.toMatchObject({ reason: "refresh-review-failed" });
+        expect(effects).toEqual(beforeReview);
+        expect(launches).toHaveLength(3);
+        return;
+      }
+    }
+    if (
+      !["candidate", "second failure", "interrupted", "review-repaired", "published"].includes(mode)
+    ) {
       const reason =
         mode === "base"
           ? "gate-base-failed"
-          : mode === "spent"
-            ? "gate-correction-exhausted"
-            : "gate-attribution-unknown";
+          : mode === "host"
+            ? "gate-host-failed"
+            : mode === "spent" || mode === "corrected source"
+              ? "gate-correction-exhausted"
+              : "gate-attribution-unknown";
       for (let replay = 0; replay < 2; replay++)
         await expect(run()).rejects.toMatchObject({ reason: `${reason}:verify:static:scoped` });
-      expect(launches.map((l) => l.stage)).toEqual(["author", "reviewer"]);
+      expect(launches.map((l) => l.stage)).toEqual([
+        ...(executorRecovery ? [...retainedStages, "refresh-reviewer"] : ["author", "reviewer"]),
+      ]);
       expect(effects).not.toContain("publish");
-      await expect(
-        readFile(resolve(item.source.stateDirectory, "gate-correction.json")),
-      ).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(readFile(resolve(correctionRoot, "gate-correction.json"))).rejects.toMatchObject(
+        { code: "ENOENT" },
+      );
       expect(effects.filter((e) => e.startsWith("attribution:"))).toEqual(
         mode === "unknown"
           ? []
           : [
-              `attribution:${mode === "spent" ? "candidate" : mode === "unchanged" || mode === "vacuous" ? "unknown" : mode}`,
+              ...(mode === "corrected source" ? ["attribution:candidate"] : []),
+              `attribution:${mode === "spent" || mode === "corrected source" ? "candidate" : mode === "unchanged" || mode === "vacuous" ? "unknown" : mode}`,
             ],
       );
+      if (executorRecovery) {
+        const stoppedEffects = [...effects];
+        const stoppedHistory = await readFile(resolve(q.stateDirectory, "attempt.json"));
+        for (let replay = 0; replay < 2; replay++)
+          await expect(run()).rejects.toMatchObject({ reason: `${reason}:verify:static:scoped` });
+        expect(effects).toEqual(stoppedEffects);
+        expect(await readFile(resolve(q.stateDirectory, "attempt.json"))).toEqual(stoppedHistory);
+        for (const [path, bytes] of original)
+          expect(await readFile(path, "utf8"), path).toBe(bytes);
+        expect(await snapshot(item.setup.stateDirectory)).toEqual(oldSetup);
+      }
       return;
     }
     await expect(run()).resolves.toMatchObject({ status: "observing-author" });
     const capture = JSON.parse(
-      await readFile(resolve(item.source.stateDirectory, "gate-correction.json"), "utf8"),
+      await readFile(resolve(correctionRoot, "gate-correction.json"), "utf8"),
     );
     expect(capture.gate).toBe("verify:static:scoped");
     authorRunning = true;
@@ -2025,34 +2444,41 @@ See docs/architecture/bounded-context-structure.md#rules-the-structure-gate-enfo
       );
       expect(finalGates).toHaveLength(4);
       expect(effects.filter((e) => e === "publish" || e === "merge" || e === "deployment")).toEqual(
-        ["publish", "merge", "deployment"],
+        [...(mode === "published" ? ["publish"] : []), "publish", "merge", "deployment"],
       );
     }
     expect(launches.map((l) => l.stage)).toEqual([
-      "author",
-      "reviewer",
-      ...(refresh ? ["refresh-reviewer"] : []),
+      ...(executorRecovery
+        ? [...retainedStages, "refresh-reviewer"]
+        : ["author", "reviewer", ...(refresh ? ["refresh-reviewer"] : [])]),
       "correction-author",
       "correction-reviewer",
     ]);
     expect(launches.at(-1)!.prompt).toContain("Independent DELTA");
     const result = JSON.parse(
-      await readFile(resolve(item.source.stateDirectory, "gate-correction-result.json"), "utf8"),
+      await readFile(resolve(correctionRoot, "gate-correction-result.json"), "utf8"),
     );
     expect(result.head).not.toBe(capture.failedHead);
     expect(
       await git(item.source.worktree, ["diff", "--name-only", `${capture.main}...${result.head}`]),
     ).toBe("synthetic.ts");
     for (const [path, bytes] of original) expect(await readFile(path, "utf8"), path).toBe(bytes);
-  };
+    if (executorRecovery) {
+      expect(await snapshot(item.setup.stateDirectory)).toEqual(oldSetup);
+      const final = JSON.parse(await readFile(resolve(q.stateDirectory, "attempt.json"), "utf8"));
+      expect(final.history.slice(0, retainedHistory.length)).toEqual(retainedHistory);
+      expect(final.candidateAttempt).toBe(retainedCandidateAttempt);
+    }
+  }
 }
 
 async function loopFixture(
   withRuntime = false,
   acceptanceCriteria = "- One file drives the run.\n- Preserve the Markdown list.\n  Keep this continuation intact.",
   prefix = "loop-config-fixture-",
+  temporaryRoot = tmpdir(),
 ) {
-  const root = await mkdtemp(resolve(tmpdir(), prefix));
+  const root = await mkdtemp(resolve(temporaryRoot, prefix));
   roots.push(root);
   const repository = resolve(root, "repository");
   const stateRoot = resolve(root, "state");
@@ -2758,6 +3184,22 @@ it("composes a four-input saved-stop grant outside immutable source and delivery
   expect(resumed.gateStopAuthorization).toEqual(grant);
   const { gateStopAuthorization: _grant, ...unchanged } = resumed;
   expect(unchanged).toEqual(original);
+  const extended = { ...grant, executorRepair: { stoppedExecutorHead: "a".repeat(40) } };
+  expect(() => validateLoopConfig({ ...f.loop, gateStopAuthorization: extended })).not.toThrow();
+  for (const executorRepair of [
+    null,
+    {},
+    { stoppedExecutorHead: "a".repeat(40), extra: true },
+    { stoppedExecutorHead: 1 },
+    { stoppedExecutorHead: "A".repeat(40) },
+    { stoppedExecutorHead: "a".repeat(39) },
+  ])
+    expect(() =>
+      validateLoopConfig({
+        ...f.loop,
+        gateStopAuthorization: { ...grant, executorRepair },
+      } as LoopConfig),
+    ).toThrow("invalid-gate-stop-authorization");
   for (const invalid of [
     null,
     { ...grant, id: "another-recovery" },
