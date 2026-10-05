@@ -77,6 +77,7 @@ export async function refreshDelivery(
   deliveryAdapter?: DeliveryAdapter,
   resolutionUsed = false,
   continuation?: {
+    requireReview?: boolean;
     context: string;
     main: string;
     inheritedDirectory: string;
@@ -160,7 +161,7 @@ export async function refreshDelivery(
       } catch {
         throw new QueueBlocked("current-main-incompatible");
       }
-      if (ancestor !== main) {
+      if (ancestor !== main || (!active && continuation?.requireReview)) {
         active = {
           main,
           previousHead,

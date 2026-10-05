@@ -32,6 +32,7 @@ import {
   gateDiagnostics,
   githubDeliveryAdapter,
 } from "../../scripts/dogfood/delivery-adapter.mjs";
+import { recognizeStoppedStructure } from "../../scripts/dogfood/delivery-adapter.js";
 import {
   deliveryStep,
   DeliveryBlocked,
@@ -1549,6 +1550,21 @@ it.each([
     throw new Error("missing synthetic failure");
   const invalidPath = paths[mode!] && !["unchanged", "renamed destination"].includes(mode!);
   const recognized = !transform && mode !== "signal";
+  const retainedTerminal = await readFile(
+    resolve(failure.evidence.log, "../candidate-terminal.json"),
+  );
+  const retainedLog = await readFile(failure.evidence.log);
+  // ISS-229: read-only re-recognition shares the real grammar and immutable path
+  // checks; it neither trusts the cache nor executes candidate/base commands.
+  const commandsBeforeAdmission = await readFile(commands);
+  expect(await recognizeStoppedStructure(current, main)).toBe(
+    !!(recognized && !invalidPath && mode !== "unchanged"),
+  );
+  expect(await readFile(commands)).toEqual(commandsBeforeAdmission);
+  expect(await readFile(resolve(failure.evidence.log, "../candidate-terminal.json"))).toEqual(
+    retainedTerminal,
+  );
+  expect(await readFile(failure.evidence.log)).toEqual(retainedLog);
   expect(failure.evidence).toMatchObject({
     cause: recognized && !invalidPath ? "diagnostic" : "unknown",
     diagnostics: recognized ? diagnostics : [],
