@@ -870,6 +870,22 @@
       "summary": "Opt in the surviving attached Windows parent to at most two reconciled same-run starts, with durable bounds, cancellation and actionable local attention.",
       "milestone": "M1",
       "blockedBy": ["ISS-226"]
+    },
+    {
+      "key": "ISS-228",
+      "file": "planning/drafts/ISS-228.md",
+      "title": "Attribute completed structure-check violations through the existing base control",
+      "summary": "Recognize complete candidate-owned check:structure failures and reuse scoped-static base attribution without widening correction or saved-stop recovery authority.",
+      "milestone": "M1",
+      "blockedBy": []
+    },
+    {
+      "key": "ISS-229",
+      "file": "planning/drafts/ISS-229.md",
+      "title": "Continue a retained scoped-static attribution stop after its executor repair",
+      "summary": "Extend the existing gate-stop grant for one executor-repair continuation with complete saved-evidence recognition, fresh review and unchanged same-attempt accounting.",
+      "milestone": "M1",
+      "blockedBy": ["ISS-228"]
     }
   ]
 }
