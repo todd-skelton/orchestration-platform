@@ -2360,6 +2360,93 @@ it("refuses candidate workspace drift before any gate or provider mutation", asy
 // diagnostic evidence, which is what admits the base control and single
 // gate-correction author; the retained cs-3779:1 shape stays unknown.
 it.each([
+  [false, false],
+  [false, true],
+  [true, false],
+  [true, true],
+])(
+  "ISS-228 retains real structure evidence afterMirror=%s mixed=%s across delivery replay",
+  async (afterMirror, mixed) => {
+    const f = await fixture();
+    vi.stubEnv("GIT_ALLOW_PROTOCOL", "file");
+    vi.stubEnv("CHANGED_FILES_JSON", undefined);
+    const git = async (cwd: string, args: string[]) =>
+      (await promisify(execFile)("git", args, { cwd })).stdout.trim();
+    await git(f.config.repositoryRoot, ["init", "-b", "main"]);
+    await git(f.config.repositoryRoot, ["config", "user.name", "fixture"]);
+    await git(f.config.repositoryRoot, ["config", "user.email", "fixture@example.test"]);
+    await git(f.config.repositoryRoot, [
+      "remote",
+      "add",
+      "origin",
+      "https://github.com/fixture/repository.git",
+    ]);
+    await writeFile(resolve(f.config.repositoryRoot, "base.txt"), "synthetic main\n");
+    await git(f.config.repositoryRoot, ["add", "."]);
+    await git(f.config.repositoryRoot, ["commit", "-m", "synthetic base"]);
+    f.config.controllerRevision = await git(f.config.repositoryRoot, ["rev-parse", "HEAD"]);
+    await git(f.config.repositoryRoot, ["worktree", "add", "-b", "synthetic", f.config.worktree]);
+    await writeFile(resolve(f.config.worktree, "synthetic.ts"), "synthetic feature\n");
+    await git(f.config.worktree, ["add", "."]);
+    await git(f.config.worktree, ["commit", "-m", "synthetic candidate"]);
+    f.config.candidateHead = await git(f.config.worktree, ["rev-parse", "HEAD"]);
+    await git(f.config.repositoryRoot, [
+      "worktree",
+      "add",
+      "--detach",
+      f.config.reviewWorktree,
+      f.config.candidateHead,
+    ]);
+    const source = f.adapter.source;
+    f.adapter.source = async (...args) => ({
+      ...(await source(...args)),
+      head: f.config.candidateHead,
+      controllerRevision: f.config.controllerRevision,
+    });
+    const block = `[VERIFY_STATIC_RUN] check:structure
+$ node ./scripts/check-structure.mjs && node ./scripts/check-structure/brand-foil-proof.mjs
+Brand foil: {"tracked":2,"scanned":2,"bytes":40,"readFailures":0,"nul":0,"literal":0,"raw":0,"constructor":0,"token":0,"union":0,"allowed":0,"violations":0,"roles":{}}; allowed + violations = union: 0 + 0 = 0
+Structure check failed:
+
+- synthetic.ts: synthetic structure policy (./context.json)
+
+See docs/architecture/bounded-context-structure.md#rules-the-structure-gate-enforces for the enforced rules and fixes.
+[ELIFECYCLE] Command failed with exit code 1.
+[ELIFECYCLE] Command failed with exit code 1.
+${mixed ? "unexpected failure\n" : ""}`;
+    const launcher = resolve(f.config.stateDirectory, "synthetic-pnpm.mjs");
+    await writeFile(launcher, `console.log(${JSON.stringify(block)}); process.exit(1);`);
+    vi.stubEnv("npm_execpath", launcher);
+    const native = githubDeliveryAdapter();
+    const previous = f.adapter.runGate;
+    let executions = 0;
+    f.adapter.runGate = async (config, name, head) => {
+      if (name !== "verify:static:scoped") return previous(config, name, head);
+      executions++;
+      return native.runGate(config, name, head);
+    };
+    f.plan.gates = {
+      beforeMirror: afterMirror ? ["typecheck"] : ["verify:static:scoped"],
+      afterMirror: afterMirror ? ["verify:static:scoped"] : [],
+    };
+    for (let replay = 0; replay < 2; replay++) {
+      const failure = await deliveryStep(f.config, f.adapter, f.policy).catch((e) => e);
+      expect(failure).toBeInstanceOf(LocalGateFailure);
+      expect(failure.evidence).toMatchObject({
+        head: f.config.candidateHead,
+        cause: mixed ? "unknown" : "diagnostic",
+        diagnostics: mixed ? [] : ["synthetic.ts: synthetic structure policy (./context.json)"],
+      });
+      expect(await readFile(failure.evidence.log, "utf8")).toContain(block);
+    }
+    expect(executions).toBe(1);
+    expect(f.calls.includes("draft:332")).toBe(afterMirror);
+    expect(f.calls).not.toContain("publish");
+    expect(f.calls).not.toContain("merge");
+  },
+);
+
+it.each([
   ["recognized", "diagnostic", ["docs/SYNTHETIC_INDEX.md is stale"]],
   ["unrecognized", "unknown", []],
 ] as const)(

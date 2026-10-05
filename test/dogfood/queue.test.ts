@@ -16,7 +16,7 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
 import {
   currentCandidateAttempt,
   QueueBlocked,
@@ -50,6 +50,7 @@ import type { RepositoryAdapter } from "../../scripts/dogfood/repository-adapter
 import { gitSetupAdapter } from "../../scripts/dogfood/setup-adapter.js";
 import { setupStep } from "../../scripts/dogfood/setup.js";
 import { githubDeliveryAdapter } from "../../scripts/dogfood/delivery-adapter.mjs";
+import type { PublicationEvidence } from "../../scripts/dogfood/delivery.mjs";
 import {
   nextCycle,
   persistCycle,
@@ -1652,6 +1653,383 @@ async function fixture(itemCount = 1) {
   return { root, stateDirectory, config, items };
 }
 
+it.each([
+  [false, false, "candidate"],
+  [false, true, "candidate"],
+  [true, false, "candidate"],
+  [true, true, "candidate"],
+  [false, false, "base"],
+  [false, false, "unknown"],
+  [false, false, "unchanged"],
+  [false, false, "vacuous"],
+  [false, false, "spent"],
+  [true, true, "second failure"],
+] as const)(
+  "ISS-228 native structure correction refreshed=%s afterMirror=%s outcome=%s",
+  async (refresh, afterMirror, mode) => {
+    const f = await loopFixture();
+    const git = async (tree: string, args: string[]) =>
+      (await execute(f.gitExecutable, ["-C", tree, ...args])).stdout.trim();
+    await writeFile(
+      resolve(f.repository, "package.json"),
+      '{"scripts":{"verify:static:scoped":"node synthetic.mjs"}}',
+    );
+    await writeFile(resolve(f.repository, "pnpm-lock.yaml"), "synthetic lock\n");
+    await git(f.repository, ["add", "."]);
+    await git(f.repository, ["commit", "-m", "synthetic structure toolchain"]);
+    f.selected.base = await git(f.repository, ["rev-parse", "HEAD"]);
+    const remote = resolve(f.repository, "..", "remote.git");
+    await execute(f.gitExecutable, ["clone", "--bare", f.repository, remote]);
+    await git(f.repository, [
+      "remote",
+      "add",
+      "origin",
+      "https://github.com/fixture/repository.git",
+    ]);
+    vi.stubEnv("GIT_ALLOW_PROTOCOL", "file");
+    const launcher = resolve(f.stateRoot, "synthetic-pnpm.mjs");
+    await mkdir(f.stateRoot, { recursive: true });
+    const block = `[VERIFY_STATIC_RUN] check:structure
+$ node ./scripts/check-structure.mjs && node ./scripts/check-structure/brand-foil-proof.mjs
+Brand foil: {"tracked":2,"scanned":2,"bytes":40,"readFailures":0,"nul":0,"literal":0,"raw":0,"constructor":0,"token":0,"union":0,"allowed":0,"violations":0,"roles":{}}; allowed + violations = union: 0 + 0 = 0
+Structure check failed:
+
+- ${mode === "unchanged" ? "docs/loop.md" : "synthetic.ts"}: synthetic package boundary (./context.json)
+
+See docs/architecture/bounded-context-structure.md#rules-the-structure-gate-enforces for the enforced rules and fixes.
+[ELIFECYCLE] Command failed with exit code 1.
+[ELIFECYCLE] Command failed with exit code 1.
+`;
+    await writeFile(
+      launcher,
+      `
+    import {existsSync, readFileSync} from "node:fs";
+    if (process.argv[2] === "install" || process.argv[3] !== "verify:static:scoped") process.exit(0);
+    const candidate = existsSync("synthetic.ts");
+    const broken = candidate && (readFileSync("synthetic.ts", "utf8").includes("broken") || ${mode === "second failure"});
+    if (broken || ${mode === "base"}) {
+      console.log(${JSON.stringify(block)});
+      if (${mode === "unknown"}) console.log("unexpected synthetic failure");
+      process.exit(1);
+    }
+    if (!candidate && process.env.CHANGED_FILES_JSON !== '["synthetic.ts"]') throw new Error("base scope was not candidate-derived");
+    console.log(${JSON.stringify(mode === "vacuous" ? "[SKIPPED-BY-SCOPE] check:structure: empty scope" : "[VERIFY_STATIC_RUN] check:structure")});
+  `,
+    );
+    vi.stubEnv("npm_execpath", launcher);
+    vi.stubEnv("CHANGED_FILES_JSON", '["SYNTHETIC_AMBIENT_ONLY.ts"]');
+    const q = await queueConfigFromLoop(f.loop, f.repository, f.selected, repositoryPolicy);
+    const item = q.items[0]!;
+    const launches: { stage: string; head: string; prompt: string }[] = [];
+    let authorRunning = false,
+      reviewRunning = false;
+    const native: Adapter = {
+      async preflight() {},
+      git: (tree, args) =>
+        git(
+          tree,
+          args[0] === "fetch" ? args.map((arg) => (arg === "origin" ? remote : arg)) : args,
+        ),
+      async launch(role, config, prompt) {
+        const correction = config.stateDirectory.endsWith("gate-correction");
+        launches.push({
+          stage: `${correction ? "correction-" : config.stateDirectory.includes("refresh-") ? "refresh-" : ""}${role}`,
+          head: config.base,
+          prompt,
+        });
+        if (role === "author")
+          await writeFile(
+            resolve(config.worktree, "synthetic.ts"),
+            correction ? "corrected synthetic feature\n" : "broken synthetic feature\n",
+          );
+        const trace = resolve(config.stateDirectory, `${role}.jsonl`);
+        await writeFile(trace, "synthetic execution evidence\n");
+        return { id: randomUUID(), pid: 111, trace, launchedAt: 1 };
+      },
+      async observe(role, config, attempt) {
+        if (
+          config.stateDirectory.endsWith("gate-correction") &&
+          (role === "author" ? authorRunning : reviewRunning)
+        )
+          return { id: attempt.id, status: "running" };
+        const head =
+          role === "author" ? config.base : await git(config.worktree, ["rev-parse", "HEAD"]);
+        return {
+          id: attempt.id,
+          status: "passed",
+          head,
+          ...(role === "reviewer"
+            ? {
+                summary: JSON.stringify({
+                  run: config.run,
+                  role,
+                  head,
+                  verdict: "PASS",
+                  findings: [],
+                  g0: "Synthetic independent exact-head review.",
+                }),
+              }
+            : {}),
+        };
+      },
+      async checks() {
+        throw new Error("source must not publish");
+      },
+    };
+    const delivery = githubDeliveryAdapter(undefined, f.gitExecutable);
+    const effects: string[] = [];
+    const realGate = delivery.runGate;
+    delivery.runGate = async (config, name, head) => {
+      effects.push(`gate:${name}:${head}`);
+      return realGate(config, name, head);
+    };
+    const realAttribute = delivery.attributeGate!;
+    delivery.attributeGate = async (...args) => {
+      const result = await realAttribute(...args);
+      effects.push(`attribution:${result.cause}`);
+      return result;
+    };
+    let mirrored = false,
+      merged = false,
+      cleaned = false,
+      checksGreen = false;
+    let publication: PublicationEvidence | undefined;
+    delivery.observeDraft = async () =>
+      mirrored ? { state: "confirmed", value: { issue: 361 } } : { state: "needs-mutation" };
+    delivery.applyDraft = async () => {
+      mirrored = true;
+      effects.push("mirror");
+    };
+    delivery.observePublication = async () =>
+      publication
+        ? { state: "confirmed", value: publication }
+        : { state: "needs-mutation", target: "absent" };
+    delivery.publish = async (config, plan) => {
+      effects.push("publish");
+      publication = {
+        number: 400,
+        url: "https://github.com/fixture/repository/pull/400",
+        repository: config.repository,
+        head: config.candidateHead,
+        sourceBranch: plan.sourceBranch,
+        baseBranch: plan.baseBranch,
+        title: plan.title,
+        body: plan.body,
+        planDigest: createHash("sha256")
+          .update(
+            JSON.stringify(
+              JSON.parse(
+                await readFile(resolve(config.stateDirectory, "delivery-plan.json"), "utf8"),
+              ).plan,
+            ),
+          )
+          .digest("hex"),
+      };
+    };
+    delivery.checks = async (config) => {
+      effects.push(`checks:${config.candidateHead}`);
+      return {
+        head: config.candidateHead,
+        checks: config.requiredChecks.map((name) => ({
+          name,
+          bucket: checksGreen ? "pass" : "pending",
+          link: `https://example.test/${name}`,
+        })),
+      };
+    };
+    delivery.observeMerge = async () =>
+      merged
+        ? {
+            state: "confirmed",
+            value: { number: 400, head: publication!.head, mergeCommit: "e".repeat(40) },
+          }
+        : { state: "needs-mutation" };
+    delivery.merge = async () => {
+      merged = true;
+      effects.push("merge");
+    };
+    delivery.observeCleanup = async (_config, plan) =>
+      cleaned ? { state: "confirmed", value: plan } : { state: "needs-mutation" };
+    delivery.cleanup = async () => {
+      cleaned = true;
+      effects.push("cleanup");
+    };
+    const adapter = () =>
+      repositoryQueueAdapter(q, f.repository, {
+        native,
+        delivery,
+        gitExecutable: f.gitExecutable,
+        async assertExecutor() {},
+        setup: gitSetupAdapter({
+          gitExecutable: f.gitExecutable,
+          async install(_launcher, _args, tree) {
+            await mkdir(resolve(tree, "node_modules"), { recursive: true });
+            await writeFile(resolve(tree, "node_modules/.modules.yaml"), "fixture: true\n");
+            return "succeeded";
+          },
+        }),
+        repository: {
+          ...repositoryPolicy,
+          async afterMerge() {
+            effects.push("deployment");
+          },
+        },
+        deliveryPolicy: {
+          async plan(config) {
+            return {
+              gates: {
+                beforeMirror: [
+                  ...(afterMirror ? [] : ["verify:static:scoped"]),
+                  "typecheck",
+                  "format:check",
+                  "test",
+                ],
+                afterMirror: afterMirror ? ["verify:static:scoped"] : [],
+              },
+              drafts: [
+                {
+                  key: "ISS-104",
+                  issue: 361,
+                  title: "synthetic",
+                  body: "synthetic",
+                  attributes: {},
+                },
+              ],
+              publication: {
+                sourceBranch: "codex/synthetic-structure",
+                baseBranch: "main",
+                title: "synthetic",
+                body: "synthetic",
+                draft: true,
+              },
+              mergePolicy: {},
+              cleanup: {
+                worktrees: [config.worktree, config.reviewWorktree],
+                branch: config.localBranch!,
+              },
+            };
+          },
+        },
+      });
+    await expect(
+      queueStep(q, {
+        ...adapter(),
+        async delivery() {
+          throw new Error("synthetic source accepted");
+        },
+      }),
+    ).rejects.toThrow("synthetic source accepted");
+    const original = await snapshot(item.source.stateDirectory);
+    if (mode === "spent") {
+      const path = resolve(q.stateDirectory, "attempt.json");
+      const retained = JSON.parse(await readFile(path, "utf8"));
+      await writeFile(path, JSON.stringify({ ...retained, retries: 1 }));
+    }
+    if (refresh) {
+      const updater = resolve(f.repository, "..", "updater");
+      await execute(f.gitExecutable, ["clone", remote, updater]);
+      await writeFile(resolve(updater, "main.txt"), "synthetic later main\n");
+      await git(updater, ["add", "."]);
+      await git(updater, [
+        "-c",
+        "user.name=fixture",
+        "-c",
+        "user.email=fixture@example.test",
+        "commit",
+        "-m",
+        "synthetic main",
+      ]);
+      await git(updater, ["push", "origin", "main"]);
+    }
+    const run = () => queueStep(q, adapter());
+    if (!["candidate", "second failure"].includes(mode)) {
+      const reason =
+        mode === "base"
+          ? "gate-base-failed"
+          : mode === "spent"
+            ? "gate-correction-exhausted"
+            : "gate-attribution-unknown";
+      for (let replay = 0; replay < 2; replay++)
+        await expect(run()).rejects.toMatchObject({ reason: `${reason}:verify:static:scoped` });
+      expect(launches.map((l) => l.stage)).toEqual(["author", "reviewer"]);
+      expect(effects).not.toContain("publish");
+      await expect(
+        readFile(resolve(item.source.stateDirectory, "gate-correction.json")),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+      expect(effects.filter((e) => e.startsWith("attribution:"))).toEqual(
+        mode === "unknown"
+          ? []
+          : [
+              `attribution:${mode === "spent" ? "candidate" : mode === "unchanged" || mode === "vacuous" ? "unknown" : mode}`,
+            ],
+      );
+      return;
+    }
+    await expect(run()).resolves.toMatchObject({ status: "observing-author" });
+    const capture = JSON.parse(
+      await readFile(resolve(item.source.stateDirectory, "gate-correction.json"), "utf8"),
+    );
+    expect(capture.gate).toBe("verify:static:scoped");
+    authorRunning = true;
+    for (let replay = 0; replay < 2; replay++)
+      await expect(run()).resolves.toMatchObject({ status: "observing-author" });
+    const correction = launches.find((l) => l.stage === "correction-author")!;
+    expect(correction.head).toBe(capture.failedHead);
+    for (const text of [
+      capture.failedHead,
+      capture.main,
+      "full implementation diff",
+      "only this failure and its direct causes",
+      "candidate.log",
+    ])
+      expect(correction.prompt).toContain(text);
+    authorRunning = false;
+    reviewRunning = true;
+    for (let replay = 0; replay < 2; replay++)
+      await expect(run()).resolves.toMatchObject({ status: "observing-reviewer" });
+    reviewRunning = false;
+    if (mode === "second failure") {
+      for (let replay = 0; replay < 2; replay++)
+        await expect(run()).rejects.toMatchObject({
+          reason: "gate-correction-exhausted:verify:static:scoped",
+        });
+      expect(effects).not.toContain("publish");
+    } else {
+      await expect(run()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+      expect(effects).not.toContain("merge");
+      checksGreen = true;
+      await expect(run()).resolves.toMatchObject({ status: "complete" });
+      const completedEffects = [...effects];
+      for (let replay = 0; replay < 2; replay++)
+        await expect(run()).resolves.toMatchObject({ status: "complete" });
+      expect(effects).toEqual(completedEffects);
+      const finalGates = effects.filter(
+        (e) => e.startsWith("gate:") && e.endsWith(publication!.head),
+      );
+      expect(finalGates).toHaveLength(4);
+      expect(effects.filter((e) => e === "publish" || e === "merge" || e === "deployment")).toEqual(
+        ["publish", "merge", "deployment"],
+      );
+    }
+    expect(launches.map((l) => l.stage)).toEqual([
+      "author",
+      "reviewer",
+      ...(refresh ? ["refresh-reviewer"] : []),
+      "correction-author",
+      "correction-reviewer",
+    ]);
+    expect(launches.at(-1)!.prompt).toContain("Independent DELTA");
+    const result = JSON.parse(
+      await readFile(resolve(item.source.stateDirectory, "gate-correction-result.json"), "utf8"),
+    );
+    expect(result.head).not.toBe(capture.failedHead);
+    expect(
+      await git(item.source.worktree, ["diff", "--name-only", `${capture.main}...${result.head}`]),
+    ).toBe("synthetic.ts");
+    for (const [path, bytes] of original) expect(await readFile(path, "utf8"), path).toBe(bytes);
+  },
+);
+
 async function loopFixture(
   withRuntime = false,
   acceptanceCriteria = "- One file drives the run.\n- Preserve the Markdown list.\n  Keep this continuation intact.",
@@ -1731,6 +2109,7 @@ async function loopFixture(
 }
 
 afterEach(async () => {
+  vi.unstubAllEnvs();
   timing?.phase("cleanup");
   timing = undefined;
   await Promise.all(

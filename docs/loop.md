@@ -431,7 +431,14 @@ and reviewed head. Recognized compiler, formatter, completed test assertion or
 Chase Sets scoped static generated-artifact staleness diagnostics
 (`<repo-relative path> is stale|missing` from a `generate-*.mjs --check`
 producer, wholly accounting for the final `[VERIFY_STATIC_RUN]` block) must
-name committed candidate files. The same command runs in an
+name committed candidate files. ISS-228 also recognizes the final `check:structure`
+block with its exact chained structure/brand-proof command, successful parsed
+Brand foil partition, contiguous path/message violations, rules footer and both
+lifecycle tails. Every structure path must be a normalized committed regular
+file changed against the recorded delivery main; all block lines must be accounted
+for, and a later static link contradicts the fail-fast failure. Structure uses the
+same candidate-selected base control and requires its positive `check:structure`
+execution marker. The same command runs in an
 isolated committed tree at the recorded delivery main base, with an offline,
 frozen dependency install. Changed manifests or lockfiles remain unknown.
 The candidate and base logs and terminal records remain in the delivery runtime (ISS-152).
