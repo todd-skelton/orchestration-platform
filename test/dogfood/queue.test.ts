@@ -67,6 +67,9 @@ import {
 } from "../../scripts/dogfood/routing.mjs";
 import { sourceFailureFixture, repairFailureFixture, snapshot } from "./fixtures/source-failure.js";
 import { startCaseTiming, type CaseTiming } from "./fixtures/iss212-timing.js";
+import { installIss221Timing, iss221Phase } from "./fixtures/iss221-timing.js";
+
+await installIss221Timing();
 
 let timing: CaseTiming | undefined;
 
@@ -354,8 +357,11 @@ async function unparkedRepairFailure(intervening = false, capture?: CaseTiming) 
 }
 
 it("unparks only attempt 4 with current guidance, full diff, history and fresh review", async () => {
+  iss221Phase("body");
+  iss221Phase("setup");
   timing = await startCaseTiming("unpark");
   const { f, next } = await unparkedRepairFailure(true, timing);
+  iss221Phase("lifecycle");
   timing?.phase("proof");
   const prior = await snapshot(f.runState);
   const trees = await snapshot(f.loop.worktreeRoot);
@@ -446,6 +452,7 @@ it("unparks only attempt 4 with current guidance, full diff, history and fresh r
   const pinPath = resolve(item.source.stateDirectory, "config.json");
   const pin = await readFile(pinPath, "utf8");
   const resumed = await f.compose((await f.advance())!);
+  iss221Phase("re-entry");
   await queueStep(resumed.config, resumed.adapter);
   expect(launches).toEqual(["author"]);
   const context = f.policy.issueContext;
@@ -465,6 +472,7 @@ it("unparks only attempt 4 with current guidance, full diff, history and fresh r
   });
   expect(launches).toEqual(["author", "reviewer"]);
   timing?.phase("proof");
+  iss221Phase("assertion");
   for (const [file, bytes] of prior)
     if (file !== path) expect(await readFile(file, "utf8"), file).toBe(bytes);
   for (const [file, bytes] of trees) expect(await readFile(file, "utf8"), file).toBe(bytes);
@@ -1723,12 +1731,15 @@ describe.each([
     let fixture: AsyncGenerator<void, void>;
     beforeEach(async () => {
       fixture = prepareStructureCorrection(refresh, afterMirror, mode, true);
+      iss221Phase("hook-1");
       expect((await fixture.next()).done).toBe(false);
     });
     beforeEach(async () => {
+      iss221Phase("hook-2");
       expect((await fixture.next()).done).toBe(false);
     });
     it("retains one native lineage through admission, review, attribution and terminal replay", async () => {
+      iss221Phase("body");
       expect((await fixture.next()).done).toBe(true);
     });
   },
@@ -2100,6 +2111,7 @@ See docs/architecture/bounded-context-structure.md#rules-the-structure-gate-enfo
   }
   yield;
   const advanceMain = async () => {
+    iss221Phase("lifecycle");
     const updater = resolve(f.repository, "..", "updater");
     await execute(f.gitExecutable, ["clone", remote, updater]);
     await writeFile(resolve(updater, "main.txt"), "synthetic later main\n");
@@ -2275,6 +2287,7 @@ See docs/architecture/bounded-context-structure.md#rules-the-structure-gate-enfo
   }
   yield;
   {
+    iss221Phase("re-entry");
     const run = () => queueStep(q, adapter());
     if (executorRecovery) {
       const admitted = [
@@ -2455,6 +2468,7 @@ See docs/architecture/bounded-context-structure.md#rules-the-structure-gate-enfo
       "correction-reviewer",
     ]);
     expect(launches.at(-1)!.prompt).toContain("Independent DELTA");
+    iss221Phase("assertion");
     const result = JSON.parse(
       await readFile(resolve(correctionRoot, "gate-correction-result.json"), "utf8"),
     );
@@ -2554,6 +2568,7 @@ async function loopFixture(
 
 afterEach(async () => {
   vi.unstubAllEnvs();
+  iss221Phase("cleanup");
   timing?.phase("cleanup");
   timing = undefined;
   await Promise.all(

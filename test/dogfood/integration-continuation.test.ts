@@ -48,11 +48,15 @@ import {
   type SupervisionAdapter,
 } from "../../scripts/dogfood/supervision.js";
 import { snapshot } from "./fixtures/source-failure.js";
+import { installIss221Timing, iss221Phase } from "./fixtures/iss221-timing.js";
+
+await installIss221Timing();
 
 const execute = promisify(execFile);
 let fixtureGit: Promise<string> | undefined;
 const roots: string[] = [];
 afterEach(async () => {
+  iss221Phase("cleanup");
   await Promise.all(
     roots
       .splice(0)
@@ -2443,6 +2447,8 @@ it.each([
     ])
     .map((mode) => ({ mode, spent: true })),
 ])("runs native integration delivery: $mode, spent=$spent", async ({ mode, spent }) => {
+  iss221Phase("body");
+  iss221Phase("setup");
   const shape: Shape =
     mode === "clean"
       ? "clean"
@@ -2468,6 +2474,7 @@ it.each([
       f.later.push(participant(f.later.length + 1, "ISS-105:1", "refresh", "reviewer", "passed"));
   }
   const q = await f.compose();
+  iss221Phase("lifecycle");
   expect(await f.compose()).toEqual(q);
   const item = q.items[0]!;
   const launches: string[] = [];
@@ -3023,6 +3030,7 @@ it.each([
     );
   }
   if (mode === "published-reentry" || allowanceMode) {
+    iss221Phase("re-entry");
     const intermediate = await refresh();
     expect(intermediate.previousReview).toBe(f.reviewId);
     expect(
@@ -3077,6 +3085,7 @@ it.each([
     // Change one binding at a time after the valid real-path re-entry. Each refusal
     // must precede another observation/mutation, with every other prerequisite intact.
     const refusal = "unreviewed-delivery-source";
+    iss221Phase("assertion");
     const faults: {
       label: string;
       directory: string;

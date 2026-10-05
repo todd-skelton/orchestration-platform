@@ -33,18 +33,34 @@ jobs:
     timeout-minutes: 100
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # ISS-221 pairs need the fixed historical base and exact candidate.
+          fetch-depth: ${{ github.event_name == 'pull_request' && startsWith(github.head_ref, 'codex/iss-221') && '0' || '1' }}
+          ref: ${{ github.event_name == 'pull_request' && startsWith(github.head_ref, 'codex/iss-221') && github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
       - run: corepack enable
       - run: corepack prepare pnpm@11.22.0 --activate
       - run: corepack pnpm install --frozen-lockfile
+      - name: ISS-221 fixed baseline/candidate diagnostic pairs
+        if: ${{ github.event_name == 'pull_request' && startsWith(github.head_ref, 'codex/iss-221') }}
+        timeout-minutes: 15
+        env:
+          ISS221_CANDIDATE_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: node test/dogfood/fixtures/iss221-timing.ts refresh
       - run: pnpm run verify:bootstrap --windows-shard refresh
+        if: ${{ always() }}
+        env:
+          ISS221_TIMING: ""
+          ISS212_TIMING: ""
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: ${{ always() }}
         with:
           name: windows-refresh-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/bootstrap-refresh.json
+          path: |
+            ${{ runner.temp }}/bootstrap-refresh.json
+            ${{ runner.temp }}/iss221-refresh/evidence
           if-no-files-found: warn
 
   windows_queue:
@@ -53,18 +69,34 @@ jobs:
     timeout-minutes: 100
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # ISS-221 pairs need the fixed historical base and exact candidate.
+          fetch-depth: ${{ github.event_name == 'pull_request' && startsWith(github.head_ref, 'codex/iss-221') && '0' || '1' }}
+          ref: ${{ github.event_name == 'pull_request' && startsWith(github.head_ref, 'codex/iss-221') && github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
       - run: corepack enable
       - run: corepack prepare pnpm@11.22.0 --activate
       - run: corepack pnpm install --frozen-lockfile
+      - name: ISS-221 fixed baseline/candidate diagnostic pairs
+        if: ${{ github.event_name == 'pull_request' && startsWith(github.head_ref, 'codex/iss-221') }}
+        timeout-minutes: 15
+        env:
+          ISS221_CANDIDATE_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: node test/dogfood/fixtures/iss221-timing.ts queue
       - run: pnpm run verify:bootstrap --windows-shard queue
+        if: ${{ always() }}
+        env:
+          ISS221_TIMING: ""
+          ISS212_TIMING: ""
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: ${{ always() }}
         with:
           name: windows-queue-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/bootstrap-queue.json
+          path: |
+            ${{ runner.temp }}/bootstrap-queue.json
+            ${{ runner.temp }}/iss221-queue/evidence
           if-no-files-found: warn
 
   windows_remainder:
@@ -73,18 +105,34 @@ jobs:
     timeout-minutes: 100
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          # ISS-221 pairs need the fixed historical base and exact candidate.
+          fetch-depth: ${{ github.event_name == 'pull_request' && startsWith(github.head_ref, 'codex/iss-221') && '0' || '1' }}
+          ref: ${{ github.event_name == 'pull_request' && startsWith(github.head_ref, 'codex/iss-221') && github.event.pull_request.head.sha || github.sha }}
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
           node-version: 24
       - run: corepack enable
       - run: corepack prepare pnpm@11.22.0 --activate
       - run: corepack pnpm install --frozen-lockfile
+      - name: ISS-221 fixed baseline/candidate diagnostic pairs
+        if: ${{ github.event_name == 'pull_request' && startsWith(github.head_ref, 'codex/iss-221') }}
+        timeout-minutes: 15
+        env:
+          ISS221_CANDIDATE_HEAD: ${{ github.event.pull_request.head.sha }}
+        run: node test/dogfood/fixtures/iss221-timing.ts remainder
       - run: pnpm run verify:bootstrap --windows-shard remainder
+        if: ${{ always() }}
+        env:
+          ISS221_TIMING: ""
+          ISS212_TIMING: ""
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: ${{ always() }}
         with:
           name: windows-remainder-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/bootstrap-remainder.json
+          path: |
+            ${{ runner.temp }}/bootstrap-remainder.json
+            ${{ runner.temp }}/iss221-remainder/evidence
           if-no-files-found: warn
 
   windows:
