@@ -163,6 +163,77 @@ function structurePath(diagnostic: string): string {
   return diagnostic.slice(0, diagnostic.indexOf(": "));
 }
 
+async function committedStructurePath(
+  config: DeliveryConfig,
+  head: string,
+  path: string,
+  gitExecutable: string,
+) {
+  if (
+    !path ||
+    /[\\:\x00-\x1f\x7f]/.test(path) ||
+    path.split("/").some((part) => !part || part === "." || part === "..")
+  )
+    return false;
+  const entry = await git(
+    gitExecutable,
+    config,
+    ["ls-tree", "-z", head, "--", `:(literal)${path}`],
+    config.worktree,
+  );
+  return (
+    ["100644", "100755"].some((mode) => entry.startsWith(`${mode} blob `)) &&
+    entry.slice(entry.indexOf("\t") + 1) === `${path}\0`
+  );
+}
+
+// ISS-229 admission is read-only recognition, never attribution or a gate receipt.
+// In particular, runGate's terminal write and the old failure cache are not used.
+export async function recognizeStoppedStructure(
+  config: DeliveryConfig,
+  base: string,
+  gitExecutable = "git",
+): Promise<boolean> {
+  try {
+    const directory = resolve(
+      config.stateDirectory,
+      `gate-${createHash("sha256").update(STATIC_SCOPED_GATE).digest("hex")}`,
+    );
+    const terminal = JSON.parse(
+      await readFile(resolve(directory, "candidate-terminal.json"), "utf8"),
+    );
+    const output = await readFile(resolve(directory, "candidate.log"), "utf8");
+    const launcher = await resolvePnpmLauncher();
+    if (
+      terminal.head !== config.candidateHead ||
+      !Number.isInteger(terminal.code) ||
+      terminal.code <= 0 ||
+      terminal.signal !== null ||
+      terminal.startup !== undefined ||
+      terminal.command?.cwd !== config.worktree ||
+      terminal.command.executable !== launcher.executable ||
+      JSON.stringify(terminal.command.argv) !==
+        JSON.stringify([...launcher.prefixArgs, "run", STATIC_SCOPED_GATE]) ||
+      staticScopedFailingLink(output) !== "check:structure"
+    )
+      return false;
+    const diagnostics = gateDiagnostics(STATIC_SCOPED_GATE, output);
+    if (!diagnostics.length) return false;
+    const changed = await changedFiles(gitExecutable, config, base, config.candidateHead);
+    for (const diagnostic of diagnostics) {
+      const path = structurePath(diagnostic);
+      if (
+        !changed.includes(path) ||
+        !(await committedStructurePath(config, config.candidateHead, path, gitExecutable))
+      )
+        return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // Recognize only a final block wholly made of `<path> is stale|missing` throws
 // from a `generate-*.mjs --check` producer: its command echo, Node's uncaught
 // throw frame and the pnpm lifecycle tail. Any other line keeps the failure unknown.
@@ -1105,24 +1176,7 @@ export function githubDeliveryAdapter(
             : diagnostic.split(/\(\d+,\d+\):| > |\s+is\s+(?:stale|missing)$/)[0]!;
           try {
             if (structure) {
-              if (
-                !path ||
-                /[\\:\x00-\x1f\x7f]/.test(path) ||
-                path.split("/").some((part) => !part || part === "." || part === "..")
-              ) {
-                committed = false;
-                continue;
-              }
-              const entry = await git(
-                gitExecutable,
-                config,
-                ["ls-tree", "-z", head, "--", `:(literal)${path}`],
-                config.worktree,
-              );
-              if (
-                !["100644", "100755"].some((mode) => entry.startsWith(`${mode} blob `)) ||
-                entry.slice(entry.indexOf("\t") + 1) !== `${path}\0`
-              )
+              if (!(await committedStructurePath(config, head, path, gitExecutable)))
                 committed = false;
               continue;
             }

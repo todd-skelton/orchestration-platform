@@ -22,6 +22,8 @@ import type { Conflict } from "./conflict.js";
 export { continuationSlug };
 import { resolveRouting, validateRoutingRow, type RoutingRow } from "./routing.mjs";
 import { assertControllerExecutor, githubDeliveryAdapter } from "./delivery-adapter.mjs";
+// @ts-expect-error Node 24 executes this private TypeScript composition directly.
+import { recognizeStoppedStructure } from "./delivery-adapter.ts";
 import {
   DeliveryBlocked,
   LocalGateFailure,
@@ -183,6 +185,7 @@ export interface Prerequisite {
 }
 
 export interface GateStopAuthorization {
+  executorRepair?: { stoppedExecutorHead: string };
   stateDirectory: string;
   candidateHead: string;
   repairSha: string;
@@ -191,7 +194,17 @@ export interface GateStopAuthorization {
 
 function validateGateStopAuthorization(value: GateStopAuthorization) {
   demand(
-    exactKeys(value, ["stateDirectory", "candidateHead", "repairSha", "authorityUrl"]) &&
+    exactKeys(value, [
+      "stateDirectory",
+      "candidateHead",
+      "repairSha",
+      "authorityUrl",
+      ...(value?.executorRepair === undefined ? [] : ["executorRepair"]),
+    ]) &&
+      (value.executorRepair === undefined ||
+        (exactKeys(value.executorRepair, ["stoppedExecutorHead"]) &&
+          typeof value.executorRepair.stoppedExecutorHead === "string" &&
+          SHA.test(value.executorRepair.stoppedExecutorHead))) &&
       typeof value.stateDirectory === "string" &&
       isAbsolute(value.stateDirectory) &&
       resolve(value.stateDirectory) === value.stateDirectory &&
@@ -4392,14 +4405,19 @@ export function repositoryQueueAdapter(
           grant.stateDirectory !== accepted.stateDirectory ||
           item.acceptedReplan ||
           item.integrationContinuation ||
-          !/^gate-(host-failed|attribution-unknown):.+$/.test(stopped.reason)
+          !/^gate-(host-failed|attribution-unknown):.+$/.test(stopped.reason) ||
+          (grant.executorRepair &&
+            stopped.reason !== "gate-attribution-unknown:verify:static:scoped")
         )
           throw new QueueBlocked(stopped.reason, stopped.diagnostics);
         if (recovery !== ABSENT)
           demand(
-            Object.keys(grant).every(
-              (key) => grant[key as keyof GateStopAuthorization] === recovery.authorization[key],
-            ),
+            exactKeys(recovery.authorization, Object.keys(grant)) &&
+              Object.keys(grant).every(
+                (key) =>
+                  JSON.stringify(grant[key as keyof GateStopAuthorization]) ===
+                  JSON.stringify(recovery.authorization[key]),
+              ),
             "gate-stop-authorization-mismatch",
           );
         const nextStop = await optionalRecord(recoveryDirectory, "gate-stop");
@@ -4724,13 +4742,71 @@ export function repositoryQueueAdapter(
           const base = sourceConfig.mainBase ?? sourceConfig.base;
           let repairPresent = false;
           try {
-            repairPresent =
-              (await git(["merge-base", grant!.repairSha, main])) === grant!.repairSha &&
-              (await git(["merge-base", grant!.repairSha, base])) !== grant!.repairSha &&
-              (await git(["merge-base", grant!.repairSha, delivery.candidateHead])) !==
-                grant!.repairSha;
+            if (grant!.executorRepair) {
+              const stoppedHead = grant!.executorRepair.stoppedExecutorHead;
+              const executorGit = (args: string[]) => native.git(config.controllerRoot, args);
+              const setup = await json(item.setup.stateDirectory, "setup-plan");
+              // The grant is the host's stop-time witness, not an inference from setup.
+              // Validate the historical plan without changing it on executor upgrade.
+              const expected = {
+                schemaVersion: "dogfood-setup-plan/v1",
+                ...Object.fromEntries(
+                  [
+                    "run",
+                    "issue",
+                    "repository",
+                    "repositoryRoot",
+                    "controllerRoot",
+                    "stateDirectory",
+                    "controller",
+                    "pilotRevision",
+                    "base",
+                    "baseBranch",
+                    "sourceBranch",
+                  ].map((key) => [key, item.setup[key as keyof SetupConfig]]),
+                ),
+                worktrees: (["pilot", "source", "review"] as const).map((role) => ({
+                  schemaVersion: "dogfood-setup-worktree/v1",
+                  run: item.setup.run,
+                  role,
+                  path: item.setup[`${role}Worktree`],
+                  head: role === "pilot" ? item.setup.pilotRevision : item.setup.base,
+                  branch: role === "source" ? item.setup.sourceBranch : null,
+                })),
+                dependencies: {
+                  launcher: "pnpm",
+                  offline: true,
+                  frozenLockfile: true,
+                  ignoreScripts: true,
+                },
+              };
+              const { controllerRevision: setupHead, ...plan } = setup;
+              repairPresent =
+                exactKeys(plan, Object.keys(expected)) &&
+                Object.entries(expected).every(
+                  ([key, value]) => JSON.stringify(plan[key]) === JSON.stringify(value),
+                ) &&
+                typeof setupHead === "string" &&
+                SHA.test(setupHead) &&
+                (await executorGit(["rev-parse", `${stoppedHead}^{commit}`])) === stoppedHead &&
+                (await executorGit(["merge-base", setupHead, stoppedHead])) === setupHead &&
+                (await executorGit(["merge-base", grant!.repairSha, config.controllerRevision])) ===
+                  grant!.repairSha &&
+                (await executorGit(["merge-base", grant!.repairSha, stoppedHead])) !==
+                  grant!.repairSha;
+            } else
+              repairPresent =
+                (await git(["merge-base", grant!.repairSha, main])) === grant!.repairSha &&
+                (await git(["merge-base", grant!.repairSha, base])) !== grant!.repairSha &&
+                (await git(["merge-base", grant!.repairSha, delivery.candidateHead])) !==
+                  grant!.repairSha;
           } catch {}
-          demand(main !== base && repairPresent, "gate-stop-repair-not-applicable");
+          demand(
+            (!!grant!.executorRepair || main !== base) && repairPresent,
+            "gate-stop-repair-not-applicable",
+          );
+          if (grant!.executorRepair)
+            demand(await recognizeStoppedStructure(delivery, base, gitExecutable), stopped.reason);
           // Reconcile an existing publication read-only before preserving its forward lease.
           const publication = await optionalRecord(delivery.stateDirectory, "publication");
           const intent = await optionalRecord(delivery.stateDirectory, "publication-intent");
@@ -4807,6 +4883,8 @@ export function repositoryQueueAdapter(
           recovering
             ? {
                 context: recovery.context,
+                requireReview:
+                  !!recovery.authorization.executorRepair && recoveryCorrection === ABSENT,
                 main: recovery.main,
                 inheritedDirectory:
                   recoveryCorrection !== ABSENT
