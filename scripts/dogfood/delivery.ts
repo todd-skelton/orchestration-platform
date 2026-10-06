@@ -1371,9 +1371,9 @@ export async function deliveryStep(
       observed.workflowPending === true,
     );
     const awaitingRequired = checks.length < config.requiredChecks.length;
-    const failures = (observed.jobs ?? checks).filter((check) =>
-      ["fail", "cancel"].includes(check.bucket),
-    );
+    const failures = checks.some((check) => check.bucket !== "pass")
+      ? (observed.jobs ?? checks).filter((check) => ["fail", "cancel"].includes(check.bucket))
+      : [];
     const failed =
       failures.find((check) => !provesNonExecution(check, config.candidateHead)) ?? failures[0];
     if (failed && !observed.workflowPending) {

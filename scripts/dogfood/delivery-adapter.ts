@@ -1670,6 +1670,7 @@ export function githubDeliveryAdapter(
             throw new Error("current publication workflow absent after 12 startup waits");
           const unsuccessful = jobs.filter((job) => job.bucket !== "pass");
           if (
+            checks.some((check) => check.bucket !== "pass") &&
             !workflowPending &&
             unsuccessful.length > 0 &&
             unsuccessful.every((job) => provesNonExecution(job, current.head))

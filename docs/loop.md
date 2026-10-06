@@ -501,7 +501,9 @@ They inspect underlying diagnostics independently; this supplies neither a
 verdict nor a waiver, and all ordinary delivery gates remain mandatory (ISS-141).
 
 ISS-230 partitions the complete attributed effective-job census before requiring
-logs. Only a current-attempt completed `cancelled` job with an explicit
+logs when a required check is non-pass. Advisory failures and cancellations do
+not widen the required-check merge gate. Only a current-attempt completed
+`cancelled` job with an explicit
 `runner_id` of zero or null and an actual empty `steps` array proves non-execution;
 a populated job-level `started_at` is allowed. Complete paginated census and
 publication/workflow/attempt equality are required, including reobservation
@@ -512,8 +514,8 @@ cancelled checks in the failed identity set. The log header's additive
 `nonExecution` witnesses describe omitted jobs, never passing checks. Old headers
 remain readable without rewriting or retroactive non-execution proof.
 
-When every non-success job is proved never-executed and all owning workflows
-are complete, `checks()` shares ISS-223's two whole-observation retries and
+When a required check is non-pass, every non-success job is proved never-executed
+and all owning workflows are complete, `checks()` shares ISS-223's two whole-observation retries and
 one- and two-second waits with transport failures. Startup waits remain separate.
 Exhaustion retains complete metadata in `hosted-non-execution-<digest>.json` and stops as
 `hosted-check-never-executed`; it requests no logs, corrective author or rerun,
@@ -548,7 +550,9 @@ parking or spending another attempt; old unattributed logs remain unchanged.
 Same-selection lifecycle status changes keep ordinary observation pending when
 either validated workflow snapshot is non-completed; immutable workflow/run/attempt
 identity and publication/job validation still apply. Terminal non-success retains
-its existing handling, with no extra polling or retry allowance (ISS-188).
+its existing classification (ISS-188). Under ISS-230, a pending workflow snapshot
+defers failure-log acquisition to the next ordinary observation; this adds no
+polling or retry allowance.
 When the current publication's workflow runs are absent, the checks adapter
 waits ten seconds and reobserves, at most twelve times in that observation
 call (two minutes of waits, plus API request time). Foreign and advisory rows do not

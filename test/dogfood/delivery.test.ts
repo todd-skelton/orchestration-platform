@@ -1954,9 +1954,73 @@ it("ISS-230 SYNTHETIC dead-author evidence consumer reuses completed mixed evide
   });
 });
 
-it("ISS-230 SYNTHETIC shard-only failure cannot reuse evidence from a prior effective attempt", async () => {
+it.each(
+  [
+    { adapter: "self", required: ["linux", "windows", "macos"] },
+    { adapter: "Chase Sets", required: ["PR Required"] },
+  ].flatMap(({ adapter, required }) =>
+    (["failure", "executed cancellation", "never-executed cancellation"] as const).map(
+      (outcome) => ({ adapter, required, outcome }),
+    ),
+  ),
+)(
+  "ISS-230 SYNTHETIC required-green $adapter ignores advisory $outcome",
+  async ({ required, outcome }) => {
+    const waits: number[] = [];
+    const f = await aggregateFixture(async (ms) => {
+      waits.push(ms);
+    }, required);
+    f.evidence.runs[0]!.status = "completed";
+    f.evidence.checks = [
+      ...required.map((name, index) => f.check(name, "pass", 454 + index)),
+      f.check("PR Release Status", outcome === "failure" ? "fail" : "cancel", 460),
+    ];
+    f.evidence.jobMetadata[460] = {
+      runner_id: outcome === "never-executed cancellation" ? 0 : 42,
+      steps: outcome === "never-executed cancellation" ? [] : [{ name: "SYNTHETIC step" }],
+      started_at: "2026-10-05T20:00:25Z",
+      completed_at: "2026-10-05T20:15:26Z",
+    };
+    const q = await owningQueueFixture(f);
+    await expect(queueStep(q.queue, q.adapter)).resolves.toMatchObject({ status: "complete" });
+    const bytes = await readFile(q.path, "utf8");
+    expect(JSON.parse(bytes)).toMatchObject({
+      phase: "complete",
+      candidateAttempt: 3,
+      retries: 1,
+      history: q.history,
+      authorFailures: { count: 2, ids: ["participant-0", "participant-2"] },
+    });
+    expect(q.workers()).toBe(0);
+    expect(waits).toEqual([]);
+    expect(
+      f.requests.filter((args) => args.includes("--log") || args.includes("--log-failed")),
+    ).toEqual([]);
+    expect(
+      (await readdir(f.config.stateDirectory)).filter(
+        (name) => name === "hosted-failure.log" || name.startsWith("hosted-non-execution-"),
+      ),
+    ).toEqual([]);
+    expect(
+      JSON.parse(await readFile(resolve(f.config.stateDirectory, "hosted-checks.json"), "utf8")),
+    ).toEqual({
+      head,
+      checks: f.evidence.checks.filter((check) => required.includes(check.name)),
+    });
+    expect(f.calls.filter((call) => call === "merge")).toHaveLength(1);
+    const requests = [...f.requests];
+    const calls = [...f.calls];
+    await expect(queueStep(q.queue, q.adapter)).resolves.toMatchObject({ status: "complete" });
+    expect(f.requests).toEqual(requests);
+    expect(f.calls).toEqual(calls);
+    expect(await readFile(q.path, "utf8")).toBe(bytes);
+  },
+);
+
+it("ISS-230 SYNTHETIC shard failure beside required cancellation cannot reuse evidence from a prior effective attempt", async () => {
   const f = await nonExecutionFixture();
-  for (const check of f.evidence.checks) if (check.name !== "refresh") check.bucket = "pass";
+  for (const check of f.evidence.checks)
+    if (check.name !== "refresh" && check.name !== "macos") check.bucket = "pass";
   await expect(deliveryStep(f.config, f.adapter, f.policy)).resolves.toMatchObject({
     status: "failed",
     findings: [{ file: "refresh" }],
@@ -1965,12 +2029,14 @@ it("ISS-230 SYNTHETIC shard-only failure cannot reuse evidence from a prior effe
   const bytes = await readFile(path, "utf8");
   expect(await hostedFailureEvidence(f.config, f.adapter, f.publication)).toBe(path);
   f.evidence.runs[0]!.run_attempt = 2;
-  f.evidence.checks.find((check) => check.name === "refresh")!.actions = {
-    run: 123,
-    attempt: 2,
-    job: 457,
-    workflow: 7,
-  };
+  for (const check of f.evidence.checks)
+    if (check.bucket !== "pass")
+      check.actions = {
+        run: 123,
+        attempt: 2,
+        job: Number(check.link.split("/").at(-1)),
+        workflow: 7,
+      };
   await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toMatchObject({
     reason: "hosted-observation-unavailable",
   });

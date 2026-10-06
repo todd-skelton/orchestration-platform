@@ -104,3 +104,56 @@ At the unchanged base HEAD with this implementation in the working tree:
 The optional/platform skips above are suite-reported skips, not evidence of
 execution. No timeout, workflow, test selection or verifier configuration was
 changed to obtain the full-suite result.
+
+## Required-check compatibility correction
+
+The corrective author read the predecessor's author/reviewer attempts, terminals
+and captured traces before editing. The independent review at
+`8336da999e2c02a3210ff87bf9fec9cd2732ae76` rejected the use of advisory jobs
+to fail or stop delivery when every required check passed. That HEAD remains
+unchanged during this correction; the delivery main base remains
+`9feb892a265e787b71c6c7cdbd9769148b3e562f`.
+
+New controls use the real GitHub delivery adapter, delivery and owning queue:
+
+```sh
+pnpm exec vitest run test/dogfood/delivery.test.ts -t 'ISS-230 SYNTHETIC required-green'
+```
+
+With production code unchanged at the corrective base, exit **1**, all six
+controls failed. Both the self three-check set and Chase Sets' `PR Required`
+set wrongly returned `advancing-attempt` for advisory failure and executed
+cancellation, and threw `hosted-check-never-executed` for advisory non-execution.
+Each test is named `ISS-230 SYNTHETIC required-green <adapter> ignores advisory
+<outcome>`. The expected result is completion through merge, unchanged attempt,
+retry and participant accounting, no worker or log request, no non-execution
+stop evidence, and inert completed replay.
+
+The correction requires a non-pass required check before consulting the full
+census for either failure or the bounded non-execution stop. The stale-evidence
+control now retains a required macOS cancellation beside the executed shard
+failure and advances both non-pass jobs to the new attempt, isolating evidence
+reuse from the separate old-cancellation refusal. Documentation records the
+required-check boundary and the existing pending-snapshot deferral of log
+acquisition; no additional observation or retry allowance was added.
+
+```sh
+pnpm exec vitest run test/dogfood/delivery.test.ts -t 'ISS-230|ISS-188 SYNTHETIC status progress'
+```
+
+Exit **0**, **34 selected tests passed**, including all six new controls and
+the mixed-run, full-census, all-never-executed, shared-retry and stale-evidence
+controls. Raw red/green output is retained in the corrective author runtime's
+`author-temp/iss230-correction-red.log` and
+`author-temp/iss230-correction-focused.log`.
+
+Final corrective verification at the same unchanged HEAD:
+
+- `pnpm test --reporter=verbose`: exit **0**, all **30 files passed**;
+  **2109 passed, 12 skipped**, 1310.99 seconds. Source and tests stayed unchanged
+  throughout the full run. Raw output is retained in the corrective runtime's
+  `author-temp/iss230-correction-full-suite.log`.
+- `pnpm typecheck`, `pnpm format:check`, `pnpm planning:check`: exit **0**.
+
+The skips remain suite-reported non-execution. These local results supply no
+independent review, hosted-green, installation or preserved-run recovery authority.
