@@ -59,6 +59,9 @@ import * as self from "../../adapters/self.mjs";
 import { candidatePlanningBase } from "../../scripts/planning/candidate-board.mjs";
 import { repositoryDeliveryPolicy } from "../../scripts/dogfood/repository-adapter.mjs";
 import { isItemStopReason } from "../../scripts/dogfood/supervision.js";
+import { installIss221Timing, iss221Phase } from "./fixtures/iss221-timing.js";
+
+await installIss221Timing();
 
 vi.mock("../../scripts/planning/board-check.mjs", async (original) => ({
   ...(await original<object>()),
@@ -70,6 +73,7 @@ const exec = promisify(execFile);
 const gateAuthority = "https://github.com/fixture/repository/issues/494#issuecomment-5687186310";
 const roots: string[] = [];
 afterEach(async () => {
+  iss221Phase("cleanup");
   await Promise.all(
     roots
       .splice(0)
@@ -1911,7 +1915,10 @@ it("does not renew a reserved recovery when the authorization changes", async ()
 it.each(["pending", "published", "wrong-remote", "lease-moved"])(
   "reconciles %s publication before saved-stop recovery and preserves the same forward lease",
   async (mode) => {
+    iss221Phase("body");
+    iss221Phase("setup");
     const f = await fixture();
+    iss221Phase("lifecycle");
     const { remoteHead, preserved } = await f.enablePublicationRefresh();
     await writeFile(resolve(f.sourceTree, "feature.txt"), "published correction\n");
     const stoppedHead = await f.commit(f.sourceTree);
@@ -1942,6 +1949,7 @@ it.each(["pending", "published", "wrong-remote", "lease-moved"])(
       };
     }
     const run = f.deliver;
+    iss221Phase("re-entry");
     if (mode === "wrong-remote" || mode === "lease-moved") {
       await expect(run()).rejects.toThrow("publication-state-unknown");
       expect(f.publications()).toBe(1);
@@ -1960,13 +1968,17 @@ it.each(["pending", "published", "wrong-remote", "lease-moved"])(
       expect(f.commands.some((args) => args[0] === "rebase")).toBe(false);
     }
     expect(await f.git(preserved, ["rev-parse", "HEAD"])).toBe(f.head);
+    iss221Phase("assertion");
     expect(await readFile(resolve(f.sourceState, "publication-intent.json"))).toEqual(intent);
     expect(await readFile(resolve(f.sourceState, "gate-stop.json"), "utf8")).toBe(stopped);
   },
 );
 
 it("requires new exact-head host evidence after main refresh while reviewing the full implementation", async () => {
+  iss221Phase("body");
+  iss221Phase("setup");
   const f = await fixture();
+  iss221Phase("lifecycle");
   const descriptor = evidenceDescriptor(resolve(f.root, "operator-evidence"));
   f.source.correctionPaths = ["feature.txt"];
   f.source.preReviewEvidence = descriptor;
@@ -1982,6 +1994,7 @@ it("requires new exact-head host evidence after main refresh while reviewing the
   expect(candidate.head).not.toBe(f.head);
   expect(candidate.changed).toContain("planning/drafts/ISS-100.md");
   await writeEvidence(descriptor, f.source.repository, candidate.head);
+  iss221Phase("re-entry");
   f.setReviewRunning(true);
   await expect(f.deliver()).resolves.toMatchObject({ status: "observing-reviewer" });
   await Promise.all(Object.values(descriptor.bundle).map((path) => rm(path)));
@@ -1992,6 +2005,7 @@ it("requires new exact-head host evidence after main refresh while reviewing the
   f.setReviewRunning(false);
   await f.deliver();
   expect(f.gateHeads.every((head) => head === candidate.head)).toBe(true);
+  iss221Phase("assertion");
   expect(f.gateHeads.length).toBeGreaterThan(0);
 });
 

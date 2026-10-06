@@ -1,0 +1,217 @@
+diff --git a/test/dogfood/integration-continuation.test.ts b/test/dogfood/integration-continuation.test.ts
+index da4a8d0..bca4ca1 100644
+--- a/test/dogfood/integration-continuation.test.ts
++++ b/test/dogfood/integration-continuation.test.ts
+@@ -48,11 +48,15 @@ import {
+   type SupervisionAdapter,
+ } from "../../scripts/dogfood/supervision.js";
+ import { snapshot } from "./fixtures/source-failure.js";
++import { installIss221Timing, iss221Phase } from "./fixtures/iss221-timing.js";
++
++await installIss221Timing();
+ 
+ const execute = promisify(execFile);
+ let fixtureGit: Promise<string> | undefined;
+ const roots: string[] = [];
+ afterEach(async () => {
++  iss221Phase("cleanup");
+   await Promise.all(
+     roots
+       .splice(0)
+@@ -2443,6 +2447,8 @@ it.each([
+     ])
+     .map((mode) => ({ mode, spent: true })),
+ ])("runs native integration delivery: $mode, spent=$spent", async ({ mode, spent }) => {
++  iss221Phase("body");
++  iss221Phase("setup");
+   const shape: Shape =
+     mode === "clean"
+       ? "clean"
+@@ -2468,6 +2474,7 @@ it.each([
+       f.later.push(participant(f.later.length + 1, "ISS-105:1", "refresh", "reviewer", "passed"));
+   }
+   const q = await f.compose();
++  iss221Phase("lifecycle");
+   expect(await f.compose()).toEqual(q);
+   const item = q.items[0]!;
+   const launches: string[] = [];
+@@ -3023,6 +3030,7 @@ it.each([
+     );
+   }
+   if (mode === "published-reentry" || allowanceMode) {
++    iss221Phase("re-entry");
+     const intermediate = await refresh();
+     expect(intermediate.previousReview).toBe(f.reviewId);
+     expect(
+@@ -3077,6 +3085,7 @@ it.each([
+     // Change one binding at a time after the valid real-path re-entry. Each refusal
+     // must precede another observation/mutation, with every other prerequisite intact.
+     const refusal = "unreviewed-delivery-source";
++    iss221Phase("assertion");
+     const faults: {
+       label: string;
+       directory: string;
+diff --git a/test/dogfood/queue.test.ts b/test/dogfood/queue.test.ts
+index 61801de..6f8a832 100644
+--- a/test/dogfood/queue.test.ts
++++ b/test/dogfood/queue.test.ts
+@@ -67,6 +67,9 @@ import {
+ } from "../../scripts/dogfood/routing.mjs";
+ import { sourceFailureFixture, repairFailureFixture, snapshot } from "./fixtures/source-failure.js";
+ import { startCaseTiming, type CaseTiming } from "./fixtures/iss212-timing.js";
++import { installIss221Timing, iss221Phase } from "./fixtures/iss221-timing.js";
++
++await installIss221Timing();
+ 
+ let timing: CaseTiming | undefined;
+ 
+@@ -354,8 +357,11 @@ async function unparkedRepairFailure(intervening = false, capture?: CaseTiming)
+ }
+ 
+ it("unparks only attempt 4 with current guidance, full diff, history and fresh review", async () => {
++  iss221Phase("body");
++  iss221Phase("setup");
+   timing = await startCaseTiming("unpark");
+   const { f, next } = await unparkedRepairFailure(true, timing);
++  iss221Phase("lifecycle");
+   timing?.phase("proof");
+   const prior = await snapshot(f.runState);
+   const trees = await snapshot(f.loop.worktreeRoot);
+@@ -446,6 +452,7 @@ it("unparks only attempt 4 with current guidance, full diff, history and fresh r
+   const pinPath = resolve(item.source.stateDirectory, "config.json");
+   const pin = await readFile(pinPath, "utf8");
+   const resumed = await f.compose((await f.advance())!);
++  iss221Phase("re-entry");
+   await queueStep(resumed.config, resumed.adapter);
+   expect(launches).toEqual(["author"]);
+   const context = f.policy.issueContext;
+@@ -465,6 +472,7 @@ it("unparks only attempt 4 with current guidance, full diff, history and fresh r
+   });
+   expect(launches).toEqual(["author", "reviewer"]);
+   timing?.phase("proof");
++  iss221Phase("assertion");
+   for (const [file, bytes] of prior)
+     if (file !== path) expect(await readFile(file, "utf8"), file).toBe(bytes);
+   for (const [file, bytes] of trees) expect(await readFile(file, "utf8"), file).toBe(bytes);
+@@ -1723,12 +1731,15 @@ describe.each([
+     let fixture: AsyncGenerator<void, void>;
+     beforeEach(async () => {
+       fixture = prepareStructureCorrection(refresh, afterMirror, mode, true);
++      iss221Phase("hook-1");
+       expect((await fixture.next()).done).toBe(false);
+     });
+     beforeEach(async () => {
++      iss221Phase("hook-2");
+       expect((await fixture.next()).done).toBe(false);
+     });
+     it("retains one native lineage through admission, review, attribution and terminal replay", async () => {
++      iss221Phase("body");
+       expect((await fixture.next()).done).toBe(true);
+     });
+   },
+@@ -2100,6 +2111,7 @@ See docs/architecture/bounded-context-structure.md#rules-the-structure-gate-enfo
+   }
+   yield;
+   const advanceMain = async () => {
++    iss221Phase("lifecycle");
+     const updater = resolve(f.repository, "..", "updater");
+     await execute(f.gitExecutable, ["clone", remote, updater]);
+     await writeFile(resolve(updater, "main.txt"), "synthetic later main\n");
+@@ -2275,6 +2287,7 @@ See docs/architecture/bounded-context-structure.md#rules-the-structure-gate-enfo
+   }
+   yield;
+   {
++    iss221Phase("re-entry");
+     const run = () => queueStep(q, adapter());
+     if (executorRecovery) {
+       const admitted = [
+@@ -2455,6 +2468,7 @@ See docs/architecture/bounded-context-structure.md#rules-the-structure-gate-enfo
+       "correction-reviewer",
+     ]);
+     expect(launches.at(-1)!.prompt).toContain("Independent DELTA");
++    iss221Phase("assertion");
+     const result = JSON.parse(
+       await readFile(resolve(correctionRoot, "gate-correction-result.json"), "utf8"),
+     );
+@@ -2554,6 +2568,7 @@ async function loopFixture(
+ 
+ afterEach(async () => {
+   vi.unstubAllEnvs();
++  iss221Phase("cleanup");
+   timing?.phase("cleanup");
+   timing = undefined;
+   await Promise.all(
+diff --git a/test/dogfood/refresh.test.ts b/test/dogfood/refresh.test.ts
+index d0aa766..37405b7 100644
+--- a/test/dogfood/refresh.test.ts
++++ b/test/dogfood/refresh.test.ts
+@@ -59,6 +59,9 @@ import * as self from "../../adapters/self.mjs";
+ import { candidatePlanningBase } from "../../scripts/planning/candidate-board.mjs";
+ import { repositoryDeliveryPolicy } from "../../scripts/dogfood/repository-adapter.mjs";
+ import { isItemStopReason } from "../../scripts/dogfood/supervision.js";
++import { installIss221Timing, iss221Phase } from "./fixtures/iss221-timing.js";
++
++await installIss221Timing();
+ 
+ vi.mock("../../scripts/planning/board-check.mjs", async (original) => ({
+   ...(await original<object>()),
+@@ -70,6 +73,7 @@ const exec = promisify(execFile);
+ const gateAuthority = "https://github.com/fixture/repository/issues/494#issuecomment-5687186310";
+ const roots: string[] = [];
+ afterEach(async () => {
++  iss221Phase("cleanup");
+   await Promise.all(
+     roots
+       .splice(0)
+@@ -1911,7 +1915,10 @@ it("does not renew a reserved recovery when the authorization changes", async ()
+ it.each(["pending", "published", "wrong-remote", "lease-moved"])(
+   "reconciles %s publication before saved-stop recovery and preserves the same forward lease",
+   async (mode) => {
++    iss221Phase("body");
++    iss221Phase("setup");
+     const f = await fixture();
++    iss221Phase("lifecycle");
+     const { remoteHead, preserved } = await f.enablePublicationRefresh();
+     await writeFile(resolve(f.sourceTree, "feature.txt"), "published correction\n");
+     const stoppedHead = await f.commit(f.sourceTree);
+@@ -1942,6 +1949,7 @@ it.each(["pending", "published", "wrong-remote", "lease-moved"])(
+       };
+     }
+     const run = f.deliver;
++    iss221Phase("re-entry");
+     if (mode === "wrong-remote" || mode === "lease-moved") {
+       await expect(run()).rejects.toThrow("publication-state-unknown");
+       expect(f.publications()).toBe(1);
+@@ -1960,13 +1968,17 @@ it.each(["pending", "published", "wrong-remote", "lease-moved"])(
+       expect(f.commands.some((args) => args[0] === "rebase")).toBe(false);
+     }
+     expect(await f.git(preserved, ["rev-parse", "HEAD"])).toBe(f.head);
++    iss221Phase("assertion");
+     expect(await readFile(resolve(f.sourceState, "publication-intent.json"))).toEqual(intent);
+     expect(await readFile(resolve(f.sourceState, "gate-stop.json"), "utf8")).toBe(stopped);
+   },
+ );
+ 
+ it("requires new exact-head host evidence after main refresh while reviewing the full implementation", async () => {
++  iss221Phase("body");
++  iss221Phase("setup");
+   const f = await fixture();
++  iss221Phase("lifecycle");
+   const descriptor = evidenceDescriptor(resolve(f.root, "operator-evidence"));
+   f.source.correctionPaths = ["feature.txt"];
+   f.source.preReviewEvidence = descriptor;
+@@ -1982,6 +1994,7 @@ it("requires new exact-head host evidence after main refresh while reviewing the
+   expect(candidate.head).not.toBe(f.head);
+   expect(candidate.changed).toContain("planning/drafts/ISS-100.md");
+   await writeEvidence(descriptor, f.source.repository, candidate.head);
++  iss221Phase("re-entry");
+   f.setReviewRunning(true);
+   await expect(f.deliver()).resolves.toMatchObject({ status: "observing-reviewer" });
+   await Promise.all(Object.values(descriptor.bundle).map((path) => rm(path)));
+@@ -1992,5 +2005,6 @@ it("requires new exact-head host evidence after main refresh while reviewing the
+   f.setReviewRunning(false);
+   await f.deliver();
+   expect(f.gateHeads.every((head) => head === candidate.head)).toBe(true);
++  iss221Phase("assertion");
+   expect(f.gateHeads.length).toBeGreaterThan(0);
+ });
