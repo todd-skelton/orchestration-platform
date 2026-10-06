@@ -918,6 +918,14 @@
       "summary": "Reach the granted retained stop through earlier same-key history without weakening verification-only admission or renewing attempts.",
       "milestone": "M1",
       "blockedBy": []
+    },
+    {
+      "key": "ISS-234",
+      "file": "planning/drafts/ISS-234.md",
+      "title": "Refresh verification-only delivery again when main moves after a passing delta review",
+      "summary": "Reuse native current-main refresh after verification PASS, including retained movement stops, without renewing the grant, reservation or implementation attempt.",
+      "milestone": "M1",
+      "blockedBy": ["ISS-233"]
     }
   ]
 }
