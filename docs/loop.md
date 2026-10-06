@@ -68,6 +68,9 @@ The recorded legacy-parking backlog is `exit-receipt-timeout` (retry; ISS-222),
 `launcher-failed` (retry; ISS-162), `reviewer-malformed` (retry; restart recovery),
 prefix `hosted-check-log-unavailable:` (retry), and `deploy-not-verified` (wait).
 These still park until separately reviewed work resolves each entry.
+ISS-230 narrows only the hosted-log backlog: proved never-executed cancellations
+no longer emit that prefix. `hosted-check-never-executed` is retry, non-parking;
+executed or unproved missing logs still use the parking prefix.
 ISS-225 changes no park, retry, wait or stop behavior; classes authorize no
 automatic recovery and change no saved records or posted bodies.
 
@@ -496,6 +499,26 @@ never green. Corrective author and reviewer launches get
 the absolute evidence path rather than raw logs in prompts or terminal reports.
 They inspect underlying diagnostics independently; this supplies neither a
 verdict nor a waiver, and all ordinary delivery gates remain mandatory (ISS-141).
+
+ISS-230 partitions the complete attributed effective-job census before requiring
+logs. Only a current-attempt completed `cancelled` job with an explicit
+`runner_id` of zero or null and an actual empty `steps` array proves non-execution;
+a populated job-level `started_at` is allowed. Complete paginated census and
+publication/workflow/attempt equality are required, including reobservation
+after metadata and log acquisition. Prior-attempt successes retain ISS-185's
+failed-only rerun treatment; prior cancellations gain no exemption. Mixed runs
+retain every executed failure, including non-required shards, and keep required
+cancelled checks in the failed identity set. The log header's additive
+`nonExecution` witnesses describe omitted jobs, never passing checks. Old headers
+remain readable without rewriting or retroactive non-execution proof.
+
+When every non-success job is proved never-executed and all owning workflows
+are complete, `checks()` shares ISS-223's two whole-observation retries and
+one- and two-second waits with transport failures. Startup waits remain separate.
+Exhaustion retains complete metadata in `hosted-non-execution-<digest>.json` and stops as
+`hosted-check-never-executed`; it requests no logs, corrective author or rerun,
+and charges no implementation attempt. Pending workflows remain observations.
+Executed missing/empty logs still park as `hosted-check-log-unavailable:`.
 
 For a receiptless author, the observer validates the trace identity and waits
 the existing receipt window.
@@ -1760,6 +1783,30 @@ delivery obligations remain unchanged. A new stop cannot spend a second recovery
 Independent exact-head review, executed three-OS bootstrap, quiescent host
 installation and a separately authorized, contemporaneously evidenced host grant
 and same-run start remain required; this capability grants none of those actions.
+
+ISS-230 adds `hostedNonExecution` to the same four-field grant, mutually exclusive
+with `executorRepair`. Its closed fields are positive safe integers `cycle`,
+`stop`, `actionsRun`, `runAttempt`, `job`, and a lowercase 40-hex
+`stoppedExecutorHead`. The host's grant comment must bind that stop-time witness
+to the retained stop, candidate, publication, job and invocation evidence.
+Admission uses the validated executor repository: the historical setup pin
+must precede or equal the witness, and the repair must be included in the
+running executor and current executor main, but absent from the witness.
+Setup or delivery provenance alone cannot supply the witness.
+
+Only the exact retained hosted-log item stop with its reconciled completion,
+open issue, unchanged publication and freshly proved cancelled job is admitted.
+Supervision resumes that saved cycle; ungranted completed stops remain inert.
+The existing `gate-stop-continuation.json` slot retains the grant, stop, receipt,
+authority and publication observation without creating a gate failure or a new
+delivery directory. Its next step observes the existing publication before any
+refresh, worker or publication. Executed failures return to ordinary queue
+attempt advancement; they do not enter the local-gate continuation's terminal
+hosted-failure branch. Replay retains the reservation and completed log evidence.
+Old records, histories, attempts and spent allowances remain unchanged. A changed
+grant or later unrelated stop cannot renew it. Host installation, the specific
+grant and a same-run start require separate authority; shipping this observer
+repair supplies no ISS-221 readiness, recount, refund or recovery execution.
 
 ## Milestones
 

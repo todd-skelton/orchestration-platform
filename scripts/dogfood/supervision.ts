@@ -125,7 +125,42 @@ async function record(directory: string, name: string, value: unknown) {
   }
 }
 
-async function completedItemStop(directory: string, cycle: number, selection: SelectedIssue) {
+async function hostedStopContinuation(
+  directory: string,
+  selection: SelectedIssue,
+  stop: number,
+  intent: any,
+  grant?: LoopConfig["gateStopAuthorization"],
+) {
+  if (
+    !grant?.hostedNonExecution ||
+    grant.hostedNonExecution.cycle !== selection.cycle ||
+    grant.hostedNonExecution.stop !== stop ||
+    !intent.reason.startsWith("hosted-check-log-unavailable:")
+  )
+    return false;
+  const attempt = await optionalRecord(resolve(grant.stateDirectory, ".."), "attempt");
+  const reservation = await optionalRecord(grant.stateDirectory, "gate-stop-continuation");
+  return (
+    attempt !== ABSENT &&
+    attempt.run === basename(directory) &&
+    attempt.stateDirectory === grant.stateDirectory &&
+    attempt.item?.split(":")[0] === selection.key &&
+    Number(attempt.issue?.split("/").at(-1)) === selection.number &&
+    attempt.candidateAttempt === intent.attempts &&
+    (attempt.phase === "delivery" ||
+      (attempt.phase === "failed" &&
+        reservation !== ABSENT &&
+        JSON.stringify(reservation.authorization) === JSON.stringify(grant)))
+  );
+}
+
+async function completedItemStop(
+  directory: string,
+  cycle: number,
+  selection: SelectedIssue,
+  grant?: LoopConfig["gateStopAuthorization"],
+) {
   for (let stop = 1; ; stop += 1) {
     const intent = await optionalRecord(directory, `cycle-${cycle}-stop-${stop}`);
     if (intent === ABSENT) return undefined;
@@ -140,6 +175,7 @@ async function completedItemStop(directory: string, cycle: number, selection: Se
     )
       throw new QueueBlocked(`malformed-supervision-record:cycle-${cycle}-stop-${stop}-complete`);
     // Old author-failed completions were run notes, not parking receipts.
+    if (await hostedStopContinuation(directory, selection, stop, intent, grant)) continue;
     if (intent.reason !== "author-failed" && isItemStopReason(intent.reason))
       return completed.history as QueueParticipant[];
   }
@@ -480,7 +516,12 @@ export async function nextCycle(
         );
         throw error;
       }
-      const stoppedHistory = await completedItemStop(directory, cycle, selected);
+      const stoppedHistory = await completedItemStop(
+        directory,
+        cycle,
+        selected,
+        config.gateStopAuthorization,
+      );
       if (stoppedHistory) {
         declaration = undefined;
         validateHistory(stoppedHistory, config.nativeLaunchCeiling);
@@ -991,6 +1032,11 @@ export async function reconcilePendingStop(
     // ISS-157: finish the old learning note, then let native delivery admit the grant.
     // Completed notes already follow that path. The saved stop itself remains untouched.
     const grant = config.gateStopAuthorization;
+    if (
+      scope === "item" &&
+      (await hostedStopContinuation(directory, cycle.selection, stop, intent, grant))
+    )
+      return undefined;
     if (
       scope === "run" &&
       grant &&

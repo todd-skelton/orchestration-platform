@@ -99,6 +99,29 @@ export interface CheckEvidence {
   bucket: "pass" | "pending" | "fail" | "cancel" | "skipping";
   link: string;
   actions?: { run: number; attempt: number; job: number; workflow: number };
+  /** Complete Actions job response, retained only for proved non-execution. */
+  nonExecution?: Record<string, unknown>;
+}
+
+export function provesNonExecution(check: CheckEvidence, head: string): boolean {
+  const job = check.nonExecution;
+  return (
+    !!check.actions &&
+    !!job &&
+    check.bucket === "cancel" &&
+    job.id === check.actions.job &&
+    job.run_id === check.actions.run &&
+    job.run_attempt === check.actions.attempt &&
+    job.head_sha === head &&
+    job.name === check.name &&
+    job.html_url === check.link &&
+    job.status === "completed" &&
+    job.conclusion === "cancelled" &&
+    Object.hasOwn(job, "runner_id") &&
+    (job.runner_id === 0 || job.runner_id === null) &&
+    Array.isArray(job.steps) &&
+    job.steps.length === 0
+  );
 }
 
 export type DeliveryResult =
@@ -199,6 +222,7 @@ export interface DeliveryAdapter {
     head: string;
     checks: CheckEvidence[];
     workflowPending?: boolean;
+    jobs?: CheckEvidence[];
   }>;
   /** Returns null while the check's run is not completed. */
   failedCheckLog?(
@@ -835,17 +859,39 @@ export async function hostedFailureEvidence(
   adapter: DeliveryAdapter,
   publication: PublicationEvidence,
   checks?: CheckEvidence[],
+  jobs?: CheckEvidence[],
 ): Promise<string | null> {
   const path = resolve(config.stateDirectory, "hosted-failure.log");
   try {
-    const saved = JSON.parse((await readFile(path, "utf8")).split("\n")[0]!);
+    const bytes = await readFile(path, "utf8");
+    const saved = JSON.parse(bytes.split("\n")[0]!);
     demand(
       saved.repository === config.repository &&
         saved.head === config.candidateHead &&
         JSON.stringify(saved.publication) === JSON.stringify(publication) &&
         Array.isArray(saved.checks) &&
-        saved.checks.length > 0 &&
+        (saved.checks.length > 0 ||
+          (Array.isArray(saved.jobs) &&
+            saved.jobs.some(
+              (job: CheckEvidence) => job.bucket === "fail" || job.bucket === "cancel",
+            ))) &&
         saved.checks.every((check: CheckEvidence) => check.actions) &&
+        (!jobs || !saved.jobs || JSON.stringify(saved.jobs) === JSON.stringify(jobs)) &&
+        bytes.includes("\n") &&
+        bytes.slice(bytes.indexOf("\n") + 1).trim().length > 0 &&
+        (saved.nonExecution === undefined ||
+          (Array.isArray(saved.jobs) &&
+            Array.isArray(saved.nonExecution) &&
+            saved.nonExecution.length > 0 &&
+            JSON.stringify(saved.nonExecution) ===
+              JSON.stringify(
+                saved.jobs
+                  .filter((check: CheckEvidence) => provesNonExecution(check, config.candidateHead))
+                  .map((check: CheckEvidence) => ({
+                    actions: check.actions,
+                    witness: check.nonExecution,
+                  })),
+              ))) &&
         (!checks ||
           JSON.stringify(saved.checks) ===
             JSON.stringify(checks.filter((check) => ["fail", "cancel"].includes(check.bucket)))),
@@ -859,16 +905,25 @@ export async function hostedFailureEvidence(
         "Retained hosted-failure.log cannot establish this publication's selected Actions failure; preserve it and reobserve before recovery.",
       );
   }
+  let workflowPending = false;
   if (!checks) {
     const observed = await adapter.checks(config, publication);
     demand(observed.head === config.candidateHead, "hosted-head-drift");
+    workflowPending = !!observed.workflowPending;
     checks = observed.checks;
+    jobs = observed.jobs;
   }
   const failed = checks.filter((check) => ["fail", "cancel"].includes(check.bucket));
-  demand(failed.length > 0, "hosted-failure-evidence-unavailable");
+  const failedJobs = (jobs ?? checks).filter((check) => ["fail", "cancel"].includes(check.bucket));
+  demand(failedJobs.length > 0, "hosted-failure-evidence-unavailable");
+  if (workflowPending) return null;
+  const nonExecution = failedJobs
+    .filter((check) => provesNonExecution(check, config.candidateHead))
+    .map((check) => ({ actions: check.actions, witness: check.nonExecution }));
   const logs: string[] = [];
   const fetched = new Set<string>();
-  for (const check of failed) {
+  for (const check of failedJobs) {
+    if (provesNonExecution(check, config.candidateHead)) continue;
     const target = check.bucket === "cancel" ? check.link : check.link.split("/job/")[0]!;
     if (fetched.has(target)) continue;
     fetched.add(target);
@@ -878,9 +933,20 @@ export async function hostedFailureEvidence(
     demand(log.trim().length > 0, `hosted-check-log-unavailable:${check.name}`);
     logs.push(`\nCheck: ${JSON.stringify(check)}\n${log}`);
   }
+  demand(logs.length > 0, "hosted-failure-evidence-unavailable");
+  if (jobs) {
+    const after = await adapter.checks(config, publication);
+    demand(
+      after.head === config.candidateHead &&
+        !after.workflowPending &&
+        JSON.stringify(after.checks) === JSON.stringify(checks) &&
+        JSON.stringify(after.jobs) === JSON.stringify(jobs),
+      "hosted-observation-unavailable",
+    );
+  }
   await writeFile(
     `${path}.tmp`,
-    `${JSON.stringify({ repository: config.repository, run: config.run, issue: config.issue, head: config.candidateHead, publication, checks: failed })}\n${logs.join("\n")}`,
+    `${JSON.stringify({ repository: config.repository, run: config.run, issue: config.issue, head: config.candidateHead, publication, checks: failed, ...(jobs ? { jobs } : {}), ...(nonExecution.length ? { nonExecution } : {}) })}\n${logs.join("\n")}`,
     { flush: true },
   );
   await rename(`${path}.tmp`, path);
@@ -1305,9 +1371,19 @@ export async function deliveryStep(
       observed.workflowPending === true,
     );
     const awaitingRequired = checks.length < config.requiredChecks.length;
-    const failed = checks.find((check) => ["fail", "cancel"].includes(check.bucket));
-    if (failed) {
-      const path = await hostedFailureEvidence(config, adapter, publication, observed.checks);
+    const failures = (observed.jobs ?? checks).filter((check) =>
+      ["fail", "cancel"].includes(check.bucket),
+    );
+    const failed =
+      failures.find((check) => !provesNonExecution(check, config.candidateHead)) ?? failures[0];
+    if (failed && !observed.workflowPending) {
+      const path = await hostedFailureEvidence(
+        config,
+        adapter,
+        publication,
+        observed.checks,
+        observed.jobs,
+      );
       if (path !== null)
         return failedResult(
           config.candidateHead,

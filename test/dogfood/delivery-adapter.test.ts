@@ -299,7 +299,15 @@ function transportObservation(
       actions: { run: 123, attempt: 1, job: 456 + index, workflow: 7 },
     })),
   };
-  return { current, publication, requests, gh, pause, adapter, expected };
+  return {
+    current,
+    publication,
+    requests,
+    gh,
+    pause,
+    adapter,
+    expected: { ...expected, jobs: expected.checks },
+  };
 }
 
 const stoppedPost =
