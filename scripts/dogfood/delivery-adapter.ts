@@ -1,6 +1,6 @@
 import { execFile, spawn } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, open, readFile, realpath, writeFile } from "node:fs/promises";
+import { mkdir, open, readFile, realpath, rename, writeFile } from "node:fs/promises";
 import { isAbsolute, resolve } from "node:path";
 import { promisify } from "node:util";
 import { RepairBlocked, parseReview } from "./repair-policy.mjs";
@@ -11,6 +11,7 @@ import { resolvePnpmLauncher } from "../pnpm-launcher.mjs";
 import { GithubCommandFailure } from "./github-command-failure.ts";
 import {
   DeliveryBlocked,
+  provesNonExecution,
   type CheckEvidence,
   type CleanupPlan,
   type DeliveryAdapter,
@@ -423,6 +424,12 @@ async function publicationRuns(
   )
     throw new Error("malformed workflow observation");
   const workflows = new Map<number, any>();
+  const count = pages.reduce((sum, page) => sum + page.workflow_runs.length, 0);
+  const complete = pages.every(
+    (page) => Number.isSafeInteger(page.total_count) && page.total_count === count,
+  );
+  if (pages.some((page) => Object.hasOwn(page, "total_count")) && !complete)
+    throw new Error("incomplete workflow observation");
   const ids = new Set<number>();
   for (const run of pages.flatMap((page) => page.workflow_runs)) {
     if (!associatedRun(run, config, current)) continue;
@@ -434,16 +441,18 @@ async function publicationRuns(
     // run_number is GitHub's sequence within this workflow, not a global ID/date.
     if (!prior || prior.run_number < run.run_number) workflows.set(run.workflow_id, run);
   }
-  return workflows;
+  return { workflows, complete };
 }
 
 async function attributedChecks(
   commands: GithubDeliveryCommands,
   config: DeliveryConfig,
   current: PublicationEvidence,
+  revalidateNonExecution = true,
 ) {
-  const workflows = await publicationRuns(commands, config, current);
+  const { workflows, complete: completeRuns } = await publicationRuns(commands, config, current);
   const checks: CheckEvidence[] = [];
+  const effectiveJobs: CheckEvidence[] = [];
   let workflowPending = false;
   for (const run of workflows.values()) {
     workflowPending ||= run.status !== "completed";
@@ -460,6 +469,11 @@ async function attributedChecks(
     )
       throw new Error(`malformed workflow jobs: ${run.id}`);
     const jobs = jobPages.flatMap((page) => page.jobs);
+    const complete = jobPages.every(
+      (page) => Number.isSafeInteger(page.total_count) && page.total_count === jobs.length,
+    );
+    if (jobPages.some((page) => Object.hasOwn(page, "total_count")) && !complete)
+      throw new Error(`incomplete workflow jobs: ${run.id}`);
     const jobIds = new Set<number>();
     for (const job of jobs) {
       if (
@@ -504,18 +518,27 @@ async function attributedChecks(
             throw new Error(`unknown job conclusion: ${job.id}`);
         }
       } else throw new Error(`unknown job status: ${job.id}`);
-      if (config.requiredChecks.includes(job.name))
-        checks.push({
-          name: job.name,
-          bucket,
-          link: job.html_url,
-          actions: {
-            run: run.id,
-            attempt: run.run_attempt,
-            job: job.id,
-            workflow: run.workflow_id,
-          },
-        });
+      const check: CheckEvidence = {
+        name: job.name,
+        bucket,
+        link: job.html_url,
+        actions: {
+          run: run.id,
+          attempt: run.run_attempt,
+          job: job.id,
+          workflow: run.workflow_id,
+        },
+      };
+      // Metadata comes from this complete effective-job census, never log absence.
+      if (
+        completeRuns &&
+        complete &&
+        run.status === "completed" &&
+        provesNonExecution({ ...check, nonExecution: job }, current.head)
+      )
+        check.nonExecution = job;
+      effectiveJobs.push(check);
+      if (config.requiredChecks.includes(job.name)) checks.push(check);
     }
     // The latest-jobs endpoint supplies the effective set for failed-only reruns.
     // Never combine jobs from separate runs or manually fill gaps with old jobs.
@@ -528,18 +551,33 @@ async function attributedChecks(
           .sort((a, b) => a.workflow_id - b.workflow_id)
           .map((run) => [run.workflow_id, run.id, run.run_number, run.run_attempt, run.path]),
       );
-    if (signature(workflows) !== signature(after))
+    if (signature(workflows) !== signature(after.workflows) || completeRuns !== after.complete)
       throw new Error("applicable workflow changed during observation; reobserve checks");
     // ISS-188: lifecycle progress preserves attribution, but sampled green is
     // insufficient when either validated observation is still pending.
-    workflowPending ||= [...after.values()].some((run) => run.status !== "completed");
+    workflowPending ||= [...after.workflows.values()].some((run) => run.status !== "completed");
   }
   for (const name of config.requiredChecks) {
     const count = checks.filter((check) => check.name === name).length;
     if (count > 1 || (count === 0 && workflows.size > 0 && !workflowPending))
       throw new Error(`missing or duplicate current job: ${name}`);
   }
-  return { checks, workflowPending, startupInvisible: workflows.size === 0 };
+  const result = {
+    checks,
+    jobs: effectiveJobs,
+    workflowPending,
+    startupInvisible: workflows.size === 0,
+  };
+  if (revalidateNonExecution && !workflowPending && effectiveJobs.some((job) => job.nonExecution)) {
+    const after = await attributedChecks(commands, config, current, false);
+    if (
+      JSON.stringify(result.checks) !== JSON.stringify(after.checks) ||
+      JSON.stringify(result.jobs) !== JSON.stringify(after.jobs)
+    )
+      throw new Error("effective jobs changed during metadata acquisition");
+    result.workflowPending ||= after.workflowPending;
+  }
+  return result;
 }
 
 async function json(path: string, reason: string) {
@@ -1614,7 +1652,7 @@ export function githubDeliveryAdapter(
       for (;;) {
         try {
           const before = await readIdentity();
-          const { checks, workflowPending, startupInvisible } = await attributedChecks(
+          const { checks, jobs, workflowPending, startupInvisible } = await attributedChecks(
             commands,
             config,
             current,
@@ -1630,15 +1668,55 @@ export function githubDeliveryAdapter(
           }
           if (startupInvisible)
             throw new Error("current publication workflow absent after 12 startup waits");
+          const unsuccessful = jobs.filter((job) => job.bucket !== "pass");
+          if (
+            checks.some((check) => check.bucket !== "pass") &&
+            !workflowPending &&
+            unsuccessful.length > 0 &&
+            unsuccessful.every((job) => provesNonExecution(job, current.head))
+          ) {
+            if (transportRetries < 2) {
+              await pause(++transportRetries * 1000);
+              continue;
+            }
+            const capture = JSON.stringify({
+              repository: config.repository,
+              publication: current,
+              checks,
+              jobs,
+              nonExecution: unsuccessful.map((job) => ({
+                actions: job.actions,
+                witness: job.nonExecution,
+              })),
+            });
+            const path = resolve(
+              config.stateDirectory,
+              `hosted-non-execution-${createHash("sha256").update(capture).digest("hex")}.json`,
+            );
+            await writeFile(`${path}.tmp`, capture, { flush: true });
+            await rename(`${path}.tmp`, path);
+            throw new DeliveryBlocked(
+              "hosted-check-never-executed",
+              `${unsuccessful
+                .map((job) => `${job.actions!.run}:${job.actions!.attempt}/${job.actions!.job}`)
+                .join(", ")
+                .slice(0, 300)}; evidence ${path}`.slice(0, 500),
+            );
+          }
           return {
             head: before.headRefOid,
             checks,
+            jobs,
             ...(workflowPending ? { workflowPending } : {}),
           };
         } catch (error) {
           if (
             error instanceof DeliveryBlocked &&
-            ["published-candidate-conflict", "publication-state-unknown"].includes(error.reason)
+            [
+              "published-candidate-conflict",
+              "publication-state-unknown",
+              "hosted-check-never-executed",
+            ].includes(error.reason)
           )
             throw error;
           const classified = new GithubCommandFailure(error);
@@ -1665,7 +1743,11 @@ export function githubDeliveryAdapter(
         const selection = check.actions;
         const verify = async () => {
           const observed = await this.checks(config, current);
-          if (!observed.checks.some((row) => JSON.stringify(row) === JSON.stringify(check)))
+          if (
+            !(observed.jobs ?? observed.checks).some(
+              (row) => JSON.stringify(row) === JSON.stringify(check),
+            )
+          )
             throw new Error("selected failure changed; reobserve checks");
           const run = await commands.ghJson(config, [
             "api",

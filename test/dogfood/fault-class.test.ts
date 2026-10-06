@@ -15,6 +15,21 @@ import { isItemStopReason } from "../../scripts/dogfood/supervision.js";
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const fixture = resolve(root, "test/dogfood/fault-class.fixture.mjs");
 
+it("ISS-230 narrows only proved non-execution without clearing the missing-log backlog", () => {
+  expect(classifyStop("hosted-check-never-executed")).toEqual({
+    faultClass: "retry",
+    legacyParking: false,
+    rule: "exact",
+  });
+  expect(parksItem("hosted-check-never-executed")).toBe(false);
+  expect(classifyStop("hosted-check-log-unavailable:macos")).toEqual({
+    faultClass: "retry",
+    legacyParking: true,
+    rule: "prefix",
+  });
+  expect(parksItem("hosted-check-log-unavailable:macos")).toBe(true);
+});
+
 // Body copied verbatim from supervision.ts at
 // 61e58474ba9b6ab6318f1707d7ce5b1134a670ef. Do not update with the implementation.
 function frozenItemStopReason(reason: string) {

@@ -3186,6 +3186,42 @@ it("composes a four-input saved-stop grant outside immutable source and delivery
   expect(unchanged).toEqual(original);
   const extended = { ...grant, executorRepair: { stoppedExecutorHead: "a".repeat(40) } };
   expect(() => validateLoopConfig({ ...f.loop, gateStopAuthorization: extended })).not.toThrow();
+  const hosted = {
+    cycle: 13,
+    stop: 1,
+    actionsRun: 123,
+    runAttempt: 1,
+    job: 455,
+    stoppedExecutorHead: "a".repeat(40),
+  };
+  expect(() =>
+    validateLoopConfig({
+      ...f.loop,
+      gateStopAuthorization: { ...grant, hostedNonExecution: hosted },
+    }),
+  ).not.toThrow();
+  for (const hostedNonExecution of [
+    null,
+    {},
+    { ...hosted, extra: true },
+    { ...hosted, stoppedExecutorHead: undefined },
+    { ...hosted, stoppedExecutorHead: "A".repeat(40) },
+    ...["cycle", "stop", "actionsRun", "runAttempt", "job"].flatMap((key) =>
+      [0, -1, 1.5, Number.MAX_SAFE_INTEGER + 1, "1"].map((value) => ({ ...hosted, [key]: value })),
+    ),
+  ])
+    expect(() =>
+      validateLoopConfig({
+        ...f.loop,
+        gateStopAuthorization: { ...grant, hostedNonExecution },
+      } as LoopConfig),
+    ).toThrow("invalid-gate-stop-authorization");
+  expect(() =>
+    validateLoopConfig({
+      ...f.loop,
+      gateStopAuthorization: { ...extended, hostedNonExecution: hosted },
+    }),
+  ).toThrow("invalid-gate-stop-authorization");
   for (const executorRepair of [
     null,
     {},
@@ -3407,6 +3443,453 @@ it("recomposes a saved selection after its pending gate-stop note and admits one
   expect(comments).toHaveLength(1);
   expect(await readFile(resolve(item.source.stateDirectory, "config.json"))).toEqual(oldConfig);
   expect(await readFile(resolve(item.source.stateDirectory, "gate-stop.json"))).toEqual(oldStop);
+});
+
+it.each([
+  "completed",
+  "pending",
+  "replay",
+  "interrupted",
+  "unresolvable witness",
+  "refreshed source",
+  "corrected source",
+  "retained count",
+  "all non-execution",
+  "no grant",
+  "wrong receipt",
+  "missing witness",
+  "older witness",
+  "divergent witness",
+  "included repair",
+  "absent repair",
+  "missing setup",
+  "malformed setup",
+  "moved head",
+])("ISS-230 SYNTHETIC hosted completed-stop continuation: %s", async (mode) => {
+  const f = await loopFixture();
+  const git = async (tree: string, args: string[]) =>
+    (
+      await execute(f.gitExecutable, [
+        "-C",
+        tree,
+        ...args.map((arg) => (args[0] === "fetch" && arg === "origin" ? f.repository : arg)),
+      ])
+    ).stdout.trim();
+  await git(f.repository, ["remote", "add", "origin", "https://github.com/fixture/repository.git"]);
+  await git(f.repository, ["commit", "--allow-empty", "-m", "synthetic setup witness"]);
+  let stoppedExecutorHead = await git(f.repository, ["rev-parse", "HEAD"]);
+  f.selected.base = stoppedExecutorHead;
+  const cycle = {
+    selection: { cycle: 1, ...f.selected },
+    initialHistory: [] as QueueParticipant[],
+  };
+  await persistCycle(f.loop, cycle);
+  let q = await queueConfigFromLoop(f.loop, f.repository, f.selected, repositoryPolicy);
+  const item = q.items[0]!;
+  const launches: string[] = [],
+    logs: string[][] = [];
+  const native: Adapter = {
+    async preflight() {},
+    async git(tree, args) {
+      if (
+        mode === "unresolvable witness" &&
+        !stopped &&
+        args[0] === "rev-parse" &&
+        args[1] === `${stoppedExecutorHead}^{commit}`
+      )
+        throw new Error("synthetic witness lookup unavailable; all other ancestry inputs frozen");
+      return git(tree, args);
+    },
+    async launch(role, current) {
+      launches.push(role);
+      if (role === "author")
+        await writeFile(
+          resolve(current.worktree, "feature.txt"),
+          `synthetic feature from ${current.base}\n`,
+        );
+      const trace = resolve(current.stateDirectory, `${role}.jsonl`);
+      await writeFile(trace, "synthetic execution\n");
+      return { id: randomUUID(), pid: 111, trace, launchedAt: 1 };
+    },
+    async observe(role, current, attempt) {
+      const head =
+        role === "author" ? current.base : await git(current.worktree, ["rev-parse", "HEAD"]);
+      return {
+        id: attempt.id,
+        status: "passed",
+        head,
+        ...(role === "reviewer"
+          ? {
+              summary: JSON.stringify({
+                run: current.run,
+                role,
+                head,
+                verdict: "PASS",
+                findings: [],
+                g0: "No; synthetic native lifecycle.",
+              }),
+            }
+          : {}),
+      };
+    },
+    async checks() {
+      throw new Error("unexpected source checks");
+    },
+  };
+  let publication: PublicationEvidence;
+  let stopped = true,
+    publications = 0;
+  const delivery = githubDeliveryAdapter({
+    async gh(_config, args) {
+      logs.push(args);
+      if (mode === "interrupted" && logs.length === 1)
+        throw new Error("synthetic interrupted log acquisition");
+      expect(args).not.toContain("--job");
+      return "SYNTHETIC executed Windows failure";
+    },
+    async ghJson(current, args) {
+      if (args[0] === "pr")
+        return {
+          number: publication.number,
+          url: publication.url,
+          headRefOid: publication.head,
+          headRefName: publication.sourceBranch,
+          baseRefName: "main",
+          state: "OPEN",
+          title: publication.title,
+          body: publication.body,
+        };
+      const repo = { full_name: current.repository, id: 10 };
+      const run = {
+        id: 123,
+        workflow_id: 7,
+        run_number: 1,
+        run_attempt: 1,
+        path: ".github/workflows/bootstrap.yml",
+        event: "pull_request",
+        head_sha: publication.head,
+        head_branch: publication.sourceBranch,
+        repository: repo,
+        head_repository: repo,
+        status: "completed",
+        pull_requests: [
+          {
+            number: publication.number,
+            url: `https://api.github.com/repos/${current.repository}/pulls/${publication.number}`,
+            head: { ref: publication.sourceBranch, sha: publication.head, repo },
+            base: { ref: "main", repo },
+          },
+        ],
+      };
+      if (args[1]!.includes("/jobs?"))
+        return [
+          {
+            total_count: current.requiredChecks.length,
+            jobs: current.requiredChecks.map((name, i) => ({
+              id: 455 + i,
+              run_id: 123,
+              run_attempt: 1,
+              head_sha: publication.head,
+              name,
+              html_url: `https://github.com/${current.repository}/actions/runs/123/job/${455 + i}`,
+              status: "completed",
+              conclusion: i === 0 || mode === "all non-execution" ? "cancelled" : "failure",
+              runner_id: i === 0 || mode === "all non-execution" ? 0 : 42,
+              steps: i === 0 || mode === "all non-execution" ? [] : [{ name: "executed" }],
+              started_at: "2026-10-05T20:00:25Z",
+              completed_at: "2026-10-05T20:15:26Z",
+            })),
+          },
+        ];
+      if (args[1]!.endsWith("/123")) return run;
+      return [{ total_count: 1, workflow_runs: [run] }];
+    },
+  });
+  const checks = delivery.checks.bind(delivery);
+  delivery.checks = async (...args) => {
+    if (stopped)
+      throw new DeliveryBlocked(
+        `hosted-check-log-unavailable:${item.delivery.requiredChecks[0]}`,
+        "SYNTHETIC old observer: log not found: 455",
+      );
+    return checks(...args);
+  };
+  let gateFailed = false;
+  delivery.runGate = async (current, _gate, head) => {
+    if (mode === "corrected source" && !gateFailed) {
+      gateFailed = true;
+      const log = resolve(current.stateDirectory, "synthetic-gate.log");
+      await writeFile(log, "SYNTHETIC assertion feature.txt\n");
+      return {
+        status: "failed",
+        output: "SYNTHETIC assertion",
+        evidence: {
+          head,
+          command: { executable: "pnpm", argv: ["test"], cwd: current.worktree },
+          log,
+          cause: "diagnostic",
+          diagnostics: ["feature.txt"],
+        },
+      };
+    }
+    return "passed";
+  };
+  delivery.attributeGate = async (_current, _gate, evidence, main) => ({
+    cause: "candidate",
+    log: evidence.log,
+    main,
+  });
+  delivery.observePublication = async () =>
+    publication
+      ? { state: "confirmed", value: publication }
+      : { state: "needs-mutation", target: "absent" };
+  delivery.publish = async (current, plan) => {
+    publications++;
+    const saved = JSON.parse(
+      await readFile(resolve(current.stateDirectory, "delivery-plan.json"), "utf8"),
+    );
+    publication = {
+      number: 400,
+      url: "https://github.com/fixture/repository/pull/400",
+      repository: current.repository,
+      head: current.candidateHead,
+      sourceBranch: plan.sourceBranch,
+      baseBranch: "main",
+      title: plan.title,
+      body: plan.body,
+      planDigest: saved.digest,
+    };
+  };
+  delivery.merge = async () => {
+    throw new Error("unauthorized merge");
+  };
+  const comments: string[] = [];
+  const supervisor: SupervisionAdapter = {
+    async issue() {
+      return { state: "OPEN", key: f.selected.key, labels: [], comments };
+    },
+    async currentMain() {
+      if (mode !== "no grant") throw new Error("saved selection");
+      return repairSha;
+    },
+    async removeReady() {},
+    async close() {},
+    async comment(_config, _number, body) {
+      comments.push(body);
+    },
+  };
+  let authorityBody = "";
+  const adapter = () =>
+    repositoryQueueAdapter(q, f.repository, {
+      native,
+      delivery,
+      gitExecutable: f.gitExecutable,
+      async observeHostedIssue() {
+        return { state: "OPEN", comments: comments.map((body) => ({ body })) };
+      },
+      async observeAuthority(url) {
+        return {
+          url,
+          id: "230",
+          author: "todd-skelton",
+          body: authorityBody,
+          capturedAt: new Date().toISOString(),
+        };
+      },
+      setup: gitSetupAdapter({
+        gitExecutable: f.gitExecutable,
+        async install(_launcher, _args, tree) {
+          await mkdir(resolve(tree, "node_modules"), { recursive: true });
+          await writeFile(resolve(tree, "node_modules/.modules.yaml"), "fixture: true\n");
+          return "succeeded";
+        },
+      }),
+      deliveryPolicy: {
+        async plan(current) {
+          return {
+            gates: { beforeMirror: ["test"], afterMirror: [] },
+            drafts: [],
+            publication: {
+              sourceBranch: "codex/iss-104",
+              baseBranch: "main",
+              title: "synthetic",
+              body: "synthetic",
+              draft: true,
+            },
+            cleanup: {
+              worktrees: [current.worktree, current.reviewWorktree],
+              branch: current.localBranch!,
+            },
+            mergePolicy: {},
+          };
+        },
+      },
+    });
+  const reason = `hosted-check-log-unavailable:${item.delivery.requiredChecks[0]}`;
+  if (mode === "refreshed source") {
+    await expect(
+      queueStep(q, {
+        ...adapter(),
+        async delivery() {
+          throw new Error("synthetic accepted source");
+        },
+      }),
+    ).rejects.toThrow("synthetic accepted source");
+    await git(f.repository, ["commit", "--allow-empty", "-m", "synthetic intervening main"]);
+    stoppedExecutorHead = await git(f.repository, ["rev-parse", "HEAD"]);
+    q = await queueConfigFromLoop(f.loop, f.repository, f.selected, repositoryPolicy);
+  }
+  if (mode === "corrected source")
+    await expect(queueStep(q, adapter())).resolves.toMatchObject({ status: "observing-author" });
+  await expect(queueStep(q, adapter())).rejects.toMatchObject({ reason });
+  const attempt = JSON.parse(await readFile(resolve(q.stateDirectory, "attempt.json"), "utf8"));
+  if (mode === "retained count") {
+    attempt.candidateAttempt = 2;
+    await writeFile(resolve(q.stateDirectory, "attempt.json"), JSON.stringify(attempt));
+  }
+  // Native refresh/correction terminals may be newer than the delivery attempt's
+  // history snapshot when observation throws. Supervision retains those charges.
+  cycle.initialHistory = await adapter().history();
+  await stopCycle(f.loop, cycle, reason, attempt.candidateAttempt, supervisor, {
+    ...repositoryPolicy,
+    async park() {
+      return selfAdapter.unparkInstructions;
+    },
+  });
+  const stopPath = resolve(f.loop.stateRoot, f.loop.run, "cycle-1-stop-1-complete.json");
+  const oldStop = await readFile(stopPath);
+  if (mode === "pending") await rm(stopPath);
+  await git(f.repository, ["commit", "--allow-empty", "-m", "synthetic landed observer repair"]);
+  const repairSha = await git(f.repository, ["rev-parse", "HEAD"]);
+  let witness = stoppedExecutorHead;
+  if (mode === "older witness") witness = await git(f.repository, ["rev-parse", `${witness}^`]);
+  if (mode === "missing witness") witness = "e".repeat(40);
+  if (mode === "divergent witness") {
+    await git(f.repository, ["checkout", "--detach", `${stoppedExecutorHead}^`]);
+    await git(f.repository, ["commit", "--allow-empty", "-m", "synthetic divergent witness"]);
+    witness = await git(f.repository, ["rev-parse", "HEAD"]);
+    await git(f.repository, ["checkout", "main"]);
+  }
+  const grant = {
+    stateDirectory: item.source.stateDirectory,
+    candidateHead: publication!.head,
+    repairSha:
+      mode === "included repair"
+        ? stoppedExecutorHead
+        : mode === "absent repair"
+          ? "f".repeat(40)
+          : repairSha,
+    authorityUrl: "https://github.com/fixture/repository/issues/361#issuecomment-230",
+    hostedNonExecution: {
+      cycle: 1,
+      stop: 1,
+      actionsRun: 123,
+      runAttempt: 1,
+      job: 455,
+      stoppedExecutorHead: witness,
+    },
+  };
+  authorityBody = `Host-authorized synthetic invocation witness ${witness}; ${grant.repairSha}; ${grant.candidateHead}; ${publication!.url}; loop-stop:${f.loop.run}:1:1; 123:1/455`;
+  const loop = { ...f.loop, ...(mode === "no grant" ? {} : { gateStopAuthorization: grant }) };
+  if (mode === "wrong receipt") comments[0] += "different";
+  if (mode === "moved head") publication!.head = "e".repeat(40);
+  if (mode === "missing setup") await rm(resolve(item.setup.stateDirectory, "setup-plan.json"));
+  if (mode === "malformed setup") {
+    const path = resolve(item.setup.stateDirectory, "setup-plan.json");
+    const setup = JSON.parse(await readFile(path, "utf8"));
+    delete setup.dependencies;
+    await writeFile(path, JSON.stringify(setup));
+  }
+  const before = await snapshot(item.source.stateDirectory);
+  stopped = false;
+  const resumed = await nextCycle(loop, f.repository, supervisor, {
+    ...repositoryPolicy,
+    async selectCandidates() {
+      return [];
+    },
+  });
+  if (mode === "no grant") {
+    expect(resumed).toBeUndefined();
+    expect(logs).toEqual([]);
+    return;
+  }
+  expect(resumed?.selection).toEqual(cycle.selection);
+  await reconcilePendingStop(loop, resumed!, supervisor, {
+    ...repositoryPolicy,
+    async park() {
+      return selfAdapter.unparkInstructions;
+    },
+  });
+  q = await queueConfigFromLoop(loop, f.repository, f.selected, repositoryPolicy);
+  if (
+    ![
+      "completed",
+      "pending",
+      "replay",
+      "interrupted",
+      "refreshed source",
+      "corrected source",
+      "retained count",
+    ].includes(mode)
+  ) {
+    const result = queueStep(q, adapter());
+    await expect(result).rejects.toBeInstanceOf(QueueBlocked);
+    if (mode === "all non-execution")
+      await expect(result).rejects.toMatchObject({ reason: "hosted-check-never-executed" });
+    await expect(
+      readFile(resolve(item.source.stateDirectory, "gate-stop-continuation.json")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    expect(logs).toEqual([]);
+  } else {
+    if (mode === "interrupted")
+      await expect(queueStep(q, adapter())).rejects.toMatchObject({
+        reason: `hosted-check-log-unavailable:${item.delivery.requiredChecks[1]}`,
+      });
+    if (mode === "replay") {
+      for (let replay = 0; replay < 2; replay++) {
+        await expect(
+          adapter().delivery(item, {
+            head: attempt.head,
+            reviewId: attempt.reviewId,
+            stateDirectory: attempt.stateDirectory,
+            retries: attempt.retries,
+          }),
+        ).resolves.toMatchObject({ status: "failed" });
+      }
+    }
+    await expect(queueStep(q, adapter())).resolves.toMatchObject({
+      status: "advancing-attempt",
+      cursor: mode === "retained count" ? 2 : 1,
+    });
+    expect(logs).toEqual(
+      Array.from({ length: mode === "interrupted" ? 2 : 1 }, () => [
+        "run",
+        "view",
+        "123",
+        "--attempt",
+        "1",
+        "--log-failed",
+      ]),
+    );
+    const after = JSON.parse(await readFile(resolve(q.stateDirectory, "attempt.json"), "utf8"));
+    expect(after.history).toEqual(cycle.initialHistory);
+    expect(after.candidateAttempt).toBe(mode === "retained count" ? 2 : 1);
+    expect(await readFile(stopPath)).toEqual(oldStop);
+    for (const [path, bytes] of before) expect(await readFile(path, "utf8")).toBe(bytes);
+    await expect(
+      readFile(resolve(item.source.stateDirectory, "gate-stop.json")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  }
+  expect(launches).toEqual([
+    "author",
+    "reviewer",
+    ...(mode === "refreshed source"
+      ? ["reviewer"]
+      : mode === "corrected source"
+        ? ["author", "reviewer"]
+        : []),
+  ]);
+  expect(publications).toBe(1);
 });
 
 async function acceptedReplanFixture() {

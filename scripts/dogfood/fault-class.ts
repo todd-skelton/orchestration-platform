@@ -59,6 +59,7 @@ export const stopRules: readonly StopRule[] = [
       "current-main-unavailable",
       "current-main-moved",
       "hosted-observation-unavailable",
+      "hosted-check-never-executed",
       "provider-unavailable",
       "learning-note-state-unknown",
       "stopped-issue-state-unknown",

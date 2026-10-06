@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
@@ -605,6 +605,7 @@ async function aggregateFixture(
     jobLogs: {} as Record<number, string>,
     logError: false,
     afterLog: () => {},
+    jobMetadata: {} as Record<number, Record<string, unknown>>,
   };
   const requests: string[][] = [];
   let publicationHead = head;
@@ -657,6 +658,7 @@ async function aggregateFixture(
           if (args[1]!.includes("/jobs?"))
             return [
               {
+                total_count: evidence.checks.length,
                 jobs: evidence.checks.map((check, index) => ({
                   id: Number(check.link.split("/").at(-1)),
                   run_id: 123,
@@ -666,6 +668,7 @@ async function aggregateFixture(
                   html_url: check.link,
                   status: check.bucket === "pending" ? "in_progress" : "completed",
                   conclusion: conclusion(check),
+                  ...evidence.jobMetadata[jobId(check)],
                 })),
               },
             ];
@@ -680,7 +683,7 @@ async function aggregateFixture(
           const runs = structuredClone(evidence.runs);
           const status = evidence.workflowStatuses.shift();
           if (status) for (const run of runs) run.status = status;
-          return [{ workflow_runs: runs }];
+          return [{ total_count: runs.length, workflow_runs: runs }];
         }
         return {
           number: f.publication.number,
@@ -1294,6 +1297,12 @@ it.each(["fail", "cancel", "skipping"] as const)(
       await expect(result).rejects.toMatchObject({ reason: "hosted-check-failed:PR Required" });
     else {
       await expect(result).resolves.toMatchObject({
+        status: "observing-hosted-checks",
+      });
+      expect(
+        f.requests.some((args) => args.includes("--log") || args.includes("--log-failed")),
+      ).toBe(false);
+      await expect(deliveryStep(f.config, f.adapter, f.policy)).resolves.toMatchObject({
         status: "failed",
         head,
         findings: [{ file: "PR Required", severity: "blocking" }],
@@ -1722,6 +1731,346 @@ it.each([
   expect(f.calls).not.toContain("merge");
 });
 
+async function nonExecutionFixture(all = false, pause?: (ms: number) => Promise<void>) {
+  const f = await aggregateFixture(pause, ["linux", "macos", "windows"]);
+  f.evidence.runs[0]!.status = "completed";
+  f.evidence.checks = [
+    f.check("linux", "pass", 454),
+    f.check("macos", "cancel", 455),
+    f.check("windows", all ? "cancel" : "fail", 456),
+    ...["refresh", "queue", "remainder"].map((name, i) =>
+      f.check(name, all ? "cancel" : "fail", 457 + i),
+    ),
+  ];
+  for (const check of f.evidence.checks) {
+    const id = Number(check.link.split("/").at(-1));
+    f.evidence.jobMetadata[id] = {
+      runner_id: check.bucket === "cancel" ? 0 : 42,
+      steps: check.bucket === "cancel" ? [] : [{ name: "SYNTHETIC executed step" }],
+      started_at: "2026-10-05T20:00:25Z",
+      completed_at: "2026-10-05T20:15:26Z",
+    };
+    f.evidence.jobLogs[id] = check.bucket === "cancel" ? "" : `SYNTHETIC ${check.name} failure`;
+  }
+  return f;
+}
+
+it("ISS-230 SYNTHETIC mixed six-job publication preserves failures without demanding the unassigned job log", async () => {
+  const f = await nonExecutionFixture();
+  await expect(deliveryStep(f.config, f.adapter, f.policy)).resolves.toMatchObject({
+    status: "failed",
+    findings: [{ file: "windows", severity: "blocking" }],
+  });
+  const saved = await readFile(resolve(f.config.stateDirectory, "hosted-failure.log"), "utf8");
+  const header = JSON.parse(saved.split("\n")[0]!);
+  expect(header.nonExecution).toHaveLength(1);
+  expect(header.nonExecution[0].witness).toMatchObject({
+    runner_id: 0,
+    steps: [],
+    started_at: "2026-10-05T20:00:25Z",
+  });
+  expect(header.checks.some((check: CheckEvidence) => check.bucket === "cancel")).toBe(true);
+  for (const name of ["windows", "refresh", "queue", "remainder"])
+    expect(saved).toContain(`SYNTHETIC ${name} failure`);
+  expect(f.requests.filter((args) => args.includes("--job"))).toEqual([]);
+  expect(f.requests.filter((args) => args.includes("--log-failed"))).toHaveLength(1);
+  expect(f.calls).not.toContain("merge");
+});
+
+it("ISS-230 SYNTHETIC all-never-executed stops after the shared two retries without logs or parking", async () => {
+  const waits: number[] = [];
+  const f = await nonExecutionFixture(true, async (ms) => {
+    waits.push(ms);
+  });
+  await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toMatchObject({
+    reason: "hosted-check-never-executed",
+  });
+  expect(waits).toEqual([1000, 2000]);
+  expect(isItemStopReason("hosted-check-never-executed")).toBe(false);
+  expect(
+    f.requests.filter((args) => args.includes("--log") || args.includes("--log-failed")),
+  ).toEqual([]);
+  expect(f.calls).not.toContain("merge");
+  const files = (await readdir(f.config.stateDirectory)).filter((name) =>
+    name.startsWith("hosted-non-execution-"),
+  );
+  expect(files).toHaveLength(1);
+  const capture = JSON.parse(await readFile(resolve(f.config.stateDirectory, files[0]!), "utf8"));
+  expect(capture.publication).toEqual(f.publication);
+  expect(capture.nonExecution).toHaveLength(5);
+});
+
+it.each([
+  ["positive runner", { runner_id: 42, steps: [] }, false],
+  ["unstarted step", { runner_id: 0, steps: [{ status: "queued", started_at: null }] }, false],
+  [
+    "started step",
+    { runner_id: 0, steps: [{ status: "completed", started_at: "2026-10-05T20:00:25Z" }] },
+    false,
+  ],
+  ["null runner", { runner_id: null, steps: [] }, true],
+  ["missing runner", { steps: [] }, false],
+  ["missing steps", { runner_id: 0 }, false],
+  ["null steps", { runner_id: 0, steps: null }, false],
+  ["string runner", { runner_id: "0", steps: [] }, false],
+] as const)("ISS-230 SYNTHETIC discriminating control %s", async (_name, metadata, exempt) => {
+  const f = await nonExecutionFixture();
+  f.evidence.jobMetadata[455] = { ...metadata };
+  f.evidence.jobLogs[455] = "SYNTHETIC executed cancellation evidence";
+  await expect(deliveryStep(f.config, f.adapter, f.policy)).resolves.toMatchObject({
+    status: "failed",
+  });
+  expect(f.requests.filter((args) => args.includes("--job"))).toEqual(
+    exempt ? [] : [["run", "view", "--job", "455", "--log"]],
+  );
+});
+
+it.each(["error", "empty"])(
+  "ISS-230 SYNTHETIC executed log %s still parks beside non-execution",
+  async (mode) => {
+    const f = await nonExecutionFixture();
+    if (mode === "error") f.evidence.logError = true;
+    else for (const job of [456, 457, 458, 459]) f.evidence.jobLogs[job] = "";
+    await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toMatchObject({
+      reason: "hosted-check-log-unavailable:windows",
+    });
+    expect(isItemStopReason("hosted-check-log-unavailable:windows")).toBe(true);
+    await expect(
+      readFile(resolve(f.config.stateDirectory, "hosted-failure.log")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  },
+);
+
+it.each(["shard", "aggregate"])(
+  "ISS-230 SYNTHETIC full census executed failure only in %s",
+  async (mode) => {
+    const f = await nonExecutionFixture(true);
+    const job = mode === "shard" ? 457 : 456;
+    f.evidence.checks.find((check) => check.link.endsWith(`/${job}`))!.bucket = "fail";
+    f.evidence.jobMetadata[job] = { runner_id: 42, steps: [{ name: "executed" }] };
+    f.evidence.jobLogs[job] = `SYNTHETIC only executed ${mode} failure`;
+    await expect(deliveryStep(f.config, f.adapter, f.policy)).resolves.toMatchObject({
+      status: "failed",
+    });
+    const log = await readFile(resolve(f.config.stateDirectory, "hosted-failure.log"), "utf8");
+    expect(log).toContain(`SYNTHETIC only executed ${mode} failure`);
+    expect(f.requests.filter((args) => args.includes("--log-failed"))).toHaveLength(1);
+    expect(f.requests.filter((args) => args.includes("--job"))).toHaveLength(0);
+  },
+);
+
+it.each(["attempt", "head", "publication", "metadata", "pagination", "missing required"])(
+  "ISS-230 SYNTHETIC acquisition drift %s publishes no evidence",
+  async (mode) => {
+    const f = await nonExecutionFixture();
+    if (mode === "attempt")
+      f.evidence.afterLog = () => {
+        f.evidence.runs[0]!.run_attempt++;
+      };
+    if (mode === "head")
+      f.evidence.afterLog = () => {
+        f.evidence.runs[0]!.head_sha = "f".repeat(40);
+      };
+    if (mode === "publication")
+      f.evidence.afterLog = () => {
+        f.evidence.driftAfterWorkflow = true;
+      };
+    if (mode === "missing required")
+      f.evidence.checks = f.evidence.checks.filter((check) => check.name !== "macos");
+    const read = f.commands.ghJson;
+    let jobs = 0;
+    f.commands.ghJson = async (config, args) => {
+      const response: any = await read(config, args);
+      if (args[1]?.includes("/jobs?")) {
+        jobs++;
+        if (mode === "pagination") response[0].total_count++;
+        if (mode === "metadata" && jobs === 2)
+          response[0].jobs.find((job: any) => job.id === 455).runner_id = 42;
+      }
+      return response;
+    };
+    await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toBeInstanceOf(
+      DeliveryBlocked,
+    );
+    await expect(
+      readFile(resolve(f.config.stateDirectory, "hosted-failure.log")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    expect(f.calls).not.toContain("merge");
+  },
+);
+
+it.each(["transport first", "non-execution first"])(
+  "ISS-230 SYNTHETIC shared retry budget: %s",
+  async (mode) => {
+    const waits: number[] = [];
+    const f = await nonExecutionFixture(true, async (ms) => {
+      waits.push(ms);
+    });
+    const read = f.commands.ghJson;
+    let failed = false;
+    f.commands.ghJson = async (config, args) => {
+      if (!failed && waits.length === (mode === "transport first" ? 0 : 1)) {
+        failed = true;
+        throw Object.assign(new Error("SYNTHETIC transport"), {
+          code: 1,
+          stdout: "",
+          stderr:
+            'Get "https://api.github.com/repos/fixture/repository/actions/runs": dial tcp 140.82.113.6:443: connect: network is unreachable',
+        });
+      }
+      return read(config, args);
+    };
+    await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toMatchObject({
+      reason: "hosted-check-never-executed",
+    });
+    expect(waits).toEqual([1000, 2000]);
+    expect(
+      f.requests.filter((args) => args.includes("--log") || args.includes("--log-failed")),
+    ).toEqual([]);
+  },
+);
+
+it("ISS-230 SYNTHETIC dead-author evidence consumer reuses completed mixed evidence without fetching logs", async () => {
+  const f = await nonExecutionFixture();
+  const path = await hostedFailureEvidence(f.config, f.adapter, f.publication);
+  const bytes = await readFile(path!, "utf8");
+  const calls = [...f.requests];
+  expect(await hostedFailureEvidence(f.config, f.adapter, f.publication)).toBe(path);
+  expect(f.requests).toEqual(calls);
+  expect(await readFile(path!, "utf8")).toBe(bytes);
+  const header = JSON.parse(bytes.split("\n")[0]!);
+  header.nonExecution[0].witness.runner_id = 42;
+  await writeFile(path!, JSON.stringify(header) + "\n" + bytes.split("\n").slice(1).join("\n"));
+  await expect(hostedFailureEvidence(f.config, f.adapter, f.publication)).rejects.toMatchObject({
+    reason: "hosted-observation-unavailable",
+  });
+  await writeFile(path!, bytes.split("\n")[0]! + "\n");
+  await expect(hostedFailureEvidence(f.config, f.adapter, f.publication)).rejects.toMatchObject({
+    reason: "hosted-observation-unavailable",
+  });
+  await writeFile(path!, bytes.split("\n")[0]!);
+  await expect(hostedFailureEvidence(f.config, f.adapter, f.publication)).rejects.toMatchObject({
+    reason: "hosted-observation-unavailable",
+  });
+});
+
+it.each(
+  [
+    { adapter: "self", required: ["linux", "windows", "macos"] },
+    { adapter: "Chase Sets", required: ["PR Required"] },
+  ].flatMap(({ adapter, required }) =>
+    (["failure", "executed cancellation", "never-executed cancellation"] as const).map(
+      (outcome) => ({ adapter, required, outcome }),
+    ),
+  ),
+)(
+  "ISS-230 SYNTHETIC required-green $adapter ignores advisory $outcome",
+  async ({ required, outcome }) => {
+    const waits: number[] = [];
+    const f = await aggregateFixture(async (ms) => {
+      waits.push(ms);
+    }, required);
+    f.evidence.runs[0]!.status = "completed";
+    f.evidence.checks = [
+      ...required.map((name, index) => f.check(name, "pass", 454 + index)),
+      f.check("PR Release Status", outcome === "failure" ? "fail" : "cancel", 460),
+    ];
+    f.evidence.jobMetadata[460] = {
+      runner_id: outcome === "never-executed cancellation" ? 0 : 42,
+      steps: outcome === "never-executed cancellation" ? [] : [{ name: "SYNTHETIC step" }],
+      started_at: "2026-10-05T20:00:25Z",
+      completed_at: "2026-10-05T20:15:26Z",
+    };
+    const q = await owningQueueFixture(f);
+    await expect(queueStep(q.queue, q.adapter)).resolves.toMatchObject({ status: "complete" });
+    const bytes = await readFile(q.path, "utf8");
+    expect(JSON.parse(bytes)).toMatchObject({
+      phase: "complete",
+      candidateAttempt: 3,
+      retries: 1,
+      history: q.history,
+      authorFailures: { count: 2, ids: ["participant-0", "participant-2"] },
+    });
+    expect(q.workers()).toBe(0);
+    expect(waits).toEqual([]);
+    expect(
+      f.requests.filter((args) => args.includes("--log") || args.includes("--log-failed")),
+    ).toEqual([]);
+    expect(
+      (await readdir(f.config.stateDirectory)).filter(
+        (name) => name === "hosted-failure.log" || name.startsWith("hosted-non-execution-"),
+      ),
+    ).toEqual([]);
+    expect(
+      JSON.parse(await readFile(resolve(f.config.stateDirectory, "hosted-checks.json"), "utf8")),
+    ).toEqual({
+      head,
+      checks: f.evidence.checks.filter((check) => required.includes(check.name)),
+    });
+    expect(f.calls.filter((call) => call === "merge")).toHaveLength(1);
+    const requests = [...f.requests];
+    const calls = [...f.calls];
+    await expect(queueStep(q.queue, q.adapter)).resolves.toMatchObject({ status: "complete" });
+    expect(f.requests).toEqual(requests);
+    expect(f.calls).toEqual(calls);
+    expect(await readFile(q.path, "utf8")).toBe(bytes);
+  },
+);
+
+it("ISS-230 SYNTHETIC shard failure beside required cancellation cannot reuse evidence from a prior effective attempt", async () => {
+  const f = await nonExecutionFixture();
+  for (const check of f.evidence.checks)
+    if (check.name !== "refresh" && check.name !== "macos") check.bucket = "pass";
+  await expect(deliveryStep(f.config, f.adapter, f.policy)).resolves.toMatchObject({
+    status: "failed",
+    findings: [{ file: "refresh" }],
+  });
+  const path = resolve(f.config.stateDirectory, "hosted-failure.log");
+  const bytes = await readFile(path, "utf8");
+  expect(await hostedFailureEvidence(f.config, f.adapter, f.publication)).toBe(path);
+  f.evidence.runs[0]!.run_attempt = 2;
+  for (const check of f.evidence.checks)
+    if (check.bucket !== "pass")
+      check.actions = {
+        run: 123,
+        attempt: 2,
+        job: Number(check.link.split("/").at(-1)),
+        workflow: 7,
+      };
+  await expect(deliveryStep(f.config, f.adapter, f.policy)).rejects.toMatchObject({
+    reason: "hosted-observation-unavailable",
+  });
+  expect(await readFile(path, "utf8")).toBe(bytes);
+  expect(f.requests.filter((args) => args.includes("--log-failed"))).toHaveLength(1);
+});
+
+it("ISS-230 SYNTHETIC another owning workflow progressing remains pending beside non-execution", async () => {
+  const f = await nonExecutionFixture();
+  f.evidence.runs.push({
+    ...syntheticRun(f.publication, "in_progress"),
+    id: 124,
+    workflow_id: 8,
+    path: ".github/workflows/advisory.yml",
+  });
+  const read = f.commands.ghJson;
+  f.commands.ghJson = async (config, args) => {
+    if (args[1]?.includes("/runs/124/jobs?")) {
+      f.evidence.runs[1]!.status = "completed";
+      return [{ total_count: 0, jobs: [] }];
+    }
+    return read(config, args);
+  };
+  await expect(deliveryStep(f.config, f.adapter, f.policy)).resolves.toMatchObject({
+    status: "observing-hosted-checks",
+  });
+  expect(
+    f.requests.filter((args) => args.includes("--log") || args.includes("--log-failed")),
+  ).toEqual([]);
+  await expect(
+    readFile(resolve(f.config.stateDirectory, "hosted-failure.log")),
+  ).rejects.toMatchObject({ code: "ENOENT" });
+});
+
 it.each(["pass", "fail"] as const)(
   "SYNTHETIC retains Windows cancellation logs alongside macOS %s",
   async (macos) => {
@@ -1824,9 +2173,10 @@ it.each(["failure", "cancelled", "timed_out"] as const)(
     expect(f.requests.filter((args) => args.includes("--log-failed"))).toEqual([
       ["run", "view", "123", "--attempt", "1", "--log-failed"],
     ]);
-    // Only the required aggregate is selected; cancellation reaches this consumer
-    // through its embedded body, never an invented non-required log fetch.
-    expect(f.requests.filter((args) => args.includes("--job"))).toEqual([]);
+    // ISS-230 accounts for executed cancellations in the complete job census too.
+    expect(f.requests.filter((args) => args.includes("--job"))).toEqual(
+      outcome === "failure" ? [] : [["run", "view", "--job", "800", "--log"]],
+    );
     expect(f.calls).not.toContain("merge");
   },
 );
