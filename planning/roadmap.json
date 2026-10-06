@@ -886,6 +886,14 @@
       "summary": "Extend the existing gate-stop grant for one executor-repair continuation with complete saved-evidence recognition, fresh review and unchanged same-attempt accounting.",
       "milestone": "M1",
       "blockedBy": ["ISS-228"]
+    },
+    {
+      "key": "ISS-230",
+      "file": "planning/drafts/ISS-230.md",
+      "title": "Distinguish never-executed cancelled jobs from missing hosted failure logs",
+      "summary": "Prove cancelled-job non-execution before log acquisition, retain executed failures and bound observation plus explicit same-run recovery without resetting attempts.",
+      "milestone": "M1",
+      "blockedBy": []
     }
   ]
 }
