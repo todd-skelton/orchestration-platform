@@ -56,6 +56,7 @@ import { setupStep } from "../../scripts/dogfood/setup.js";
 import { githubDeliveryAdapter } from "../../scripts/dogfood/delivery-adapter.mjs";
 import { DeliveryBlocked, type PublicationEvidence } from "../../scripts/dogfood/delivery.mjs";
 import {
+  completeCycle,
   nextCycle,
   persistCycle,
   reconcilePendingStop,
@@ -1453,7 +1454,7 @@ const repositoryPolicy: RepositoryAdapter = {
 const execute = promisify(execFile);
 let fixtureGit: Promise<string> | undefined;
 
-async function verificationOnlyFixture() {
+async function verificationOnlyFixture(cycleNumber = 1) {
   const focused =
     "pnpm --filter @chase-sets/app-platform-worker exec vitest run --config ./vitest.config.ts __tests__/projection-wake-interest-graph.test.ts";
   const f = await loopFixture(false, `- Execute ${focused}`);
@@ -1601,7 +1602,7 @@ async function verificationOnlyFixture() {
     stateDirectory: null,
     authorFailures: { count: 4, ids: history.filter((p) => p.role === "author").map((p) => p.id) },
   });
-  const cycle = { selection: { cycle: 1, ...f.selected }, initialHistory: history };
+  const cycle = { selection: { cycle: cycleNumber, ...f.selected }, initialHistory: history };
   const comments: string[] = [];
   const supervisor: SupervisionAdapter = {
     async currentMain() {
@@ -1955,6 +1956,174 @@ it.each(["pass", "review-fail", "host-fail", "refresh", "conflict", "pending-not
         },
       }),
     ).rejects.toMatchObject({ reason: "verification-only-mismatch" });
+  },
+);
+
+it.each([
+  ["complete", "item-stop"],
+  ["review-fail", "item-stop"],
+  ["complete", "complete"],
+  ["review-fail", "complete"],
+])(
+  "ISS-231 carries the verification charge past a later cycle: %s then retained %s",
+  async (outcome, laterOutcome) => {
+    const f = await verificationOnlyFixture(3);
+    const closed = new Set<number>();
+    const host: SupervisionAdapter = {
+      ...f.supervisor,
+      async issue(config, number, purpose) {
+        return {
+          ...(await f.supervisor.issue(config, number, purpose)),
+          key: `cs-${number}`,
+          state: closed.has(number) ? "CLOSED" : "OPEN",
+        };
+      },
+      async close(_config, number) {
+        closed.add(number);
+      },
+    };
+    for (const cycle of [1, 2]) {
+      const earlier = {
+        selection: { cycle, key: `cs-${358 + cycle}`, number: 358 + cycle, base: f.selected.base },
+        initialHistory: [],
+      };
+      await persistCycle(f.loop, earlier);
+      await completeCycle(f.loop, earlier, [], host);
+    }
+    const retainedHistory = [
+      ...f.cycle.initialHistory,
+      ...Array.from({ length: 12 }, (_, index) => ({
+        ...participant(
+          index + 9,
+          `cs-362:${Math.floor(index / 4) + 1}`,
+          index % 4 < 2 ? "source" : "repair",
+          index % 2 ? "reviewer" : "author",
+          index % 2 ? "failed" : "passed",
+        ),
+        placement: index % 2 ? f.loop.reviewer! : f.loop.author!,
+      })),
+    ];
+    const later = {
+      selection: { cycle: 4, key: "cs-362", number: 362, base: f.selected.base },
+      initialHistory: retainedHistory,
+    };
+    await persistCycle(f.loop, later);
+    if (laterOutcome === "item-stop")
+      expect(
+        await stopCycle(
+          f.loop,
+          later,
+          "implementation-attempt-ceiling-exhausted",
+          4,
+          host,
+          repositoryPolicy,
+        ),
+      ).toBe("item");
+    else await completeCycle(f.loop, later, retainedHistory, host);
+    const before = await snapshot(resolve(f.loop.stateRoot, f.loop.run));
+
+    const resumed = (await nextCycle(f.loop, f.repository, host, repositoryPolicy))!;
+    expect(resumed.selection).toEqual(f.cycle.selection);
+    const q = await f.compose();
+    expect(q.initialHistory).toEqual(retainedHistory);
+    const adapter = f.adapter(q);
+    expect((await queueStep(q, adapter)).status).toBe("observing-reviewer");
+    expect((await queueStep(await f.compose(), f.adapter(await f.compose()))).status).toBe(
+      "observing-reviewer",
+    );
+    f.finish(outcome === "review-fail");
+    if (outcome === "review-fail") {
+      await expect(queueStep(q, adapter)).rejects.toMatchObject({
+        reason: "refresh-review-failed",
+      });
+      expect(
+        await stopCycle(
+          f.loop,
+          { ...resumed, initialHistory: await adapter.history() },
+          "refresh-review-failed",
+          4,
+          host,
+          repositoryPolicy,
+        ),
+      ).toBe("item");
+    } else {
+      f.hostedGreen();
+      expect((await queueStep(q, adapter)).status).toBe("complete");
+      await completeCycle(f.loop, resumed, await adapter.history(), host);
+    }
+    const charged = await adapter.history();
+    expect(charged).toHaveLength(21);
+    expect(charged.slice(0, 20)).toEqual(retainedHistory);
+    expect(charged[20]).toMatchObject({ ordinal: 21, role: "reviewer", item: "cs-361:4" });
+
+    const policy: RepositoryAdapter = {
+      ...repositoryPolicy,
+      selectCandidates: () => [{ key: "cs-363", number: 363 }],
+      issueContext: () => ({
+        title: "Synthetic successor",
+        body: "Unrelated work after verification.",
+        rules: "Preserve every charged launch.",
+        acceptanceCriteria: ["Keep the next launch ordinal."],
+        routing: { row: 2, review: 11 },
+      }),
+    };
+    for (let replay = 0; replay < 2; replay++) {
+      const next = (await nextCycle(f.loop, f.repository, host, policy))!;
+      expect(next.selection).toMatchObject({ cycle: 5, key: "cs-363" });
+      expect(next.initialHistory).toEqual(charged);
+    }
+    const next = (await nextCycle(f.loop, f.repository, host, policy))!;
+    await persistCycle(f.loop, next);
+    const { cycle: _cycle, ...selection } = next.selection;
+    const successor = await queueConfigFromLoop(
+      f.loop,
+      f.repository,
+      selection,
+      policy,
+      next.initialHistory,
+    );
+    let successorRunning = true;
+    const worker: Adapter = {
+      ...f.native,
+      async launch(role, current) {
+        expect(role).toBe("author");
+        return {
+          id: randomUUID(),
+          pid: 4,
+          trace: resolve(current.stateDirectory, "author.jsonl"),
+          launchedAt: 1,
+        };
+      },
+      async observe(role, current, attempt) {
+        return successorRunning
+          ? { id: attempt.id, status: "running" }
+          : {
+              id: attempt.id,
+              status: "failed",
+              head: current.base,
+              summary: JSON.stringify({
+                run: current.run,
+                role,
+                head: current.base,
+                verdict: "FAIL",
+                summary: "Synthetic successor terminal to record its launch charge.",
+              }),
+            };
+      },
+    };
+    const successorAdapter = f.adapter(successor, worker);
+    expect((await queueStep(successor, successorAdapter)).status).toBe("observing-author");
+    successorRunning = false;
+    await expect(queueStep(successor, successorAdapter)).rejects.toMatchObject({
+      reason: "author-failed",
+    });
+    const successorHistory = await successorAdapter.history();
+    expect(successorHistory.slice(0, 21)).toEqual(charged);
+    expect(successorHistory).toHaveLength(22);
+    expect(successorHistory[21]).toMatchObject({ ordinal: 22, role: "author", item: "cs-363:1" });
+    expect(f.launches).toEqual(["reviewer"]);
+    expect(f.captures()).toBe(1);
+    for (const [path, bytes] of before) expect(await readFile(path, "utf8"), path).toBe(bytes);
   },
 );
 

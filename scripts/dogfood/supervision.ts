@@ -499,7 +499,9 @@ export async function nextCycle(
           (await retainedSourceFailure(config, selected)))
       )
         declaration = undefined;
-      initialHistory = completed.history;
+      // ISS-231 can resume an earlier cycle after later cycles have stopped.
+      // Their older receipts must not refund that continuation's launches.
+      if (completed.history.length >= initialHistory.length) initialHistory = completed.history;
       cycle += 1;
       continue;
     }
@@ -549,7 +551,7 @@ export async function nextCycle(
       if (stoppedHistory) {
         declaration = undefined;
         validateHistory(stoppedHistory, config.nativeLaunchCeiling);
-        initialHistory = stoppedHistory;
+        if (stoppedHistory.length >= initialHistory.length) initialHistory = stoppedHistory;
         cycle += 1;
         continue;
       }
