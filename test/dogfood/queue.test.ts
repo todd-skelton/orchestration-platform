@@ -10,6 +10,7 @@ import {
   realpath,
   rm,
   stat,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -1457,7 +1458,14 @@ let fixtureGit: Promise<string> | undefined;
 async function verificationOnlyFixture(cycleNumber = 1) {
   const focused =
     "pnpm --filter @chase-sets/app-platform-worker exec vitest run --config ./vitest.config.ts __tests__/projection-wake-interest-graph.test.ts";
-  const f = await loopFixture(false, `- Execute ${focused}`);
+  // Like ISS-228/229, keep the refreshed immutable-base checkout within Windows'
+  // path limit while still exercising the real Git worktree and native runner.
+  const f = await loopFixture(
+    false,
+    `- Execute ${focused}`,
+    "q-",
+    process.platform === "win32" ? (process.env.RUNNER_TEMP ?? tmpdir()) : tmpdir(),
+  );
   f.selected.key = "cs-361";
   f.loop.repository = "chase-sets/chase-sets";
   f.loop.nativeLaunchCeiling = 64;
@@ -1667,7 +1675,9 @@ async function verificationOnlyFixture(cycleNumber = 1) {
       id: "9001",
       url: grant.authorityUrl,
       author: "todd-skelton",
-      body: `Synthetic explicit host grant ${JSON.stringify(grant)}`,
+      body: `Synthetic explicit host grant\n${Object.entries(grant)
+        .map(([key, value]) => `${key}: ${value}`)
+        .join("\n")}`,
       capturedAt: "2026-10-05T23:30:00.000Z",
     };
   };
@@ -1704,7 +1714,7 @@ async function verificationOnlyFixture(cycleNumber = 1) {
       expect(role).toBe("reviewer");
       launches.push(role);
       expect(prompt).toContain(grant.priorReviewId);
-      expect(prompt).toContain(author.trace);
+      expect(prompt).toContain(JSON.stringify(author.trace));
       const calls = (await readFile(gateCalls, "utf8"))
         .trim()
         .split("\n")
@@ -2228,7 +2238,17 @@ it.each(["source", "refresh"])(
     expect((await queueStep(q, adapter)).status).toBe("complete");
     await f.git(f.repository, ["worktree", "remove", "--force", item.source.worktree]);
     await f.git(f.repository, ["worktree", "remove", "--force", item.source.reviewWorktree]);
-    expect(await retainedPostMergeDelivery(f.loop, f.selected)).toBeDefined();
+    // macOS exposes its temporary root through /var -> /private/var. Composition
+    // resolves that alias; post-merge replay must read the same retained identity.
+    const alias = resolve(f.stateRoot, "..", "state-alias");
+    await symlink(await realpath(f.stateRoot), alias, "junction");
+    const retainedBytes = await snapshot(q.stateDirectory);
+    const retained = await retainedPostMergeDelivery(f.loop, f.selected);
+    expect(retained).toBeDefined();
+    expect(await retainedPostMergeDelivery({ ...f.loop, stateRoot: alias }, f.selected)).toEqual(
+      retained,
+    );
+    expect(await snapshot(q.stateDirectory)).toEqual(retainedBytes);
     expect((await queueStep(q, f.adapter(q, native))).status).toBe("complete");
     expect(launches).toEqual(
       mode === "source"
@@ -2487,8 +2507,8 @@ it.each([
                 argv: [launcher, "run", gate],
               },
             });
-            expect(prompt).toContain(resolve(directory, "candidate.log"));
-            expect(prompt).toContain(resolve(directory, "candidate-terminal.json"));
+            expect(prompt).toContain(JSON.stringify(resolve(directory, "candidate.log")));
+            expect(prompt).toContain(JSON.stringify(resolve(directory, "candidate-terminal.json")));
           }
         }
         const trace = resolve(current.stateDirectory, `${role}-${launches.length}.jsonl`);

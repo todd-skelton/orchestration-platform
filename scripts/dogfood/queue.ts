@@ -2694,7 +2694,8 @@ export async function hasStartedDelivery(config: QueueConfig) {
 export async function retainedPostMergeDelivery(config: LoopConfig, selected: SelectedLoopIssue) {
   // The self adapter has no post-merge observation to resume.
   if (config.adapter === "self") return undefined;
-  const runDirectory = resolve(config.stateRoot, config.run);
+  // Match composition's canonical runtime paths, including macOS temporary-root aliases.
+  const runDirectory = resolve(await realpath(config.stateRoot), config.run);
   const directories = Array.from({ length: config.attemptCeiling }, (_, index) =>
     resolve(runDirectory, `${selected.key.toLowerCase()}-attempt-${index + 1}`),
   );
