@@ -61,6 +61,7 @@ interface Refresh {
   flowRetried: boolean;
   retries: number;
   head?: string;
+  reviewDirectory?: string;
   resolutionUsed?: boolean;
   conflict?: Conflict;
   publicationRefresh?: PublicationRefresh;
@@ -111,7 +112,7 @@ export async function refreshDelivery(
     await mkdir(active.directory, { recursive: true });
     await save(origin, "native-refresh", active);
   }
-  let directory = active?.directory ?? origin;
+  let directory = active?.reviewDirectory ?? active?.directory ?? origin;
   // Published delivery is already past its gates; do not rewrite an in-flight publication.
   let published = await readOptional(resolve(directory, "publication.json"));
   let publishing = await readOptional(resolve(directory, "publication-intent.json"));
@@ -298,6 +299,8 @@ export async function refreshDelivery(
     }
     if (result.status === "observing-author" || result.status === "observing-reviewer")
       return { status: result.status };
+    if (result.stateDirectory && result.stateDirectory !== directory)
+      active.reviewDirectory = result.stateDirectory;
     active.head = await git(["rev-parse", "HEAD"]);
     if (result.retries && !active.flowRetried) {
       active.flowRetried = true;
@@ -305,11 +308,11 @@ export async function refreshDelivery(
     }
     await save(origin, "native-refresh", active);
   }
-  const head = active.head;
+  let head = active.head;
   if (!head) throw new QueueBlocked("conflict-resolution-failed");
-  const refreshed: DeliveryConfig = {
+  let refreshed: DeliveryConfig = {
     ...delivery,
-    stateDirectory: directory,
+    stateDirectory: active.reviewDirectory ?? directory,
     candidateHead: head,
     ...(active.publicationRefresh ? { refresh: active.publicationRefresh } : {}),
   };
@@ -332,23 +335,35 @@ export async function refreshDelivery(
     };
     let result;
     try {
-      result = active.conflict
-        ? { retries: 0, status: "awaiting-publication" }
-        : await reviewRefresh(
-            config,
-            native,
-            pilot,
-            inherited,
-            source.inheritedWorkerRetry === undefined
-              ? 0
-              : sourceRetries || (active.flowRetried ? 1 : 0),
-          );
+      result =
+        active.conflict || active.reviewDirectory
+          ? { retries: 0, status: "awaiting-publication" }
+          : await reviewRefresh(
+              config,
+              native,
+              pilot,
+              inherited,
+              source.inheritedWorkerRetry === undefined
+                ? 0
+                : sourceRetries || (active.flowRetried ? 1 : 0),
+            );
     } catch (error) {
       if (error instanceof QueueBlocked && error.reason === "reviewer-failed")
         throw new QueueBlocked("refresh-review-failed", error.diagnostics);
       throw error;
     }
-    if (result.status === "observing-reviewer") return { status: "observing-reviewer" };
+    if (result.status === "observing-reviewer" || result.status === "observing-author")
+      return { status: result.status };
+    if (
+      "stateDirectory" in result &&
+      result.stateDirectory &&
+      result.stateDirectory !== directory
+    ) {
+      active.reviewDirectory = result.stateDirectory;
+      active.head = head = await git(["rev-parse", "HEAD"]);
+      refreshed = { ...refreshed, stateDirectory: result.stateDirectory, candidateHead: head };
+      await save(origin, "native-refresh", active);
+    }
     if (result.retries && !active.flowRetried) {
       active.flowRetried = true;
       if (!sourceRetries) active.retries++;
@@ -357,6 +372,7 @@ export async function refreshDelivery(
     // Fetch again: a moving or unavailable main must not let stale gates start.
     if ((await currentMain(git)) !== active.main) throw new QueueBlocked("current-main-moved");
   }
+  directory = active.reviewDirectory ?? directory;
   const terminal = JSON.parse(await readFile(resolve(directory, "reviewer-terminal.json"), "utf8"));
   if (parseReview(terminal.summary, delivery.run, head).verdict !== "PASS")
     throw new QueueBlocked("refresh-review-failed");

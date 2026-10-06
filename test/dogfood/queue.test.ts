@@ -24,9 +24,11 @@ import {
   repositoryQueueAdapter,
   queueStep,
   retainedSourceFailure,
+  retainedPostMergeDelivery,
   validateLoopExecutor,
   validateLoopConfig,
   validateQueueConfig,
+  verificationStop,
   type LoopConfig,
   type QueueAdapter,
   type QueueConfig,
@@ -46,6 +48,8 @@ import { codexAdapter } from "../../scripts/dogfood/dispatch-adapter.js";
 import { MAX_TERMINAL_SUMMARY_LENGTH } from "../../scripts/dogfood/terminal-summary.mjs";
 import prefixedAuthor from "./fixtures/iss-177-prefixed-author.json" with { type: "json" };
 import * as selfAdapter from "../../adapters/self.mjs";
+import * as chaseAdapter from "../../adapters/chase-sets.mjs";
+import { repositoryDeliveryPolicy } from "../../scripts/dogfood/repository-adapter.js";
 import type { RepositoryAdapter } from "../../scripts/dogfood/repository-adapter.js";
 import { gitSetupAdapter } from "../../scripts/dogfood/setup-adapter.js";
 import { setupStep } from "../../scripts/dogfood/setup.js";
@@ -1448,6 +1452,997 @@ const repositoryPolicy: RepositoryAdapter = {
 };
 const execute = promisify(execFile);
 let fixtureGit: Promise<string> | undefined;
+
+async function verificationOnlyFixture() {
+  const focused =
+    "pnpm --filter @chase-sets/app-platform-worker exec vitest run --config ./vitest.config.ts __tests__/projection-wake-interest-graph.test.ts";
+  const f = await loopFixture(false, `- Execute ${focused}`);
+  f.selected.key = "cs-361";
+  f.loop.repository = "chase-sets/chase-sets";
+  f.loop.nativeLaunchCeiling = 64;
+  const git = async (tree: string, args: string[]) =>
+    (await execute(f.gitExecutable, ["-C", tree, ...args])).stdout.trim();
+  await mkdir(resolve(f.repository, "worker/__tests__"), { recursive: true });
+  await writeFile(
+    resolve(f.repository, "planning/drafts/cs-361.md"),
+    (await readFile(resolve(f.repository, "planning/drafts/ISS-104.md"), "utf8")).replaceAll(
+      "ISS-104",
+      "cs-361",
+    ),
+  );
+  await writeFile(
+    resolve(f.repository, "package.json"),
+    JSON.stringify({
+      scripts: { "verify:static:scoped": "node gate.mjs", typecheck: "node gate.mjs" },
+    }),
+  );
+  await writeFile(resolve(f.repository, "pnpm-lock.yaml"), "synthetic lock\n");
+  await writeFile(
+    resolve(f.repository, "worker/package.json"),
+    '{"name":"@chase-sets/app-platform-worker"}',
+  );
+  await writeFile(resolve(f.repository, "worker/vitest.config.ts"), "export default {};\n");
+  await writeFile(
+    resolve(f.repository, "worker/__tests__/projection-wake-interest-graph.test.ts"),
+    "// Synthetic retained focused-test identity.\n",
+  );
+  await git(f.repository, ["add", "."]);
+  await git(f.repository, ["commit", "-m", "synthetic focused-test manifest"]);
+  f.selected.base = await git(f.repository, ["rev-parse", "HEAD"]);
+  const policy: RepositoryAdapter = {
+    ...repositoryPolicy,
+    branchName: chaseAdapter.branchName,
+    requiredChecks: chaseAdapter.requiredChecks,
+    localGates: chaseAdapter.localGates,
+    pullRequest: chaseAdapter.pullRequest,
+    mergeMethod: chaseAdapter.mergeMethod,
+  };
+  const original = await queueConfigFromLoop(f.loop, f.repository, f.selected, policy);
+  const attemptDirectory = resolve(f.loop.stateRoot, f.loop.run, "cs-361-attempt-4");
+  const sourceDirectory = resolve(attemptDirectory, "source");
+  await mkdir(sourceDirectory, { recursive: true });
+  const oldTree = resolve(f.loop.worktreeRoot, "retained-source");
+  const oldReview = resolve(f.loop.worktreeRoot, "retained-review");
+  await git(f.repository, ["worktree", "add", "--detach", oldTree, f.selected.base]);
+  await writeFile(resolve(oldTree, "feature.ts"), "export const feature = true;\n");
+  await git(oldTree, ["add", "."]);
+  await git(oldTree, ["commit", "-m", "synthetic retained unverified candidate"]);
+  const candidateHead = await git(oldTree, ["rev-parse", "HEAD"]);
+  await git(f.repository, ["worktree", "add", "--detach", oldReview, candidateHead]);
+  const history = Array.from({ length: 8 }, (_, index) => ({
+    ...participant(
+      index + 1,
+      `cs-361:${Math.floor(index / 2) + 1}`,
+      "source",
+      index % 2 ? "reviewer" : "author",
+      index % 2 ? "failed" : "passed",
+    ),
+    id: randomUUID(),
+    placement: index % 2 ? f.loop.reviewer : f.loop.author,
+  }));
+  const source = {
+    ...original.items[0]!.source,
+    stateDirectory: sourceDirectory,
+    worktree: oldTree,
+    reviewWorktree: oldReview,
+  };
+  const findings = [
+    {
+      file: "feature.ts",
+      line: 1,
+      severity: "blocking",
+      text: "Synthetic missing native execution evidence, not a quality verdict.",
+    },
+  ];
+  const put = (path: string, value: unknown) => writeFile(path, JSON.stringify(value));
+  const author = {
+    id: history[6]!.id,
+    pid: 1,
+    trace: resolve(sourceDirectory, "author.jsonl"),
+    launchedAt: 1,
+    placement: f.loop.author,
+  };
+  const reviewer = {
+    id: history[7]!.id,
+    pid: 2,
+    trace: resolve(sourceDirectory, "reviewer.jsonl"),
+    launchedAt: 1,
+    placement: f.loop.reviewer,
+  };
+  await put(resolve(sourceDirectory, "config.json"), {
+    config: source,
+    fingerprint: createHash("sha256")
+      .update(
+        JSON.stringify({ config: source, prompts: [source.author.prompt, source.reviewer.prompt] }),
+      )
+      .digest("hex"),
+  });
+  await put(resolve(sourceDirectory, "candidate.json"), {
+    head: candidateHead,
+    changed: ["feature.ts"],
+  });
+  await put(resolve(sourceDirectory, "author-attempt.json"), author);
+  await put(resolve(sourceDirectory, "author-terminal.json"), {
+    id: author.id,
+    status: "passed",
+    head: source.base,
+  });
+  await put(resolve(sourceDirectory, "reviewer-attempt.json"), reviewer);
+  await put(resolve(sourceDirectory, "reviewer-terminal.json"), {
+    id: reviewer.id,
+    status: "failed",
+    head: candidateHead,
+    summary: JSON.stringify({
+      run: f.loop.run,
+      role: "reviewer",
+      head: candidateHead,
+      verdict: "FAIL",
+      findings,
+      g0: "Synthetic historical failed review.",
+    }),
+  });
+  await writeFile(author.trace, "synthetic author evidence\n");
+  await writeFile(reviewer.trace, "synthetic failed-review evidence\n");
+  await put(resolve(attemptDirectory, "attempt.json"), {
+    schemaVersion: "dogfood-bounded-queue-attempt/v1",
+    run: f.loop.run,
+    phase: "failed",
+    index: 0,
+    item: "cs-361:4",
+    issue: source.issue,
+    base: source.base,
+    head: candidateHead,
+    reviewId: reviewer.id,
+    candidateAttempt: 4,
+    findings,
+    history,
+    retries: 1,
+    acceptedStage: null,
+    stateDirectory: null,
+    authorFailures: { count: 4, ids: history.filter((p) => p.role === "author").map((p) => p.id) },
+  });
+  const cycle = { selection: { cycle: 1, ...f.selected }, initialHistory: history };
+  const comments: string[] = [];
+  const supervisor: SupervisionAdapter = {
+    async currentMain() {
+      return f.selected.base;
+    },
+    async issue() {
+      return { state: "OPEN", key: f.selected.key, labels: ["status:needs-replan"], comments };
+    },
+    async comment(_config, _number, body) {
+      comments.push(body);
+    },
+    async removeReady() {
+      throw new Error("The synthetic held issue is not ready");
+    },
+    async close() {
+      throw new Error("no external closure");
+    },
+  };
+  await persistCycle(f.loop, cycle);
+  await stopCycle(
+    f.loop,
+    cycle,
+    "implementation-attempt-ceiling-exhausted",
+    4,
+    supervisor,
+    repositoryPolicy,
+  );
+  const grant = {
+    run: f.loop.run,
+    issueKey: f.selected.key,
+    attemptDirectory,
+    candidateHead,
+    priorReviewId: reviewer.id,
+    authorityUrl: `${source.issue}#issuecomment-9001`,
+  };
+  const loop: LoopConfig = {
+    ...f.loop,
+    adapter: "chase-sets",
+    verificationOnly: grant,
+    routingRows: [{ row: 2, review: 11, author: [f.loop.author], reviewer: [f.loop.reviewer] }],
+  };
+  const remote = resolve(f.repository, "..", "remote.git");
+  await execute(f.gitExecutable, ["clone", "--bare", f.repository, remote]);
+  await git(f.repository, [
+    "remote",
+    "add",
+    "origin",
+    "https://github.com/chase-sets/chase-sets.git",
+  ]);
+  const launcher = resolve(f.stateRoot, "verification-pnpm.mjs");
+  const gateCalls = resolve(f.stateRoot, "verification-gates.txt");
+  await writeFile(
+    launcher,
+    `import {appendFileSync} from 'node:fs'; if(process.argv[2] === 'install') process.exit(0); appendFileSync(${JSON.stringify(gateCalls)}, JSON.stringify({cwd:process.cwd(),argv:process.argv.slice(2)})+'\\n'); console.log('[VERIFY_STATIC_RUN] check:structure');`,
+  );
+  vi.stubEnv("npm_execpath", launcher);
+  const old = await snapshot(resolve(f.loop.stateRoot, f.loop.run));
+  let captures = 0;
+  const authority = async () => {
+    captures++;
+    return {
+      id: "9001",
+      url: grant.authorityUrl,
+      author: "todd-skelton",
+      body: `Synthetic explicit host grant ${JSON.stringify(grant)}`,
+      capturedAt: "2026-10-05T23:30:00.000Z",
+    };
+  };
+  const observeIssue = async () => ({
+    number: f.selected.number,
+    url: source.issue,
+    state: "OPEN",
+    title: "Synthetic verification-only candidate",
+  });
+  const compose = (current = loop, observeGrant = authority) =>
+    queueConfigFromLoop(
+      current,
+      f.repository,
+      f.selected,
+      policy,
+      history,
+      undefined,
+      observeGrant,
+      undefined,
+      observeIssue,
+    );
+  const launches: string[] = [];
+  let reviewRunning = true;
+  let rejectReview = false;
+  const native: Adapter = {
+    async preflight() {},
+    async git(tree, args) {
+      return git(
+        tree,
+        args[0] === "fetch" ? args.map((arg) => (arg === "origin" ? remote : arg)) : args,
+      );
+    },
+    async launch(role, current, prompt) {
+      expect(role).toBe("reviewer");
+      launches.push(role);
+      expect(prompt).toContain(grant.priorReviewId);
+      expect(prompt).toContain(author.trace);
+      const calls = (await readFile(gateCalls, "utf8"))
+        .trim()
+        .split("\n")
+        .map((line) => JSON.parse(line));
+      expect(calls.map((call) => call.argv)).toEqual([
+        ["run", "verify:static:scoped"],
+        ["run", "typecheck"],
+        [
+          "--filter",
+          "@chase-sets/app-platform-worker",
+          "exec",
+          "vitest",
+          "run",
+          "--config",
+          "./vitest.config.ts",
+          "__tests__/projection-wake-interest-graph.test.ts",
+        ],
+      ]);
+      return {
+        id: randomUUID(),
+        pid: 3,
+        trace: resolve(current.stateDirectory, "new-review.jsonl"),
+        launchedAt: 1,
+      };
+    },
+    async observe(role, current, attempt) {
+      if (reviewRunning) return { id: attempt.id, status: "running" };
+      const head = await git(current.worktree, ["rev-parse", "HEAD"]);
+      return {
+        id: attempt.id,
+        status: rejectReview ? "failed" : "passed",
+        head,
+        summary: JSON.stringify({
+          run: current.run,
+          role,
+          head,
+          verdict: rejectReview ? "FAIL" : "PASS",
+          findings: rejectReview ? findings : [],
+          g0: "Synthetic fresh review after native execution.",
+        }),
+      };
+    },
+    async checks() {
+      throw new Error("no worker hosted checks");
+    },
+  };
+  const effects: string[] = [];
+  let publication: PublicationEvidence | undefined;
+  let green = false,
+    merged = false,
+    cleaned = false;
+  const delivery = githubDeliveryAdapter(undefined, f.gitExecutable);
+  delivery.observePublication = async () =>
+    publication
+      ? { state: "confirmed", value: publication }
+      : { state: "needs-mutation", target: "absent" };
+  delivery.publish = async (current, plan) => {
+    effects.push("publish");
+    publication = {
+      ...plan,
+      number: 9002,
+      url: "https://github.com/chase-sets/chase-sets/pull/9002",
+      repository: current.repository,
+      head: current.candidateHead,
+      planDigest: createHash("sha256")
+        .update(
+          JSON.stringify(
+            JSON.parse(
+              await readFile(resolve(current.stateDirectory, "delivery-plan.json"), "utf8"),
+            ).plan,
+          ),
+        )
+        .digest("hex"),
+    };
+    delete (publication as unknown as Record<string, unknown>).draft;
+  };
+  delivery.checks = async (current) => ({
+    head: current.candidateHead,
+    checks: current.requiredChecks.map((name) => ({
+      name,
+      bucket: green ? "pass" : "pending",
+      link: `https://example.test/check/${encodeURIComponent(name)}`,
+    })),
+  });
+  delivery.observeMerge = async (_current, published) =>
+    merged
+      ? {
+          state: "confirmed",
+          value: { number: published.number, head: published.head, mergeCommit: published.head },
+        }
+      : { state: "needs-mutation" };
+  delivery.merge = async () => {
+    effects.push("merge");
+    merged = true;
+  };
+  delivery.observeCleanup = async (_current, plan) =>
+    cleaned ? { state: "confirmed", value: plan } : { state: "needs-mutation" };
+  delivery.cleanup = async () => {
+    effects.push("cleanup");
+    cleaned = true;
+  };
+  const adapter = (q: QueueConfig, worker = native) => {
+    return repositoryQueueAdapter(q, f.repository, {
+      native: worker,
+      delivery,
+      gitExecutable: f.gitExecutable,
+      setup: gitSetupAdapter({
+        gitExecutable: f.gitExecutable,
+        async install(_launcher, _args, tree) {
+          await mkdir(resolve(tree, "node_modules"));
+          await writeFile(resolve(tree, "node_modules/.modules.yaml"), "synthetic\n");
+          return "succeeded";
+        },
+      }),
+      repository: {
+        ...policy,
+        async afterMerge() {
+          effects.push("deployment");
+        },
+      },
+      deliveryPolicy: repositoryDeliveryPolicy(policy, f.gitExecutable),
+    });
+  };
+  return {
+    ...f,
+    loop,
+    grant,
+    compose,
+    supervisor,
+    cycle,
+    old,
+    git,
+    remote,
+    captures: () => captures,
+    authority,
+    launcher,
+    original,
+    native,
+    launches,
+    adapter,
+    delivery,
+    effects,
+    hostedGreen: () => {
+      green = true;
+    },
+    finish: (fail = false) => {
+      reviewRunning = false;
+      rejectReview = fail;
+    },
+  };
+}
+
+it.each(["pass", "review-fail", "host-fail", "refresh", "conflict", "pending-note"])(
+  "ISS-231 enters the completed-stop supervisor route once and retains attempt four: %s",
+  async (mode) => {
+    const f = await verificationOnlyFixture();
+    const { verificationOnly: _grant, ...ordinary } = f.loop;
+    expect(await nextCycle(ordinary, f.repository, f.supervisor, repositoryPolicy)).toBeUndefined();
+    if (mode === "pending-note")
+      await rm(resolve(f.loop.stateRoot, f.loop.run, "cycle-1-stop-1-complete.json"));
+    const resumed = (await nextCycle(f.loop, f.repository, f.supervisor, repositoryPolicy))!;
+    expect(resumed.selection).toEqual(f.cycle.selection);
+    expect(
+      await reconcilePendingStop(f.loop, resumed, f.supervisor, repositoryPolicy),
+    ).toBeUndefined();
+    if (["refresh", "conflict"].includes(mode)) {
+      await writeFile(
+        resolve(f.repository, mode === "conflict" ? "feature.ts" : "main.ts"),
+        "export const main = true;\n",
+      );
+      await f.git(f.repository, ["add", "."]);
+      await f.git(f.repository, ["commit", "-m", "synthetic later main"]);
+      await f.git(f.remote, ["fetch", f.repository, "main:main"]);
+    }
+    const q = await f.compose();
+    expect(q.items[0]!.implementationAttempt).toBe(4);
+    expect(q.nativeLaunchCeiling).toBe(64);
+    if (mode === "host-fail")
+      vi.stubEnv("npm_execpath", resolve(f.stateRoot, "missing-native-pnpm.exe"));
+    const adapter = f.adapter(q);
+    if (["host-fail", "conflict"].includes(mode)) {
+      const reason =
+        mode === "host-fail"
+          ? "gate-host-failed:verify:static:scoped"
+          : "verification-only-refresh-conflict";
+      await expect(queueStep(q, adapter)).rejects.toMatchObject({ reason });
+      await expect(
+        queueStep(await f.compose(), f.adapter(await f.compose())),
+      ).rejects.toMatchObject({ reason });
+      expect(f.launches).toEqual([]);
+      await stopCycle(
+        f.loop,
+        { ...f.cycle, initialHistory: await adapter.history() },
+        reason,
+        4,
+        f.supervisor,
+        repositoryPolicy,
+      );
+      await expect(
+        nextCycle(f.loop, f.repository, f.supervisor, repositoryPolicy),
+      ).rejects.toMatchObject({ reason });
+    } else {
+      expect((await queueStep(q, adapter)).status).toBe("observing-reviewer");
+      expect((await queueStep(await f.compose(), f.adapter(await f.compose()))).status).toBe(
+        "observing-reviewer",
+      );
+      expect(f.launches).toEqual(["reviewer"]);
+      f.finish(mode === "review-fail");
+      if (mode === "review-fail") {
+        await expect(queueStep(q, adapter)).rejects.toMatchObject({
+          reason: "refresh-review-failed",
+        });
+        await expect(queueStep(q, adapter)).rejects.toMatchObject({
+          reason: "refresh-review-failed",
+        });
+      } else {
+        expect((await queueStep(q, adapter)).status).toBe("observing-hosted-checks");
+        const current = JSON.parse(
+          await readFile(resolve(q.stateDirectory, "attempt.json"), "utf8"),
+        );
+        expect(current).toMatchObject({
+          candidateAttempt: 4,
+          retries: 1,
+          authorFailures: { count: 4 },
+        });
+        expect(current.head === f.grant.candidateHead).toBe(mode !== "refresh");
+        f.hostedGreen();
+        expect((await queueStep(q, adapter)).status).toBe("complete");
+        expect((await queueStep(await f.compose(), f.adapter(await f.compose()))).status).toBe(
+          "complete",
+        );
+        expect(f.effects).toEqual(["publish", "merge", "cleanup", "deployment"]);
+        expect(await retainedPostMergeDelivery(f.loop, f.selected)).toBeDefined();
+        expect(f.launches).toEqual(["reviewer"]);
+        expect(f.effects).toEqual(["publish", "merge", "cleanup", "deployment"]);
+      }
+    }
+    expect(f.captures()).toBe(1);
+    await expect(
+      nextCycle(ordinary, f.repository, f.supervisor, repositoryPolicy),
+    ).rejects.toMatchObject({ reason: "verification-only-spent" });
+    for (const [path, bytes] of f.old) expect(await readFile(path, "utf8"), path).toBe(bytes);
+    await expect(
+      f.compose({
+        ...f.loop,
+        verificationOnly: {
+          ...f.grant,
+          authorityUrl: f.grant.authorityUrl.replace("9001", "9002"),
+        },
+      }),
+    ).rejects.toMatchObject({ reason: "verification-only-mismatch" });
+  },
+);
+
+it.each(["current-main-unavailable", "deploy-not-verified"])(
+  "ISS-231 retains a post-reservation supervisor stop before queue setup: %s",
+  async (stoppedReason) => {
+    const f = await verificationOnlyFixture();
+    const q = await f.compose();
+    const reason =
+      stoppedReason === "deploy-not-verified"
+        ? "verification-only-execution-unknown"
+        : stoppedReason;
+    expect(await stopCycle(f.loop, f.cycle, stoppedReason, 4, f.supervisor, repositoryPolicy)).toBe(
+      "run",
+    );
+    await expect(
+      nextCycle(f.loop, f.repository, f.supervisor, repositoryPolicy),
+    ).rejects.toMatchObject({ reason });
+    await expect(queueStep(q, f.adapter(q))).rejects.toMatchObject({ reason });
+    expect(f.launches).toEqual([]);
+    expect(f.captures()).toBe(1);
+  },
+);
+
+it.each(["source", "refresh"])(
+  "ISS-231 delivers a pre-review %s correction and resumes its retained post-merge records",
+  async (mode) => {
+    const f = await verificationOnlyFixture();
+    const q = f.original;
+    const item = q.items[0]!;
+    await writeFile(
+      f.launcher,
+      `import {existsSync,readFileSync} from 'node:fs'; if (process.argv[3] === 'typecheck' && existsSync('feature.ts') && readFileSync('feature.ts','utf8').includes('wrongType') && (${mode === "source"} || existsSync('main-feature.ts'))) { console.log('feature.ts(1,1): error TS2322: Synthetic candidate defect.'); process.exit(1); } console.log('[VERIFY_STATIC_RUN] check:structure');`,
+    );
+    const launches: string[] = [];
+    const native: Adapter = {
+      ...f.native,
+      async launch(role, current, prompt) {
+        launches.push(role);
+        if (role === "author")
+          await writeFile(
+            resolve(current.worktree, "feature.ts"),
+            current.stateDirectory === item.source.stateDirectory
+              ? "export const wrongType = true;\n"
+              : "export const corrected = true;\n",
+          );
+        else {
+          if (current.stateDirectory !== item.source.stateDirectory)
+            expect(prompt).toContain(
+              mode === "source"
+                ? "No predecessor reviewer or PASS exists"
+                : "No predecessor PASS is assumed",
+            );
+          expect(prompt).toContain("candidate-terminal.json");
+        }
+        const trace = resolve(current.stateDirectory, `${role}.jsonl`);
+        await writeFile(trace, "Synthetic correction lifecycle evidence\n");
+        return { id: randomUUID(), pid: 3, trace, launchedAt: 1 };
+      },
+      async observe(role, current, attempt) {
+        const head =
+          role === "author" ? current.base : await f.git(current.worktree, ["rev-parse", "HEAD"]);
+        if (
+          role === "reviewer" &&
+          current.stateDirectory === item.source.stateDirectory &&
+          mode === "refresh"
+        ) {
+          const writer = resolve(f.stateRoot, "main-writer");
+          await f.git(f.repository, ["worktree", "add", "--detach", writer, f.selected.base]);
+          await writeFile(resolve(writer, "main-feature.ts"), "export const mainFeature = true;\n");
+          await f.git(writer, ["add", "."]);
+          await f.git(writer, ["commit", "-m", "synthetic integration gate trigger"]);
+          await f.git(f.remote, ["fetch", writer, "HEAD:main"]);
+        }
+        return {
+          id: attempt.id,
+          status: "passed",
+          head,
+          summary: JSON.stringify(
+            role === "author"
+              ? { run: current.run, role, head, verdict: "PASS", summary: "" }
+              : {
+                  run: current.run,
+                  role,
+                  head,
+                  verdict: "PASS",
+                  findings: [],
+                  g0: "Synthetic corrected full review.",
+                },
+          ),
+        };
+      },
+    };
+    const adapter = f.adapter(q, native);
+    expect((await queueStep(q, adapter)).status).toBe("observing-hosted-checks");
+    expect(launches).toEqual(
+      mode === "source"
+        ? ["author", "author", "reviewer"]
+        : ["author", "reviewer", "author", "reviewer"],
+    );
+    f.hostedGreen();
+    expect((await queueStep(q, adapter)).status).toBe("complete");
+    await f.git(f.repository, ["worktree", "remove", "--force", item.source.worktree]);
+    await f.git(f.repository, ["worktree", "remove", "--force", item.source.reviewWorktree]);
+    expect(await retainedPostMergeDelivery(f.loop, f.selected)).toBeDefined();
+    expect((await queueStep(q, f.adapter(q, native))).status).toBe("complete");
+    expect(launches).toEqual(
+      mode === "source"
+        ? ["author", "author", "reviewer"]
+        : ["author", "reviewer", "author", "reviewer"],
+    );
+    expect(f.effects).toEqual(["publish", "merge", "cleanup", "deployment"]);
+  },
+);
+
+it("ISS-231 attributes native candidate failure without authoring or review", async () => {
+  const f = await verificationOnlyFixture();
+  await writeFile(
+    f.launcher,
+    `import {existsSync} from 'node:fs'; if (process.argv[3] === 'typecheck' && existsSync('feature.ts')) { console.log('feature.ts(1,1): error TS2322: Synthetic candidate defect.'); process.exit(1); } console.log('[VERIFY_STATIC_RUN] check:structure');`,
+  );
+  const q = await f.compose();
+  const adapter = f.adapter(q);
+  await expect(queueStep(q, adapter)).rejects.toMatchObject({
+    reason: "verification-only-candidate-failed",
+  });
+  await expect(queueStep(await f.compose(), f.adapter(await f.compose()))).rejects.toMatchObject({
+    reason: "verification-only-candidate-failed",
+  });
+  expect(f.launches).toEqual([]);
+  expect(f.effects).toEqual([]);
+  expect(await currentCandidateAttempt(q)).toBe(4);
+});
+
+it.each(["unavailable", "author", "body"])(
+  "ISS-231 refuses %s authority before reservation",
+  async (mode) => {
+    const f = await verificationOnlyFixture();
+    await expect(
+      f.compose(f.loop, async () => {
+        if (mode === "unavailable") throw new Error("synthetic provider unavailable");
+        const observation = await f.authority();
+        return mode === "author"
+          ? { ...observation, author: "synthetic-other-user" }
+          : { ...observation, body: "Synthetic unrelated ruling" };
+      }),
+    ).rejects.toMatchObject({
+      reason:
+        mode === "unavailable"
+          ? "verification-only-authority-unavailable"
+          : "verification-only-mismatch",
+    });
+    await expect(
+      readFile(resolve(f.grant.attemptDirectory, "verification-only.json")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    expect(f.launches).toEqual([]);
+  },
+);
+
+it("ISS-231 refuses single-identity changes before any reservation", async () => {
+  const f = await verificationOnlyFixture();
+  expect(() => validateLoopConfig(f.loop)).not.toThrow();
+  expect((await verificationStop(f.loop, f.cycle.selection))?.prior.head).toBe(
+    f.grant.candidateHead,
+  );
+  for (const field of [
+    "run",
+    "issueKey",
+    "attemptDirectory",
+    "candidateHead",
+    "priorReviewId",
+    "authorityUrl",
+  ] as const) {
+    const grant = {
+      ...f.grant,
+      [field]: field === "candidateHead" ? "f".repeat(40) : f.grant[field] + "x",
+    };
+    await expect(f.compose({ ...f.loop, verificationOnly: grant })).rejects.toBeInstanceOf(
+      QueueBlocked,
+    );
+    await expect(
+      readFile(resolve(f.grant.attemptDirectory, "verification-only.json")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+  }
+  await expect(
+    f.compose({
+      ...f.loop,
+      verificationOnly: { ...f.grant, authorityUrl: f.grant.authorityUrl.replace("9001", "9002") },
+    }),
+  ).rejects.toMatchObject({ reason: "verification-only-mismatch" });
+  const original = JSON.parse(
+    await readFile(resolve(f.grant.attemptDirectory, "source/config.json"), "utf8"),
+  ).config;
+  const feature = resolve(original.worktree, "feature.ts");
+  const bytes = await readFile(feature, "utf8");
+  await writeFile(feature, "export const feature = false;\n");
+  await expect(f.compose()).rejects.toMatchObject({ reason: "verification-only-mismatch" });
+  await writeFile(feature, bytes);
+  await f.git(original.worktree, [
+    "commit",
+    "--allow-empty",
+    "-m",
+    "synthetic wrong-head same-tree",
+  ]);
+  await expect(f.compose()).rejects.toMatchObject({ reason: "verification-only-mismatch" });
+  await expect(
+    readFile(resolve(f.grant.attemptDirectory, "verification-only.json")),
+  ).rejects.toMatchObject({ code: "ENOENT" });
+  const path = resolve(f.loop.stateRoot, f.loop.run, "cycle-1-stop-1.json");
+  const stop = JSON.parse(await readFile(path, "utf8"));
+  await writeFile(path, JSON.stringify({ ...stop, reason: "author-failed" }));
+  await expect(verificationStop(f.loop, f.cycle.selection)).rejects.toMatchObject({
+    reason: "verification-only-mismatch",
+  });
+  expect(f.launches).toEqual([]);
+});
+
+it.each(["red", "unknown", "missing-log"])(
+  "ISS-231 spends the continuation on hosted %s without another author",
+  async (outcome) => {
+    const f = await verificationOnlyFixture();
+    const q = await f.compose();
+    const adapter = f.adapter(q);
+    expect((await queueStep(q, adapter)).status).toBe("observing-reviewer");
+    f.finish();
+    expect((await queueStep(q, adapter)).status).toBe("observing-hosted-checks");
+    f.delivery.checks = async (current) => {
+      if (outcome === "unknown") throw new DeliveryBlocked("hosted-observation-unavailable");
+      return {
+        head: current.candidateHead,
+        checks: [
+          {
+            name: "PR Required",
+            bucket: "fail",
+            link: "https://github.com/chase-sets/chase-sets/actions/runs/9003/job/9004",
+          },
+        ],
+      };
+    };
+    f.delivery.failedCheckLog = async () => {
+      if (outcome === "missing-log")
+        throw new DeliveryBlocked("hosted-check-log-unavailable:PR Required");
+      return "Synthetic executed candidate assertion failed\n";
+    };
+    const reason =
+      outcome === "red"
+        ? "verification-only-candidate-failed"
+        : outcome === "missing-log"
+          ? "verification-only-execution-unknown"
+          : "hosted-observation-unavailable";
+    await expect(queueStep(q, adapter)).rejects.toMatchObject({ reason });
+    await expect(queueStep(await f.compose(), f.adapter(await f.compose()))).rejects.toMatchObject({
+      reason,
+    });
+    expect(f.launches).toEqual(["reviewer"]);
+    expect(f.effects).toEqual(["publish"]);
+    expect(await currentCandidateAttempt(q)).toBe(4);
+  },
+);
+
+it.each([
+  "green",
+  "correction",
+  "typecheck",
+  "second-failure",
+  "base",
+  "unknown",
+  "retry",
+  "repair",
+])(
+  "ISS-231 runs native gates before reviewer intent, including first-review correction: %s",
+  async (mode) => {
+    const f = await loopFixture();
+    f.loop.repository = "chase-sets/chase-sets";
+    const git = async (tree: string, args: string[]) =>
+      (await execute(f.gitExecutable, ["-C", tree, ...args])).stdout.trim();
+    await writeFile(
+      resolve(f.repository, "package.json"),
+      JSON.stringify({
+        scripts: { "verify:static:scoped": "node gate.mjs", typecheck: "node gate.mjs" },
+      }),
+    );
+    await writeFile(resolve(f.repository, "pnpm-lock.yaml"), "synthetic lock\n");
+    await git(f.repository, ["add", "."]);
+    await git(f.repository, ["commit", "-m", "synthetic gate toolchain"]);
+    f.selected.base = await git(f.repository, ["rev-parse", "HEAD"]);
+    await git(f.repository, [
+      "remote",
+      "add",
+      "origin",
+      "https://github.com/chase-sets/chase-sets.git",
+    ]);
+    await mkdir(f.stateRoot, { recursive: true });
+    const launcher = resolve(f.stateRoot, "native-pnpm.mjs");
+    const calls = resolve(f.stateRoot, "gate-calls.txt");
+    const structure = `[VERIFY_STATIC_RUN] check:structure\n$ node ./scripts/check-structure.mjs && node ./scripts/check-structure/brand-foil-proof.mjs\nBrand foil: {"tracked":2,"scanned":2,"bytes":40,"readFailures":0,"nul":0,"literal":0,"raw":0,"constructor":0,"token":0,"union":0,"allowed":0,"violations":0,"roles":{}}; allowed + violations = union: 0 + 0 = 0\nStructure check failed:\n\n- synthetic.ts: synthetic deployable relative import (./context.json)\n\nSee docs/architecture/bounded-context-structure.md#rules-the-structure-gate-enforces for the enforced rules and fixes.\n[ELIFECYCLE] Command failed with exit code 1.\n[ELIFECYCLE] Command failed with exit code 1.\n`;
+    await writeFile(
+      launcher,
+      `import {appendFileSync,existsSync,readFileSync} from 'node:fs';
+      if (process.argv[2] === 'install') process.exit(0);
+      appendFileSync(${JSON.stringify(calls)}, process.cwd() + ':' + process.argv[3] + '\\n');
+      if (process.argv[3] === 'verify:static:scoped' && process.env.CHANGED_FILES_JSON !== '["synthetic.ts"]') throw new Error('ambient scope was not pinned');
+      const broken = existsSync('synthetic.ts') && readFileSync('synthetic.ts','utf8').includes('bounded-contexts/');
+      if (process.argv[3] === 'typecheck' && existsSync('synthetic.ts') && readFileSync('synthetic.ts','utf8').includes('wrongType')) { console.log('synthetic.ts(1,1): error TS2322: Synthetic wrong type.'); process.exit(1); }
+      if (process.argv[3] === 'verify:static:scoped' && (broken || ${mode === "base"})) {
+        console.log(${JSON.stringify(structure)});
+        if (${mode === "unknown"}) console.log('unaccounted second failure');
+        process.exit(1);
+      }
+      console.log('[VERIFY_STATIC_RUN] check:structure');
+    `,
+    );
+    vi.stubEnv("npm_execpath", launcher);
+    vi.stubEnv("CHANGED_FILES_JSON", '["ambient-unrelated.ts"]');
+    const q = await queueConfigFromLoop(f.loop, f.repository, f.selected, {
+      ...repositoryPolicy,
+      localGates: () => ["verify:static:scoped", "typecheck"],
+    });
+    const item = q.items[0]!;
+    const launches: string[] = [];
+    const prompts: string[] = [];
+    let malformed = mode === "retry";
+    const native: Adapter = {
+      async preflight() {},
+      git,
+      async launch(role, current, prompt) {
+        const correction = current.stateDirectory !== item.source.stateDirectory;
+        launches.push(
+          `${correction ? (current.stateDirectory === item.repair.stateDirectory ? "repair-" : "correction-") : ""}${role}`,
+        );
+        if (role === "author")
+          await writeFile(
+            resolve(current.worktree, "synthetic.ts"),
+            (!correction && ["correction", "base", "unknown"].includes(mode)) ||
+              mode === "second-failure"
+              ? `import '../../../bounded-contexts/orders/api';\n${correction ? "// Synthetic ineffective correction.\n" : ""}`
+              : !correction && mode === "typecheck"
+                ? "export const wrongType = true;\n"
+                : correction && mode === "repair"
+                  ? "export const feature = 2;\n"
+                  : "export const feature = true;\n",
+          );
+        else {
+          prompts.push(prompt);
+          const head = await git(current.worktree, ["rev-parse", "HEAD"]);
+          for (const gate of current.localGates!) {
+            const directory = resolve(
+              current.stateDirectory,
+              `gate-${createHash("sha256").update(gate).digest("hex")}`,
+            );
+            const terminal = JSON.parse(
+              await readFile(resolve(directory, "candidate-terminal.json"), "utf8"),
+            );
+            expect(terminal).toMatchObject({
+              head,
+              code: 0,
+              signal: null,
+              command: {
+                cwd: current.worktree,
+                executable: process.execPath,
+                argv: [launcher, "run", gate],
+              },
+            });
+            expect(prompt).toContain(resolve(directory, "candidate.log"));
+            expect(prompt).toContain(resolve(directory, "candidate-terminal.json"));
+          }
+        }
+        const trace = resolve(current.stateDirectory, `${role}-${launches.length}.jsonl`);
+        await writeFile(trace, "synthetic worker trace\n");
+        return { id: randomUUID(), pid: 1, trace, launchedAt: 1 };
+      },
+      async observe(role, current, attempt) {
+        const head =
+          role === "author" ? current.base : await git(current.worktree, ["rev-parse", "HEAD"]);
+        if (role === "reviewer" && malformed) {
+          malformed = false;
+          return { id: attempt.id, status: "malformed", summary: "synthetic truncated reply" };
+        }
+        const reject =
+          role === "reviewer" &&
+          mode === "repair" &&
+          current.stateDirectory === item.source.stateDirectory;
+        return {
+          id: attempt.id,
+          head,
+          status: reject ? "failed" : "passed",
+          ...(role === "reviewer"
+            ? {
+                summary: JSON.stringify({
+                  run: current.run,
+                  role,
+                  head,
+                  verdict: reject ? "FAIL" : "PASS",
+                  findings: reject
+                    ? [
+                        {
+                          file: "synthetic.ts",
+                          line: 1,
+                          severity: "blocking",
+                          text: "Synthetic semantic correction requested.",
+                        },
+                      ]
+                    : [],
+                  g0: "Synthetic independent reviewer after real native gate execution.",
+                }),
+              }
+            : {}),
+        };
+      },
+      async checks() {
+        throw new Error("no source publication");
+      },
+    };
+    const delivery = githubDeliveryAdapter(undefined, f.gitExecutable);
+    const runGate = delivery.runGate;
+    delivery.runGate = async (...args) => {
+      if (
+        !(await readFile(resolve(args[0].stateDirectory, "reviewer-attempt.json"), "utf8").catch(
+          () => "",
+        ))
+      )
+        await expect(
+          readFile(resolve(args[0].stateDirectory, "reviewer-intent.json")),
+        ).rejects.toMatchObject({ code: "ENOENT" });
+      return runGate(...args);
+    };
+    const adapter = repositoryQueueAdapter(q, f.repository, {
+      native,
+      delivery,
+      gitExecutable: f.gitExecutable,
+      setup: gitSetupAdapter({
+        gitExecutable: f.gitExecutable,
+        async install(_launcher, _args, tree) {
+          await mkdir(resolve(tree, "node_modules"));
+          await writeFile(resolve(tree, "node_modules/.modules.yaml"), "synthetic\n");
+          return "succeeded";
+        },
+      }),
+    });
+    adapter.delivery = async (_item, accepted) => ({
+      status: "observing-hosted-checks",
+      head: accepted.head,
+      reviewId: accepted.reviewId,
+      retries: accepted.retries ?? 0,
+    });
+    if (["base", "unknown", "second-failure"].includes(mode)) {
+      await expect(queueStep(q, adapter)).rejects.toMatchObject({
+        reason:
+          mode === "second-failure"
+            ? "gate-correction-exhausted:verify:static:scoped"
+            : mode === "base"
+              ? "gate-base-failed:verify:static:scoped"
+              : "gate-attribution-unknown:verify:static:scoped",
+      });
+      expect(launches).toEqual(
+        mode === "second-failure" ? ["author", "correction-author"] : ["author"],
+      );
+      await expect(
+        readFile(resolve(item.source.stateDirectory, "reviewer-intent.json")),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+    } else {
+      expect((await queueStep(q, adapter)).status).toBe("observing-hosted-checks");
+      expect(launches).toEqual(
+        mode === "repair"
+          ? ["author", "reviewer", "repair-author", "repair-reviewer"]
+          : ["correction", "typecheck"].includes(mode)
+            ? ["author", "correction-author", "correction-reviewer"]
+            : mode === "retry"
+              ? ["author", "reviewer", "reviewer"]
+              : ["author", "reviewer"],
+      );
+      const count = (await readFile(calls, "utf8")).split("\n").length;
+      await queueStep(q, adapter);
+      expect((await readFile(calls, "utf8")).split("\n").length).toBe(count);
+      expect(prompts[0]).toContain("never a review verdict");
+      if (["correction", "typecheck"].includes(mode)) {
+        await expect(
+          readFile(resolve(item.source.stateDirectory, "reviewer-attempt.json")),
+        ).rejects.toMatchObject({ code: "ENOENT" });
+        expect(prompts[0]).toContain("No predecessor reviewer or PASS exists");
+      }
+    }
+    expect(
+      JSON.parse(await readFile(resolve(q.stateDirectory, "attempt.json"), "utf8"))
+        .candidateAttempt,
+    ).toBe(mode === "repair" ? 2 : 1);
+  },
+);
 const unavailable = { status: "unavailable" as const };
 const usage = (input: number, output: number) => ({
   inputTokens: { status: "known" as const, value: input },
@@ -4167,6 +5162,14 @@ it.each(["absent", "invalid", "fail", "pass", "author-fail"])(
   "runs the real composed source lifecycle through %s operator evidence and restart",
   async (mode) => {
     const f = await unpublishedReplanFixture();
+    await f.git(["remote", "add", "origin", "https://github.com/chase-sets/chase-sets.git"]);
+    const launcher = resolve(f.loop.stateRoot, "replan-native-pnpm.mjs");
+    const gateCalls = resolve(f.loop.stateRoot, "replan-native-gates.txt");
+    await writeFile(
+      launcher,
+      `import {appendFileSync} from 'node:fs'; appendFileSync(${JSON.stringify(gateCalls)}, process.argv[3] + '\\n'); console.log('Synthetic accepted-replan native gate execution');`,
+    );
+    vi.stubEnv("npm_execpath", launcher);
     const q = await f.compose();
     const item = q.items[0]!;
     const launches: string[] = [];
@@ -4216,6 +5219,7 @@ it.each(["absent", "invalid", "fail", "pass", "author-fail"])(
       return;
     }
     await expect(queueStep(q, adapter)).rejects.toThrow("operator-evidence-required");
+    await expect(readFile(gateCalls)).rejects.toMatchObject({ code: "ENOENT" });
     const candidate = JSON.parse(
       await readFile(resolve(item.source.stateDirectory, "candidate.json"), "utf8"),
     );
@@ -4245,6 +5249,10 @@ it.each(["absent", "invalid", "fail", "pass", "author-fail"])(
       await Promise.all(Object.values(descriptor.bundle).map((path) => rm(path)));
       await expect(resume()).resolves.toMatchObject({ status: "observing-reviewer" });
       expect(launches).toEqual(["author", "reviewer"]);
+      expect((await readFile(gateCalls, "utf8")).trim().split("\n")).toEqual([
+        "verify:static:scoped",
+        "typecheck",
+      ]);
     } else {
       await expect(resume()).rejects.toThrow(
         mode === "absent"

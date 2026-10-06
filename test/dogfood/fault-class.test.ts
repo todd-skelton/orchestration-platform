@@ -187,6 +187,15 @@ describe("fault classification", () => {
       ),
     ]);
     for (const reason of cases) {
+      if (reason === "verification-only-candidate-failed") {
+        expect(classifyStop(reason)).toEqual({
+          faultClass: "attempt",
+          legacyParking: false,
+          rule: "exact",
+        });
+        expect(parksItem(reason)).toBe(true);
+        continue;
+      }
       expect(isItemStopReason(reason), reason).toBe(frozenItemStopReason(reason));
       expect(parksItem(reason), reason).toBe(frozenItemStopReason(reason));
     }

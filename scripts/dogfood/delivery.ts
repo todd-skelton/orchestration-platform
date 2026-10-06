@@ -199,7 +199,12 @@ export interface DeliveryAdapter {
   publicationUrl(config: DeliveryConfig, number: number): string;
   source(config: DeliveryConfig): Promise<SourceEvidence>;
   verifyWorkspace(config: DeliveryConfig, head: string): Promise<boolean>;
-  runGate(config: DeliveryConfig, name: string, head: string): Promise<GateResult>;
+  runGate(
+    config: DeliveryConfig,
+    name: string,
+    head: string,
+    execution?: { argv?: string[]; mainBase: string },
+  ): Promise<GateResult>;
   attributeGate?(
     config: DeliveryConfig,
     name: string,

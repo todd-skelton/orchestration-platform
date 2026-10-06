@@ -119,6 +119,18 @@ candidate, distinguish execution from claims and sandbox limitations, and make
 their own read-only verdict. Author PASS is not review authority; required but
 missing or inadequate test evidence remains a finding (ISS-139).
 
+ISS-231 collects Chase Sets' configured native local gates before reviewer
+intent, including source, repair and integration/correction DELTA launches.
+Reviewers receive the complete logs and command/head/result terminals;
+worker-sandbox pnpm non-execution remains a sandbox limitation, not gate evidence.
+Same-head retries read retained execution; refreshed heads own new evidence.
+A failed gate prevents review. ISS-152's diagnostics and immutable-main control
+decide attribution, and only candidate attribution admits the shared single
+correction. First-review correction retains the original author evidence without
+inventing a predecessor PASS or reviewer; all original review obligations and
+configured gates remain required. Self review order and delivery's post-PASS
+acceptance check are unchanged.
+
 The repair author prompt names the predecessor source state directory, and any
 later attempt's author is told the prior failed
 attempt directory at launch, outside the saved source prompt fingerprint. Both
@@ -1575,6 +1587,29 @@ race, not the retained aggregate's load attribution (ISS-156).
 Saved-stop recovery needs the separate authorization below (ISS-157).
 
 ### Accepted replans and stopped-gate recovery
+
+ISS-231 adds one explicit `verificationOnly` grant with exactly `run`, `issueKey`,
+`attemptDirectory`, `candidateHead`, `priorReviewId` and `authorityUrl`. The host
+interprets and supplies the grant. Before exclusively creating
+`verification-only.json` beneath the retained attempt, admission captures its
+live comment identity, author, full body, UTC observation and owning open issue,
+and matches the failed review, completed item stop and unchanged candidate tree.
+Other recovery instruments cannot coexist with it. The saved cycle resumes
+directly; readiness and reviewer prose grant no admission.
+
+New worktrees and records under that attempt's `verification/` retain the same
+absolute attempt, participant history, routing counts and spent allowances.
+Conflict-free native refresh precedes the configured gates and pinned brief's
+focused test, whose package and paths are resolved in the exact candidate tree.
+One independent DELTA challenges the retained FAIL, which remains unchanged.
+There is no author, correction, attempt increment or ceiling increase. Only the
+new PASS proceeds through ordinary delivery and hosted checks. Later main
+movement or conflict requires another independent host decision, not a second
+reviewer. Candidate failures park; host, environment and unknown failures do
+not. Post-reservation stops stay in `verification-stop.json`; replay cannot
+renew the continuation even after a host stop. Old records remain unchanged.
+This supplies no live grant, installation, issue mutation, preserved-run start
+or product ownership authority.
 
 ISS-215 adds a bounded terminal-park admission to the candidate executor. It is
 available to an installed host only after independent exact-head review and
