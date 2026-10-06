@@ -408,10 +408,14 @@ async function stop(error, retainedAttempts) {
     retainedAttempts ??
     (config
       ? await currentCandidateAttempt(config)
-      : reason.startsWith("terminal-attempt-admission-") &&
-          loop.terminalAttemptAdmission?.issueKey === active.selection.key
-        ? await terminalAdmissionAttempts(loop, active.selection.key)
-        : 0);
+      : loop.verificationOnly?.issueKey === active.selection.key
+        ? JSON.parse(
+            await readFile(resolve(loop.verificationOnly.attemptDirectory, "attempt.json"), "utf8"),
+          ).candidateAttempt
+        : reason.startsWith("terminal-attempt-admission-") &&
+            loop.terminalAttemptAdmission?.issueKey === active.selection.key
+          ? await terminalAdmissionAttempts(loop, active.selection.key)
+          : 0);
   try {
     const history = queueAdapter ? await queueAdapter.history() : active.initialHistory;
     const scope = await stopCycle(

@@ -1136,7 +1136,7 @@ export function githubDeliveryAdapter(
       };
     },
     verifyWorkspace,
-    async runGate(config, name, head) {
+    async runGate(config, name, head, execution) {
       if (!(await verifyWorkspace(config, head)))
         throw new DeliveryBlocked("candidate-workspace-drift");
       const directory = resolve(
@@ -1157,7 +1157,7 @@ export function githubDeliveryAdapter(
         const launcher = await resolvePnpmLauncher();
         command = {
           executable: launcher.executable,
-          argv: [...launcher.prefixArgs, "run", name],
+          argv: [...launcher.prefixArgs, ...(execution?.argv ?? ["run", name])],
           cwd: config.worktree,
         };
       } catch (error) {
@@ -1188,14 +1188,28 @@ export function githubDeliveryAdapter(
         }
         if (saved) {
           if (saved.head !== head) throw new DeliveryBlocked("gate-failure-head-drift");
-          command = saved.command;
+          if (
+            JSON.stringify(saved.command) !== JSON.stringify(command) ||
+            !(saved.code === null || Number.isInteger(saved.code)) ||
+            !(saved.signal === null || typeof saved.signal === "string")
+          )
+            throw new DeliveryBlocked(`gate-attribution-unknown:${name}`, terminalPath);
         }
-        const result = saved ?? (await gateCommand(command, log));
-        await stagedFile(
-          config,
-          `${directory.split(/[\\/]/).at(-1)}/candidate-terminal.json`,
-          JSON.stringify({ head, command, ...result }),
-        );
+        const env =
+          execution && name === STATIC_SCOPED_GATE
+            ? {
+                CHANGED_FILES_JSON: JSON.stringify(
+                  await changedFiles(gitExecutable, config, execution.mainBase, head),
+                ),
+              }
+            : undefined;
+        const result = saved ?? (await gateCommand(command, log, env));
+        if (!saved)
+          await stagedFile(
+            config,
+            `${directory.split(/[\\/]/).at(-1)}/candidate-terminal.json`,
+            JSON.stringify({ head, command, ...result }),
+          );
         const output = await readFile(log, "utf8");
         if (!(await verifyWorkspace(config, head)))
           throw new DeliveryBlocked("candidate-workspace-drift");

@@ -11,7 +11,7 @@ import { pauseBeforeSelection } from "./pause.mjs";
 // @ts-expect-error Node 24 executes this private TypeScript module directly.
 import { GithubCommandFailure } from "./github-command-failure.ts";
 // @ts-expect-error Node 24 executes this private TypeScript module directly.
-import { parksItem } from "./fault-class.ts";
+import { classifyStop, parksItem } from "./fault-class.ts";
 
 const {
   continuationSlug,
@@ -160,6 +160,7 @@ async function completedItemStop(
   cycle: number,
   selection: SelectedIssue,
   grant?: LoopConfig["gateStopAuthorization"],
+  config?: LoopConfig,
 ) {
   for (let stop = 1; ; stop += 1) {
     const intent = await optionalRecord(directory, `cycle-${cycle}-stop-${stop}`);
@@ -176,8 +177,30 @@ async function completedItemStop(
       throw new QueueBlocked(`malformed-supervision-record:cycle-${cycle}-stop-${stop}-complete`);
     // Old author-failed completions were run notes, not parking receipts.
     if (await hostedStopContinuation(directory, selection, stop, intent, grant)) continue;
+    if (config && config.verificationOnly?.issueKey !== selection.key) {
+      for (let attempt = 1; attempt <= config.attemptCeiling; attempt++) {
+        const reserved = await optionalRecord(
+          resolve(directory, `${selection.key.toLowerCase()}-attempt-${attempt}`),
+          "verification-only",
+        );
+        if (reserved !== ABSENT && reserved.stop.marker === intent.marker)
+          throw new QueueBlocked("verification-only-spent");
+      }
+    }
+    if (config?.verificationOnly?.issueKey === selection.key) {
+      const binding = await queue.verificationStop(config, selection);
+      if (binding?.stop.marker === intent.marker) continue;
+    }
     if (intent.reason !== "author-failed" && isItemStopReason(intent.reason))
       return completed.history as QueueParticipant[];
+    if (config?.verificationOnly?.issueKey === selection.key) {
+      const terminal = await optionalRecord(
+        resolve(config.verificationOnly.attemptDirectory, "verification"),
+        "verification-stop",
+      );
+      if (terminal !== ABSENT && terminal.reason === intent.reason)
+        throw new QueueBlocked(terminal.reason, terminal.diagnostics);
+    }
   }
 }
 
@@ -476,7 +499,9 @@ export async function nextCycle(
           (await retainedSourceFailure(config, selected)))
       )
         declaration = undefined;
-      initialHistory = completed.history;
+      // ISS-231 can resume an earlier cycle after later cycles have stopped.
+      // Their older receipts must not refund that continuation's launches.
+      if (completed.history.length >= initialHistory.length) initialHistory = completed.history;
       cycle += 1;
       continue;
     }
@@ -521,11 +546,12 @@ export async function nextCycle(
         cycle,
         selected,
         config.gateStopAuthorization,
+        config,
       );
       if (stoppedHistory) {
         declaration = undefined;
         validateHistory(stoppedHistory, config.nativeLaunchCeiling);
-        initialHistory = stoppedHistory;
+        if (stoppedHistory.length >= initialHistory.length) initialHistory = stoppedHistory;
         cycle += 1;
         continue;
       }
@@ -563,6 +589,8 @@ export async function nextCycle(
             (await optionalRecord(resolve(directory, integration), "spent-resolution")) !== ABSENT
           )
             slugs.push(integration, `${integration}/spent-resolution`);
+          if ((await optionalRecord(resolve(directory, slug), "verification-only")) !== ABSENT)
+            slugs.push(`${slug}/verification`);
         }
         for (const slug of slugs) {
           const history = await readQueueHistory({
@@ -885,6 +913,18 @@ export async function stopCycle(
 ) {
   validateHistory(cycle.initialHistory, config.nativeLaunchCeiling);
   const directory = supervisionDirectory(config, cycle);
+  const verification =
+    config.verificationOnly?.issueKey === cycle.selection.key
+      ? await optionalRecord(config.verificationOnly.attemptDirectory, "verification-only")
+      : ABSENT;
+  if (
+    verification !== ABSENT &&
+    retainedStop !== verification.stop.stop &&
+    classifyStop(reason).legacyParking
+  ) {
+    diagnostics = `${reason}: ${diagnostics ?? ""}`;
+    reason = "verification-only-execution-unknown";
+  }
   // A setup stop can have a selected row without having launched a worker yet.
   let routing = cycle.selection.routing;
   const slugs = config.acceptedReplan
@@ -947,6 +987,19 @@ export async function stopCycle(
       `malformed-supervision-record:cycle-${cycle.selection.cycle}-stop-${stop}`,
     );
   validateHistory(intent.history, config.nativeLaunchCeiling);
+  if (config.verificationOnly?.issueKey === cycle.selection.key) {
+    const reserved = verification;
+    if (reserved !== ABSENT && reserved.stop.marker !== intent.marker) {
+      const continuation = resolve(config.verificationOnly.attemptDirectory, "verification");
+      if ((await optionalRecord(continuation, "verification-stop")) === ABSENT) {
+        await mkdir(continuation, { recursive: true });
+        await record(continuation, "verification-stop", {
+          reason: intent.reason,
+          ...(diagnostics ? { diagnostics } : {}),
+        });
+      }
+    }
+  }
   const scope =
     isItemStopReason(intent.reason) &&
     (intent.reason !== "author-failed" || (await retainedSourceFailure(config, cycle.selection)))
@@ -1032,6 +1085,10 @@ export async function reconcilePendingStop(
     // ISS-157: finish the old learning note, then let native delivery admit the grant.
     // Completed notes already follow that path. The saved stop itself remains untouched.
     const grant = config.gateStopAuthorization;
+    if (config.verificationOnly?.issueKey === cycle.selection.key) {
+      const binding = await queue.verificationStop(config, cycle.selection);
+      if (binding?.stop.marker === intent.marker) return undefined;
+    }
     if (
       scope === "item" &&
       (await hostedStopContinuation(directory, cycle.selection, stop, intent, grant))

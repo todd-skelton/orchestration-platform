@@ -121,6 +121,7 @@ export interface NativeDbReply {
   diagnostic: string | null;
 }
 export interface Adapter {
+  beforeReview?(config: Config, head: string): Promise<{ prompt: string } | { result: FlowResult }>;
   authorRung?(config: Config): Promise<number>;
   authorRefused?(config: Config, identity: string, diagnostics?: string): Promise<void>;
   validateAuthorChanges?(config: Config): Promise<void>;
@@ -133,6 +134,14 @@ export interface Adapter {
   // ISS-165: present only when the supervisor composed the run-owned channel;
   // an absent method is unsupported, never success. No production caller yet.
   nativeDbProfile?(identity: NativeDbIdentity): Promise<NativeDbReply>;
+}
+
+export interface FlowResult {
+  status: string;
+  run: string;
+  issue: string;
+  retries?: number;
+  stateDirectory?: string;
 }
 
 export class QueueBlocked extends Error {
@@ -333,7 +342,7 @@ async function runStep(
   pilotRoot: string,
   inherited?: string,
   inheritedRetry = 0,
-) {
+): Promise<FlowResult> {
   validateConfig(config);
   const roots = await Promise.all(
     [pilotRoot, config.worktree, config.reviewWorktree].map((p) => realpath(p)),
@@ -422,13 +431,18 @@ async function runStep(
     let relaunch = false;
     for (;;) {
       if (!attempt) {
+        const nativeEvidence =
+          role === "reviewer" && adapter.beforeReview
+            ? await adapter.beforeReview(config, reviewed?.head)
+            : { prompt: "" };
+        if ("result" in nativeEvidence) return nativeEvidence.result;
         await adapter.waitForProvider?.(config);
         if (role === "author" && ladder) {
           rung = Math.min((await adapter.authorRung?.(config)) ?? rung, ladder.length - 1);
           placement = ladder[rung]!;
         }
         let reviewerHead: string | undefined;
-        let authorEvidence = hostEvidence;
+        let authorEvidence = hostEvidence + nativeEvidence.prompt;
         if (!relaunch) {
           requireThat(!(await get(`${role}-intent`)), `${role}-launch-identity-unknown-reconcile`);
           // Reserve before the first launch. A retry replaces this attempt once launched.
@@ -770,7 +784,53 @@ async function runStep(
   return result;
 }
 
-export async function step(config: Config, adapter: Adapter, pilotRoot: string) {
+async function preReviewCorrection(config: Config, adapter: Adapter, pilotRoot: string) {
+  const correction = await readOptional(resolve(config.stateDirectory, "gate-correction.json"));
+  if (!correction?.preReview) return undefined;
+  const pinned = await readOptional(resolve(config.stateDirectory, "config.json"));
+  requireThat(
+    pinned?.fingerprint ===
+      sha(JSON.stringify({ config, prompts: [config.author.prompt, config.reviewer.prompt] })),
+    "conflicting-run-configuration",
+  );
+  let result;
+  try {
+    result = await correctGate(
+      correction.source,
+      adapter,
+      pilotRoot,
+      correction.gate,
+      correction.context,
+      true,
+    );
+  } catch (error) {
+    if (
+      error instanceof QueueBlocked &&
+      ["author-failed", "reviewer-failed"].includes(error.reason)
+    )
+      throw new QueueBlocked(
+        error.reason === "author-failed"
+          ? "gate-correction-failed"
+          : "gate-correction-review-failed",
+        error.diagnostics,
+        error.retries,
+      );
+    throw error;
+  }
+  return {
+    ...result,
+    stateDirectory: correction.source.stateDirectory,
+    retries: (result.retries ?? 0) + 1,
+  };
+}
+
+export async function step(
+  config: Config,
+  adapter: Adapter,
+  pilotRoot: string,
+): Promise<FlowResult> {
+  const correction = await preReviewCorrection(config, adapter, pilotRoot);
+  if (correction) return correction;
   if (config.correctionPaths || config.inheritedWorkerRetry !== undefined)
     await reconcileCorrectionCommit(config, adapter);
   return runStep(config, adapter, pilotRoot);
@@ -783,7 +843,9 @@ export async function reviewRefresh(
   pilotRoot: string,
   inherited: string,
   inheritedRetry = 0,
-) {
+): Promise<FlowResult> {
+  const correction = await preReviewCorrection(config, adapter, pilotRoot);
+  if (correction) return correction;
   if (!(await readOptional(resolve(config.stateDirectory, "candidate.json"))))
     await record(config.stateDirectory, "candidate", await candidate(config, adapter, false));
   return runStep(config, adapter, pilotRoot, inherited, inheritedRetry);
@@ -822,7 +884,8 @@ export async function correctGate(
   pilotRoot: string,
   gate: string,
   evidence: string,
-) {
+  beforeFirstReview = false,
+): Promise<FlowResult> {
   await reconcileCorrectionCommit(config, adapter);
   return step(
     {
@@ -833,7 +896,9 @@ export async function correctGate(
       },
       reviewer: {
         ...config.reviewer,
-        prompt: `${config.reviewer.prompt}\nIndependent DELTA review: inspect the corrected hunks and direct callers against the failed head and delivery main base. Reject scope expansion, lost acceptance behavior and inadequate execution evidence. The predecessor PASS is context, never changed-code authority. ${evidence}`,
+        prompt: beforeFirstReview
+          ? `${config.reviewer.prompt}\nIndependent review: inspect the correction and direct callers against the failed head and main base, plus every original acceptance criterion. No predecessor PASS is assumed. ${evidence}`
+          : `${config.reviewer.prompt}\nIndependent DELTA review: inspect the corrected hunks and direct callers against the failed head and delivery main base. Reject scope expansion, lost acceptance behavior and inadequate execution evidence. The predecessor PASS is context, never changed-code authority. ${evidence}`,
       },
     },
     adapter,

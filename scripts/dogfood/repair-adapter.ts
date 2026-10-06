@@ -21,7 +21,7 @@ export interface RepairAdapter {
   dispatch(
     config: RepairConfig,
     handoff: RepairHandoff,
-  ): Promise<{ status: string; retries?: number }>;
+  ): Promise<{ status: string; retries?: number; stateDirectory?: string }>;
 }
 
 const reviewLocationContract = (reviewPaths: string[]) =>
