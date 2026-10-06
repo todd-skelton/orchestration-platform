@@ -902,6 +902,14 @@
       "summary": "Supply native exact-head gates before Chase Sets review and admit one explicit same-run verification-only continuation without authoring or attempt renewal.",
       "milestone": "M1",
       "blockedBy": []
+    },
+    {
+      "key": "ISS-232",
+      "file": "planning/drafts/ISS-232.md",
+      "title": "Bind a repaired brief to the verification-only continuation and state the post-PASS delivery boundary to reviewers",
+      "summary": "Pin the repaired brief on the verification-only continuation and state the reviewer delivery boundary without changing attempts or hosted enforcement.",
+      "milestone": "M1",
+      "blockedBy": ["ISS-231"]
     }
   ]
 }
