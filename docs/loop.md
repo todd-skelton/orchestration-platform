@@ -1597,6 +1597,17 @@ and matches the failed review, completed item stop and unchanged candidate tree.
 Other recovery instruments cannot coexist with it. The saved cycle resumes
 directly; readiness and reviewer prose grant no admission.
 
+ISS-233 separates historical-cycle applicability from granted-stop validation
+after VO-HISTORY-1 stopped discovery at an earlier same-key attempt. Without a
+reservation, lookup chooses the latest retained same-key stop by numeric cycle,
+then numeric stop ordinal within that cycle. Earlier stopped cycles keep their
+ordinary completed-stop behavior; they are not validated as the granted attempt.
+The target still requires the original identity, failed review, canonical marker,
+completion and live authority checks, without fallback to an older matching stop.
+An existing reservation keeps its bound stop. Pending-note reconciliation and
+direct queue admission use that same lookup; no history or grant is rewritten.
+Local fixtures establish behavior, not live admission or installation authority.
+
 ISS-232 adds optional `briefRevision: { sha256, updatedAt }` to that same grant.
 Immediately before reservation, the Chase Sets adapter reads the owning issue's
 body and update instant together and applies its existing product refinement
