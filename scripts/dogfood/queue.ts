@@ -4,6 +4,7 @@ import { mkdir, readFile, readdir, realpath, rename, writeFile } from "node:fs/p
 import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { unparkInstructions as selfUnparkInstructions } from "../../adapters/self.mjs";
+import { localGates as chaseLocalGates } from "../../adapters/chase-sets.mjs";
 import {
   continuationSlug,
   observeIntegrationAuthority,
@@ -42,6 +43,8 @@ import {
 import { codexAdapter } from "./dispatch-adapter.ts";
 // @ts-expect-error Node 24 executes this private TypeScript composition directly.
 import { correctGate, QueueBlocked, step } from "./flow.ts";
+// @ts-expect-error Node 24 executes this private TypeScript composition directly.
+import { classifyStop } from "./fault-class.ts";
 import type { Adapter, Attempt, Config as SourceConfig, Role } from "./flow.js";
 // @ts-expect-error Node 24 executes this private TypeScript composition directly.
 import { currentMain, rebaseOnto, refreshDelivery } from "./refresh.ts";
@@ -98,6 +101,12 @@ export interface QueueParticipant {
 }
 
 export interface QueueItem {
+  verificationOnly?: {
+    grant: VerificationOnly;
+    sourceDirectory: string;
+    main: string;
+    retries: number;
+  };
   terminalAttemptAdmission?: { correctionUsed: boolean; resolutionUsed: boolean };
   conflictContinuation?: { directory: string; correctionUsed: boolean };
   acceptedReplan?: AcceptedReplan;
@@ -150,6 +159,7 @@ export interface QueueConfig {
 }
 
 export interface LoopConfig {
+  verificationOnly?: VerificationOnly;
   prerequisite?: Prerequisite;
   blockedCycleResume?: { cycle: number; authorityUrl: string };
   gateStopAuthorization?: GateStopAuthorization;
@@ -173,6 +183,15 @@ export interface LoopConfig {
   acceptedReplan?: AcceptedReplan;
   integrationContinuation?: IntegrationContinuation;
   terminalAttemptAdmission?: TerminalAttemptAdmission;
+}
+
+export interface VerificationOnly {
+  run: string;
+  issueKey: string;
+  attemptDirectory: string;
+  candidateHead: string;
+  priorReviewId: string;
+  authorityUrl: string;
 }
 
 export interface Prerequisite {
@@ -377,10 +396,46 @@ export function validateLoopConfig(config: LoopConfig) {
       ...(config.gateStopAuthorization === undefined ? [] : ["gateStopAuthorization"]),
       ...(config.prerequisite === undefined ? [] : ["prerequisite"]),
       ...(config.blockedCycleResume === undefined ? [] : ["blockedCycleResume"]),
+      ...(config.verificationOnly === undefined ? [] : ["verificationOnly"]),
     ]) && config.schemaVersion === LOOP_CONFIG_SCHEMA,
     "malformed-loop-config",
   );
   demand(/^[\w.-]{1,64}$/.test(config.run) && ![".", ".."].includes(config.run), "invalid-run");
+  if (config.verificationOnly !== undefined) {
+    const grant = config.verificationOnly;
+    demand(
+      exactKeys(grant, [
+        "run",
+        "issueKey",
+        "attemptDirectory",
+        "candidateHead",
+        "priorReviewId",
+        "authorityUrl",
+      ]) &&
+        grant.run === config.run &&
+        /^[A-Za-z0-9][A-Za-z0-9-]*$/.test(grant.issueKey) &&
+        typeof grant.attemptDirectory === "string" &&
+        isAbsolute(grant.attemptDirectory) &&
+        dirname(grant.attemptDirectory) === resolve(config.stateRoot, config.run) &&
+        basename(grant.attemptDirectory).startsWith(`${grant.issueKey.toLowerCase()}-attempt-`) &&
+        SHA.test(grant.candidateHead) &&
+        /^[A-Za-z0-9._:-]{1,128}$/.test(grant.priorReviewId) &&
+        /^https:\/\/github\.com\/chase-sets\/chase-sets\/issues\/[1-9]\d*#issuecomment-[1-9]\d*$/.test(
+          grant.authorityUrl,
+        ) &&
+        config.adapter === "chase-sets" &&
+        config.repository === "chase-sets/chase-sets" &&
+        config.attemptCeiling === 4 &&
+        config.nativeLaunchCeiling === 64 &&
+        !config.acceptedReplan &&
+        !config.integrationContinuation &&
+        !config.terminalAttemptAdmission &&
+        !config.gateStopAuthorization &&
+        !config.prerequisite &&
+        !config.blockedCycleResume,
+      "invalid-verification-only-grant",
+    );
+  }
   for (const grant of [config.prerequisite, config.blockedCycleResume]) {
     if (grant === undefined) continue;
     demand(
@@ -983,6 +1038,322 @@ async function admitTerminalAttempt(
   return reservation;
 }
 
+// ISS-231: admission follows the saved cycle, never fresh readiness or review prose.
+export async function verificationStop(
+  config: LoopConfig,
+  selected: { key: string; number: number; cycle?: number },
+) {
+  const grant = config.verificationOnly;
+  if (!grant || grant.issueKey !== selected.key) return undefined;
+  const reason = "verification-only-mismatch";
+  const prior = await json(grant.attemptDirectory, "attempt");
+  demand(
+    prior.run === config.run &&
+      prior.phase === "failed" &&
+      prior.item?.startsWith(`${selected.key}:`) &&
+      prior.issue === `https://github.com/${config.repository}/issues/${selected.number}` &&
+      prior.head === grant.candidateHead &&
+      prior.reviewId === grant.priorReviewId &&
+      basename(grant.attemptDirectory) ===
+        `${selected.key.toLowerCase()}-attempt-${prior.item.split(":")[1]}` &&
+      prior.candidateAttempt <= config.attemptCeiling,
+    reason,
+  );
+  let sourceDirectory: string | undefined;
+  for (const stage of ["source", "repair"]) {
+    const directory = resolve(grant.attemptDirectory, stage);
+    const terminal = await optionalRecord(directory, "reviewer-terminal");
+    if (terminal === ABSENT || terminal.id !== grant.priorReviewId) continue;
+    const reviewer = await json(directory, "reviewer-attempt");
+    const candidate = await json(directory, "candidate");
+    const author = await json(directory, "author-attempt");
+    const authorTerminal = await json(directory, "author-terminal");
+    const pinned = await json(directory, "config");
+    demand(
+      terminal.status === "failed" &&
+        authorTerminal.status === "passed" &&
+        authorTerminal.id === author.id &&
+        authorTerminal.head === pinned.config?.base &&
+        author.id !== reviewer.id &&
+        terminal.head === grant.candidateHead &&
+        reviewer.id === terminal.id &&
+        candidate.head === grant.candidateHead &&
+        parseReview(terminal.summary, grant.run, grant.candidateHead).verdict === "FAIL",
+      reason,
+    );
+    sourceDirectory = directory;
+  }
+  demand(sourceDirectory, reason);
+  const runState = resolve(config.stateRoot, config.run);
+  const stops = (await readdir(runState)).filter((name) => /^cycle-\d+-stop-\d+\.json$/.test(name));
+  let retained: any;
+  for (const name of stops) {
+    const stop = await json(runState, name.slice(0, -5));
+    if (
+      stop.selection?.key !== selected.key ||
+      (selected.cycle && stop.selection.cycle !== selected.cycle)
+    )
+      continue;
+    if (!retained || stop.selection.cycle > retained.selection.cycle || stop.stop > retained.stop)
+      retained = stop;
+  }
+  const reservation = await optionalRecord(grant.attemptDirectory, "verification-only");
+  if (reservation !== ABSENT) {
+    demand(queueDigest(reservation.grant) === queueDigest(grant), reason);
+    retained = reservation.stop;
+  }
+  demand(
+    retained &&
+      retained.attempts === prior.candidateAttempt &&
+      ["implementation-attempt-ceiling-exhausted", "reviewer-failed"].includes(retained.reason) &&
+      (selected.cycle === undefined || retained.selection.cycle === selected.cycle) &&
+      retained.selection.number === selected.number,
+    reason,
+  );
+  return { prior, sourceDirectory, stop: retained };
+}
+
+async function verificationQueue(
+  config: LoopConfig,
+  selected: { key: string; number: number; base: string },
+  executor: Awaited<ReturnType<typeof validateLoopExecutor>>,
+  priorHistory: QueueParticipant[],
+  observeAuthority: typeof observeIntegrationAuthority,
+  observeIssue: typeof observeVerificationIssue,
+  repositoryAdapter: RepositoryAdapter,
+) {
+  const grant = config.verificationOnly!;
+  const retained = await verificationStop(config, selected);
+  demand(retained, "verification-only-mismatch");
+  const { prior, sourceDirectory, stop } = retained;
+  const reason = "verification-only-mismatch";
+  const directory = resolve(grant.attemptDirectory, "verification");
+  const saved = await optionalRecord(grant.attemptDirectory, "verification-only");
+  if (saved !== ABSENT) {
+    demand(
+      queueDigest(saved.grant) === queueDigest(grant) &&
+        queueDigest(saved.configuration) === queueDigest(config) &&
+        queueDigest(saved.selection) === queueDigest(selected),
+      reason,
+    );
+    await Promise.all(
+      ["", "setup", "source", "repair"].map((stage) =>
+        mkdir(resolve(directory, stage), { recursive: true }),
+      ),
+    );
+    return {
+      ...saved.queue,
+      controllerRevision: executor.controllerRevision,
+      items: saved.queue.items.map((item: QueueItem) => ({
+        ...item,
+        setup: { ...item.setup, controllerRevision: executor.controllerRevision },
+      })),
+    } as QueueConfig;
+  }
+  const source = (await json(sourceDirectory, "config")).config as SourceConfig;
+  const git = async (args: string[]) =>
+    (await exec(config.gitExecutable, ["-C", source.worktree, ...args])).stdout.trim();
+  demand(
+    source.run === config.run &&
+      source.stateDirectory === sourceDirectory &&
+      source.repository === config.repository &&
+      source.issue === prior.issue &&
+      (await git(["rev-parse", "HEAD"])) === grant.candidateHead &&
+      (await git(["status", "--porcelain"])) === "" &&
+      (await git(["rev-parse", "HEAD^{tree}"])) ===
+        (await git(["rev-parse", `${grant.candidateHead}^{tree}`])),
+    reason,
+  );
+  const receipt = await optionalRecord(
+    resolve(config.stateRoot, config.run),
+    `cycle-${stop.selection.cycle}-stop-${stop.stop}-complete`,
+  );
+  demand(
+    receipt !== ABSENT &&
+      receipt.stop === stop.stop &&
+      queueDigest(receipt.selection) === queueDigest(stop.selection) &&
+      queueDigest(receipt.history) === queueDigest(stop.history) &&
+      stop.marker === `loop-stop:${config.run}:${stop.selection.cycle}:${stop.stop}`,
+    reason,
+  );
+  const command =
+    "pnpm --filter @chase-sets/app-platform-worker exec vitest run --config ./vitest.config.ts __tests__/projection-wake-interest-graph.test.ts";
+  demand(
+    source.reviewer.prompt.includes(command) || source.author.prompt.includes(command),
+    reason,
+  );
+  let authority;
+  let issue;
+  try {
+    authority = await observeAuthority(grant.authorityUrl);
+    issue = await observeIssue(config.repository, selected.number);
+  } catch {
+    throw new QueueBlocked("verification-only-authority-unavailable");
+  }
+  demand(
+    authority.url === grant.authorityUrl &&
+      authority.id === grant.authorityUrl.split("issuecomment-")[1] &&
+      authority.author === "todd-skelton" &&
+      typeof authority.body === "string" &&
+      [
+        grant.run,
+        grant.issueKey,
+        grant.attemptDirectory,
+        grant.candidateHead,
+        grant.priorReviewId,
+      ].every((value) => authority.body.includes(value)) &&
+      grant.authorityUrl.startsWith(`${prior.issue}#`) &&
+      issue.number === selected.number &&
+      issue.url === prior.issue &&
+      issue.state === "OPEN",
+    reason,
+  );
+  let history = priorHistory.length > prior.history.length ? priorHistory : prior.history;
+  for (const name of await readdir(resolve(config.stateRoot, config.run))) {
+    if (!/^cycle-\d+(?:-stop-\d+)?-complete\.json$/.test(name)) continue;
+    const completed = await json(resolve(config.stateRoot, config.run), name.slice(0, -5));
+    validateHistory(completed.history, config.nativeLaunchCeiling);
+    if (completed.history.length > history.length) history = completed.history;
+  }
+  demand(
+    prior.history.every(
+      (p: QueueParticipant, index: number) =>
+        JSON.stringify(participantWithoutUsage(p)) ===
+        JSON.stringify(participantWithoutUsage(history[index])),
+    ),
+    reason,
+  );
+  validateHistory(history, config.nativeLaunchCeiling);
+  const root = resolve(executor.worktreeRoot, `${basename(grant.attemptDirectory)}-verification`);
+  const priorReviewer = await json(sourceDirectory, "reviewer-attempt");
+  const nextSource: SourceConfig = {
+    ...source,
+    base: grant.candidateHead,
+    mainBase: source.mainBase ?? source.base,
+    pilotRevision: executor.repositoryRevision,
+    worktree: `${root}-source`,
+    reviewWorktree: `${root}-review`,
+    stateDirectory: resolve(directory, "source"),
+    ...(prior.authorFailures ? { authorFailures: prior.authorFailures } : {}),
+    reviewer: {
+      ...source.reviewer,
+      ...priorReviewer.placement,
+      ...(priorReviewer.rung === undefined ? {} : { rung: priorReviewer.rung }),
+      prompt: `${source.reviewer.prompt}\nOne verification-only DELTA against failed review ${grant.priorReviewId}. Retained records: ${sourceDirectory}. Challenge all findings and every original acceptance criterion. Historical FAIL remains unchanged and no author or correction is authorized.`,
+    },
+  };
+  demand(
+    history
+      .filter((p: QueueParticipant) => p.role === "author")
+      .every((p: QueueParticipant) => p.placement?.model !== nextSource.reviewer.model),
+    reason,
+  );
+  const item: QueueItem = {
+    verificationOnly: {
+      grant,
+      sourceDirectory,
+      main: nextSource.mainBase!,
+      retries: prior.retries,
+    },
+    id: prior.item,
+    issue: prior.issue,
+    base: grant.candidateHead,
+    implementationAttempt: prior.candidateAttempt,
+    implementationAttemptCeiling: config.attemptCeiling,
+    setup: {
+      controller: source.owner,
+      run: config.run,
+      issue: prior.issue,
+      repository: config.repository,
+      baseBranch: "main",
+      controllerRevision: executor.controllerRevision,
+      pilotRevision: executor.repositoryRevision,
+      controllerRoot: executor.controllerRoot,
+      repositoryRoot: executor.repositoryRoot,
+      base: grant.candidateHead,
+      sourceBranch: `codex/run-${queueDigest(config.run)}/${basename(grant.attemptDirectory)}-verification`,
+      pilotWorktree: `${root}-pilot`,
+      sourceWorktree: nextSource.worktree,
+      reviewWorktree: nextSource.reviewWorktree,
+      stateDirectory: resolve(directory, "setup"),
+    },
+    source: nextSource,
+    repair: {
+      stateDirectory: resolve(directory, "repair"),
+      acceptanceCriteria: [source.reviewer.prompt],
+      author: source.author,
+      reviewer: nextSource.reviewer,
+    },
+    delivery: {
+      requiredChecks: source.requiredChecks,
+      localBranch: `codex/run-${queueDigest(config.run)}/${basename(grant.attemptDirectory)}-verification`,
+      policy: {
+        key: selected.key,
+        number: selected.number,
+        title: issue.title,
+        sourceBranch: await repositoryAdapter.branchName({
+          key: selected.key,
+          number: selected.number,
+          title: issue.title,
+          attempt: prior.candidateAttempt,
+        }),
+      },
+    },
+  };
+  const queue: QueueConfig = {
+    schemaVersion: QUEUE_CONFIG_SCHEMA,
+    controller: source.owner,
+    run: config.run,
+    controllerRoot: executor.controllerRoot,
+    controllerRevision: executor.controllerRevision,
+    stateDirectory: directory,
+    limit: 1,
+    nativeLaunchCeiling: config.nativeLaunchCeiling,
+    initialHistory: history,
+    items: [item],
+  };
+  validateQueueConfig(queue);
+  await writeFile(
+    resolve(grant.attemptDirectory, "verification-only.json"),
+    JSON.stringify({
+      grant,
+      configuration: config,
+      selection: selected,
+      stop,
+      authority,
+      issue,
+      candidateTree: await git(["rev-parse", `${grant.candidateHead}^{tree}`]),
+      queue,
+    }),
+    { flag: "wx", flush: true },
+  );
+  await Promise.all(
+    ["", "setup", "source", "repair"].map((stage) =>
+      mkdir(resolve(directory, stage), { recursive: true }),
+    ),
+  );
+  return queue;
+}
+
+async function observeVerificationIssue(
+  repository: string,
+  number: number,
+): Promise<{ number: number; url: string; state: string; title: string }> {
+  return JSON.parse(
+    (
+      await exec("gh", [
+        "issue",
+        "view",
+        String(number),
+        "--repo",
+        repository,
+        "--json",
+        "number,url,state,title",
+      ])
+    ).stdout,
+  );
+}
+
 export async function queueConfigFromLoop(
   config: LoopConfig,
   executingRoot: string,
@@ -992,6 +1363,7 @@ export async function queueConfigFromLoop(
   validatedExecutor?: Awaited<ReturnType<typeof validateLoopExecutor>>,
   observeAuthority = observeIntegrationAuthority,
   observePublication = observeTerminalPublication,
+  observeIssue = observeVerificationIssue,
 ) {
   validateLoopConfig(config);
   demand(
@@ -1018,6 +1390,23 @@ export async function queueConfigFromLoop(
     controllerRevision,
     repositoryRevision,
   } = validatedExecutor ?? (await validateLoopExecutor(config, executingRoot));
+  if (config.verificationOnly?.issueKey === selected.key)
+    return verificationQueue(
+      config,
+      selected,
+      {
+        controllerRoot,
+        repositoryRoot,
+        stateRoot,
+        worktreeRoot,
+        controllerRevision,
+        repositoryRevision,
+      },
+      priorHistory,
+      observeAuthority,
+      observeIssue,
+      repositoryAdapter,
+    );
   const git = async (args: string[]) =>
     (
       await exec(config.gitExecutable, ["-C", repositoryRoot, ...args], {
@@ -2034,6 +2423,7 @@ export function validateQueueConfig(config: QueueConfig) {
         ...(item.conflictContinuation === undefined ? [] : ["conflictContinuation"]),
         ...(item.integrationContinuation === undefined ? [] : ["integrationContinuation"]),
         ...(item.terminalAttemptAdmission === undefined ? [] : ["terminalAttemptAdmission"]),
+        ...(item.verificationOnly === undefined ? [] : ["verificationOnly"]),
       ]) &&
         /^[A-Za-z0-9._:-]{1,128}$/.test(item.id) &&
         typeof item.issue === "string" &&
@@ -2076,6 +2466,34 @@ export function validateQueueConfig(config: QueueConfig) {
           !item.conflictContinuation,
         "malformed-queue-item",
       );
+    if (item.verificationOnly) {
+      const continuation = item.verificationOnly;
+      demand(
+        exactKeys(continuation, ["grant", "sourceDirectory", "main", "retries"]) &&
+          exactKeys(continuation.grant, [
+            "run",
+            "issueKey",
+            "attemptDirectory",
+            "candidateHead",
+            "priorReviewId",
+            "authorityUrl",
+          ]) &&
+          continuation.grant.run === config.run &&
+          continuation.grant.candidateHead === item.base &&
+          isAbsolute(continuation.sourceDirectory) &&
+          SHA.test(continuation.main) &&
+          Number.isSafeInteger(continuation.retries) &&
+          continuation.retries >= 0 &&
+          config.stateDirectory === resolve(continuation.grant.attemptDirectory, "verification") &&
+          item.source.repository === "chase-sets/chase-sets" &&
+          !item.acceptedReplan &&
+          !item.integrationContinuation &&
+          !item.terminalAttemptAdmission &&
+          !item.conflictContinuation &&
+          !config.gateStopAuthorization,
+        "verification-only-mismatch",
+      );
+    }
     if (item.integrationContinuation)
       demand(
         exactKeys(item.integrationContinuation, [
@@ -2276,7 +2694,8 @@ export async function hasStartedDelivery(config: QueueConfig) {
 export async function retainedPostMergeDelivery(config: LoopConfig, selected: SelectedLoopIssue) {
   // The self adapter has no post-merge observation to resume.
   if (config.adapter === "self") return undefined;
-  const runDirectory = resolve(config.stateRoot, config.run);
+  // Match composition's canonical runtime paths, including macOS temporary-root aliases.
+  const runDirectory = resolve(await realpath(config.stateRoot), config.run);
   const directories = Array.from({ length: config.attemptCeiling }, (_, index) =>
     resolve(runDirectory, `${selected.key.toLowerCase()}-attempt-${index + 1}`),
   );
@@ -2285,6 +2704,15 @@ export async function retainedPostMergeDelivery(config: LoopConfig, selected: Se
   if (config.integrationContinuation?.issueKey === selected.key) {
     const integration = resolve(config.integrationContinuation.attemptDirectory, "integration");
     directories.push(integration, resolve(integration, "spent-resolution"));
+  }
+  for (const original of [...directories]) {
+    const reserved = await optionalRecord(original, "verification-only");
+    if (reserved !== ABSENT && reserved.grant.issueKey === selected.key) {
+      const directory = resolve(original, "verification");
+      const stopped = await optionalRecord(directory, "verification-stop");
+      if (stopped !== ABSENT) throw new QueueBlocked(stopped.reason, stopped.diagnostics);
+      directories.push(directory);
+    }
   }
   for (const directory of directories.reverse()) {
     const attempt = await optionalRecord(directory, "attempt");
@@ -2302,7 +2730,7 @@ export async function retainedPostMergeDelivery(config: LoopConfig, selected: Se
         retainedConfig = recovery.delivery;
         retries = Math.max(retries, recovery.delivery.retries);
         origin = resolve(origin, "gate-stop-continuation");
-      } else if (correction !== ABSENT) {
+      } else if (correction !== ABSENT && !correction.preReview) {
         const result = await optionalRecord(origin, "gate-correction-result");
         if (result === ABSENT) break;
         retainedConfig = correction.delivery;
@@ -2313,16 +2741,31 @@ export async function retainedPostMergeDelivery(config: LoopConfig, selected: Se
         if (active === ABSENT || !active.head) break;
         retries = Math.max(retries, active.retries);
         refresh = active.publicationRefresh ?? refresh;
-        origin = active.directory;
+        origin = active.reviewDirectory ?? active.directory;
       }
     }
     const merge = await optionalRecord(origin, "merge");
     const cleanup = await optionalRecord(origin, "cleanup");
     if (merge === ABSENT && cleanup === ABSENT) continue;
     demand(merge !== ABSENT && cleanup !== ABSENT, "incomplete-retained-post-merge");
+    const verification = await optionalRecord(dirname(directory), "verification-only");
+    const verifying = basename(directory) === "verification" && verification !== ABSENT;
+    const integrated = verifying
+      ? await json(resolve(directory, "source"), "native-refresh")
+      : undefined;
+    const preReview = ["source", "repair"].includes(attempt.acceptedStage)
+      ? await optionalRecord(resolve(directory, attempt.acceptedStage), "gate-correction")
+      : ABSENT;
     demand(
       ["source", "repair"].includes(attempt.acceptedStage) &&
-        attempt.stateDirectory === resolve(directory, attempt.acceptedStage),
+        (verifying
+          ? attempt.acceptedStage === "source" &&
+            attempt.stateDirectory === integrated.directory &&
+            attempt.head === integrated.head
+          : attempt.stateDirectory === resolve(directory, attempt.acceptedStage) ||
+            (preReview !== ABSENT &&
+              preReview.preReview &&
+              attempt.stateDirectory === preReview.directory)),
       "malformed-retained-post-merge-attempt",
     );
     const issue = `https://github.com/${config.repository}/issues/${selected.number}`;
@@ -2358,7 +2801,7 @@ export async function retainedPostMergeDelivery(config: LoopConfig, selected: Se
       config.acceptedReplan?.issueKey === selected.key
         ? config.acceptedReplan.publication
         : undefined;
-    const delivery: DeliveryConfig = {
+    let delivery: DeliveryConfig = {
       controller: source.controller,
       run: source.run,
       issue: source.issue,
@@ -2394,6 +2837,26 @@ export async function retainedPostMergeDelivery(config: LoopConfig, selected: Se
       ...retainedConfig,
     };
     Object.assign(delivery, { stateDirectory: origin, candidateHead: source.head, retries });
+    if (verifying) {
+      const item = verification.queue.items[0] as QueueItem;
+      delivery = {
+        controller: delivery.controller,
+        run: delivery.run,
+        issue: delivery.issue,
+        repository: delivery.repository,
+        controllerRoot: delivery.controllerRoot,
+        controllerRevision: delivery.controllerRevision,
+        repositoryRoot: delivery.repositoryRoot,
+        worktree: delivery.worktree,
+        reviewWorktree: delivery.reviewWorktree,
+        stateDirectory: origin,
+        candidateHead: source.head,
+        retries,
+        requiredChecks: delivery.requiredChecks,
+        policy: item.delivery.policy,
+        ...(item.delivery.localBranch ? { localBranch: item.delivery.localBranch } : {}),
+      };
+    }
     if (refresh) delivery.refresh = refresh;
     // The completed path is read-only and does not call any adapter mutation or
     // worktree operation. The saved fingerprint also checks reconstructed policy.
@@ -2836,12 +3299,13 @@ function initialAttempt(
     reviewId: null,
     findings: [],
     history,
-    ...(item.source.author.ladder
+    ...(item.source.author.ladder || (item.verificationOnly && item.source.authorFailures)
       ? { authorFailures: item.source.authorFailures ?? { count: 0, ids: [] } }
       : {}),
-    retries:
-      (item.integrationContinuation?.spent || item.terminalAttemptAdmission) &&
-      item.source.inheritedWorkerRetry
+    retries: item.verificationOnly
+      ? item.verificationOnly.retries
+      : (item.integrationContinuation?.spent || item.terminalAttemptAdmission) &&
+          item.source.inheritedWorkerRetry
         ? 1
         : 0,
     acceptedStage: null,
@@ -2991,6 +3455,19 @@ function assertItemReviewHistory(
   reviewId: string,
   priorParticipants: number,
 ) {
+  if (item.verificationOnly) {
+    const launched = history.slice(priorParticipants);
+    demand(
+      launched.length === 1 &&
+        launched[0]?.role === "reviewer" &&
+        launched[0].stage === "refresh" &&
+        launched[0].outcome === "passed" &&
+        launched[0].id === reviewId &&
+        reviewId !== item.verificationOnly.grant.priorReviewId,
+      "item-review-history-mismatch",
+    );
+    return;
+  }
   const sourceHistory = history.filter(
     (participant) =>
       participant.ordinal > priorParticipants &&
@@ -3130,6 +3607,34 @@ function attemptFailureRecord(
 }
 
 export async function queueStep(config: QueueConfig, adapter: QueueAdapter): Promise<QueueResult> {
+  if (!config.items[0]?.verificationOnly) return runQueueStep(config, adapter);
+  const stopped = await optionalRecord(config.stateDirectory, "verification-stop");
+  if (stopped !== ABSENT) throw new QueueBlocked(stopped.reason, stopped.diagnostics);
+  try {
+    return await runQueueStep(config, adapter);
+  } catch (error) {
+    let reason =
+      error instanceof QueueBlocked || error instanceof DeliveryBlocked
+        ? error.reason
+        : "verification-only-execution-unknown";
+    const originalReason = reason;
+    if (classifyStop(reason).legacyParking) reason = "verification-only-execution-unknown";
+    const diagnostics =
+      error instanceof QueueBlocked || error instanceof DeliveryBlocked
+        ? originalReason === reason
+          ? error.diagnostics
+          : `${originalReason}: ${error.diagnostics ?? ""}`
+        : undefined;
+    if ((await optionalRecord(config.stateDirectory, "verification-stop")) === ABSENT)
+      await record(config.stateDirectory, "verification-stop", {
+        reason,
+        ...(diagnostics ? { diagnostics } : {}),
+      });
+    throw new QueueBlocked(reason, diagnostics);
+  }
+}
+
+async function runQueueStep(config: QueueConfig, adapter: QueueAdapter): Promise<QueueResult> {
   validateQueueConfig(config);
   const directory = await realpath(config.stateDirectory);
   await adapter.assertExecutor();
@@ -3715,6 +4220,20 @@ export function repositoryQueueAdapter(
   const assertExecutor = options.assertExecutor ?? assertControllerExecutor;
   const state = config.stateDirectory;
 
+  const verificationEvidence = (current: DeliveryConfig, reviewId: string) => ({
+    head: current.candidateHead,
+    reviewId,
+    controller: current.controller,
+    run: current.run,
+    issue: current.issue,
+    repository: current.repository,
+    controllerRevision: current.controllerRevision,
+    worktree: current.worktree,
+    reviewWorktree: current.reviewWorktree,
+    stateDirectory: current.stateDirectory,
+    requiredChecks: current.requiredChecks,
+  });
+
   const readHistory = () => readQueueHistory(config);
 
   const refreshReviewAllowance =
@@ -3966,6 +4485,224 @@ export function repositoryQueueAdapter(
 
   const boundedNative = (item: QueueItem, stage: QueueParticipant["stage"]): Adapter => ({
     ...native,
+    ...(item.source.repository === "chase-sets/chase-sets"
+      ? {
+          async beforeReview(current: SourceConfig, head: string) {
+            if (
+              item.verificationOnly &&
+              (await readHistory()).length > config.initialHistory.length
+            )
+              throw new QueueBlocked(
+                "verification-only-execution-unknown",
+                "The single reviewer launch has already completed without an accepted result.",
+              );
+            demand(SHA.test(head), "candidate-head-moved");
+            const reserved = await optionalRecord(item.source.stateDirectory, "gate-correction");
+            if (
+              reserved !== ABSENT &&
+              reserved.preReview &&
+              reserved.failedDirectory === current.stateDirectory &&
+              current.stateDirectory !== item.source.stateDirectory
+            ) {
+              if ((await optionalRecord(current.stateDirectory, "gate-correction")) === ABSENT)
+                await record(current.stateDirectory, "gate-correction", reserved);
+              return {
+                result: await step(current, boundedNative(item, stage), item.setup.pilotWorktree),
+              };
+            }
+            const stop = await optionalRecord(current.stateDirectory, "gate-stop");
+            if (stop !== ABSENT) throw new QueueBlocked(stop.reason, stop.diagnostics);
+            const stopGate = async (reason: string, diagnostics?: string): Promise<never> => {
+              await record(current.stateDirectory, "gate-stop", {
+                reason,
+                ...(diagnostics ? { diagnostics } : {}),
+              });
+              throw new QueueBlocked(reason, diagnostics);
+            };
+            demand(
+              (await native.git(current.worktree, ["rev-parse", "HEAD"])) === head &&
+                (await native.git(current.worktree, ["status", "--porcelain"])) === "",
+              "candidate-workspace-drift",
+            );
+            demand(
+              (await native.git(current.reviewWorktree, ["status", "--porcelain"])) === "",
+              "dirty-reviewer",
+            );
+            await native.git(current.reviewWorktree, ["checkout", "--detach", head]);
+            const delivery: DeliveryConfig = {
+              controller: config.controller,
+              run: current.run,
+              issue: current.issue,
+              repository: current.repository,
+              controllerRoot: config.controllerRoot,
+              repositoryRoot: item.setup.repositoryRoot,
+              controllerRevision: config.controllerRevision,
+              worktree: current.worktree,
+              reviewWorktree: current.reviewWorktree,
+              stateDirectory: current.stateDirectory,
+              candidateHead: head,
+              retries: 0,
+              requiredChecks: item.delivery.requiredChecks,
+              policy: item.delivery.policy,
+            };
+            const artifacts: string[] = [];
+            const gates = [
+              ...(current.localGates ??
+                (await chaseLocalGates({ repository: current.repository }))),
+              ...(item.verificationOnly ? ["test"] : []),
+            ];
+            for (const gate of gates) {
+              try {
+                const focused =
+                  item.verificationOnly && gate === "test"
+                    ? [
+                        "--filter",
+                        "@chase-sets/app-platform-worker",
+                        "exec",
+                        "vitest",
+                        "run",
+                        "--config",
+                        "./vitest.config.ts",
+                        "__tests__/projection-wake-interest-graph.test.ts",
+                      ]
+                    : undefined;
+                if (focused) {
+                  const paths = (
+                    await native.git(current.worktree, ["ls-tree", "-r", "--name-only", head])
+                  ).split("\n");
+                  const packages: string[] = [];
+                  for (const path of paths.filter((path) => path.endsWith("/package.json"))) {
+                    const manifest = JSON.parse(
+                      await native.git(current.worktree, ["show", `${head}:${path}`]),
+                    );
+                    if (manifest.name === focused[1]) packages.push(dirname(path));
+                  }
+                  demand(
+                    packages.length === 1 &&
+                      ["vitest.config.ts", focused.at(-1)!].every((path) =>
+                        paths.includes(`${packages[0]}/${path}`),
+                      ),
+                    "verification-only-focused-test-unavailable",
+                  );
+                }
+                const observed = await deliveryAdapter.runGate(delivery, gate, head, {
+                  mainBase: current.mainBase ?? current.base,
+                  ...(focused ? { argv: focused } : {}),
+                });
+                if (
+                  observed === "failed" ||
+                  (typeof observed === "object" && observed.status === "failed")
+                )
+                  throw new LocalGateFailure(
+                    gate,
+                    typeof observed === "object" ? observed.evidence : undefined,
+                    typeof observed === "object"
+                      ? observed.output
+                      : "Native execution evidence unavailable",
+                  );
+                const directory = resolve(
+                  current.stateDirectory,
+                  `gate-${createHash("sha256").update(gate).digest("hex")}`,
+                );
+                artifacts.push(
+                  resolve(directory, "candidate.log"),
+                  resolve(directory, "candidate-terminal.json"),
+                );
+              } catch (error) {
+                if (!(error instanceof LocalGateFailure)) {
+                  if (error instanceof DeliveryBlocked)
+                    return stopGate(error.reason, error.diagnostics);
+                  throw error;
+                }
+                const failure = error.evidence;
+                if (!failure || failure.cause !== "diagnostic" || !deliveryAdapter.attributeGate)
+                  return stopGate(error.reason, error.diagnostics);
+                const main = current.mainBase ?? current.base;
+                const attribution = await deliveryAdapter.attributeGate(
+                  delivery,
+                  gate,
+                  failure,
+                  main,
+                );
+                await record(current.stateDirectory, "gate-attribution", {
+                  ...attribution,
+                  head,
+                  gate,
+                  evidence: failure,
+                });
+                if (attribution.cause !== "candidate")
+                  return stopGate(
+                    `gate-${attribution.cause === "base" ? "base-failed" : attribution.cause === "host" ? "host-failed" : "attribution-unknown"}:${gate}`,
+                    failure.log,
+                  );
+                if (item.verificationOnly)
+                  return stopGate("verification-only-candidate-failed", failure.log);
+                if (item.acceptedReplan || item.integrationContinuation)
+                  return stopGate("gate-correction-not-authorized", failure.log);
+                const origins = [
+                  item.source.stateDirectory,
+                  item.repair.stateDirectory,
+                  current.stateDirectory,
+                ];
+                const consumed = await Promise.all(
+                  origins.map((path) => optionalRecord(path, "gate-correction")),
+                );
+                if (
+                  consumed.some((record) => record !== ABSENT) ||
+                  item.terminalAttemptAdmission?.correctionUsed ||
+                  item.conflictContinuation?.correctionUsed ||
+                  basename(current.stateDirectory) === "gate-correction"
+                )
+                  return stopGate(`gate-correction-exhausted:${gate}`, failure.log);
+                const directory = resolve(current.stateDirectory, "gate-correction");
+                let prior = await optionalRecord(current.stateDirectory, "reviewer-attempt");
+                if (prior === ABSENT)
+                  prior = await optionalRecord(item.source.stateDirectory, "reviewer-attempt");
+                const context = `Native pre-review gate ${gate} failed at ${head}; full-diff main base ${main}. Exact command ${JSON.stringify(failure.command)}; complete diagnostics ${failure.log}; attribution ${resolve(current.stateDirectory, "gate-attribution.json")}. Original acceptance, source author/reviewer records and captured traces: ${item.source.stateDirectory}; failed candidate author/reviewer records and traces: ${current.stateDirectory}. Read their attempt and terminal files and the trace paths they name. ${prior === ABSENT ? "No predecessor reviewer or PASS exists; perform the original complete review as well as inspecting the correction." : `Prior review ${prior.id} is context only; retain its verdict as recorded, never assume it passed.`}`;
+                const workerAttempts = await Promise.all(
+                  ["author-attempt", "reviewer-attempt"].map((name) =>
+                    optionalRecord(current.stateDirectory, name),
+                  ),
+                );
+                await mkdir(directory, { recursive: true });
+                const correction = {
+                  preReview: true,
+                  failedDirectory: current.stateDirectory,
+                  failedHead: head,
+                  main,
+                  previousReview: prior === ABSENT ? null : prior.id,
+                  gate,
+                  directory,
+                  context,
+                  delivery,
+                  source: {
+                    ...current,
+                    base: head,
+                    mainBase: main,
+                    stateDirectory: directory,
+                    inheritedWorkerRetry:
+                      !!current.inheritedWorkerRetry ||
+                      workerAttempts.some((attempt) => attempt !== ABSENT && attempt.retries === 1),
+                  },
+                };
+                await record(item.source.stateDirectory, "gate-correction", correction);
+                if (current.stateDirectory !== item.source.stateDirectory)
+                  await record(current.stateDirectory, "gate-correction", correction);
+                const author = (await readHistory()).findLast(
+                  (p) => p.item === item.id && p.role === "author",
+                );
+                if (author && current.author.ladder) await failAuthor(author.id);
+                return {
+                  result: await step(current, boundedNative(item, stage), item.setup.pilotWorktree),
+                };
+              }
+            }
+            return {
+              prompt: `\nExecutor-native local gates executed at exact head ${head}. Complete logs and command/argv/cwd/head/result terminals: ${JSON.stringify(artifacts)}. Inspect these artifacts. Worker-sandbox pnpm non-execution is a sandbox limitation; native evidence is authoritative for these executions, never a review verdict. Preserve all acceptance and focused-test obligations.\n`,
+            };
+          },
+        }
+      : {}),
     async authorRung() {
       return (await json(state, "attempt")).authorFailures?.count ?? 0;
     },
@@ -3984,6 +4721,11 @@ export function repositoryQueueAdapter(
       );
       const priorHistory = await readHistory();
       demand(priorHistory.length < config.nativeLaunchCeiling, "native-launch-ceiling-exhausted");
+      if (item.verificationOnly)
+        demand(
+          role === "reviewer" && priorHistory.length === config.initialHistory.length,
+          "verification-only-spent",
+        );
       if (
         item.integrationContinuation?.spent &&
         priorHistory.length - config.initialHistory.length >=
@@ -3993,7 +4735,7 @@ export function repositoryQueueAdapter(
       const repairCompatiblePrompt =
         stage === "source" && role === "reviewer"
           ? `${prompt}\n\n${sourceReviewerReportPrompt(
-              (await json(item.source.stateDirectory, "candidate")).changed,
+              (await json(current.stateDirectory, "candidate")).changed,
             )}\n`
           : prompt;
       const attempt = await native.launch(
@@ -4118,9 +4860,19 @@ export function repositoryQueueAdapter(
         participant.stage === stage,
     );
     const groups = participantGroups(pair, "participant-stage-history-mismatch");
-    const selected = groups[0]?.at(-1);
+    const selected = groups.at(-1)?.at(-1);
+    const correction = await optionalRecord(
+      stage === "source" ? item.source.stateDirectory : item.repair.stateDirectory,
+      "gate-correction",
+    );
     demand(
-      groups.length === 1 && selected?.outcome === reviewerOutcome,
+      (groups.length === 1 ||
+        (groups.length === 2 &&
+          correction !== ABSENT &&
+          correction.preReview &&
+          groups[0]?.length === 1)) &&
+        selected?.role === "reviewer" &&
+        selected.outcome === reviewerOutcome,
       "participant-stage-history-mismatch",
     );
   };
@@ -4353,6 +5105,64 @@ export function repositoryQueueAdapter(
       }
     },
     async source(item): Promise<QueueSourceResult> {
+      if (item.verificationOnly) {
+        const prior = item.verificationOnly;
+        const delivery: DeliveryConfig = {
+          controller: config.controller,
+          run: config.run,
+          issue: item.issue,
+          repository: item.source.repository,
+          controllerRoot: config.controllerRoot,
+          controllerRevision: config.controllerRevision,
+          repositoryRoot: item.setup.repositoryRoot,
+          worktree: item.source.worktree,
+          reviewWorktree: item.source.reviewWorktree,
+          stateDirectory: item.source.stateDirectory,
+          candidateHead: prior.grant.candidateHead,
+          retries: prior.retries,
+          requiredChecks: item.delivery.requiredChecks,
+          policy: item.delivery.policy,
+          ...(item.delivery.localBranch ? { localBranch: item.delivery.localBranch } : {}),
+        };
+        let result;
+        try {
+          result = await refreshDelivery(
+            delivery,
+            item.source,
+            verificationEvidence(delivery, prior.grant.priorReviewId),
+            boundedNative(item, "refresh"),
+            item.setup.pilotWorktree,
+            item.source.inheritedWorkerRetry ? 1 : 0,
+            deliveryAdapter,
+            true,
+            {
+              requireReview: true,
+              main: prior.main,
+              inheritedDirectory: prior.sourceDirectory,
+              context: `Verification-only continuation against ${prior.grant.priorReviewId}; its FAIL remains unchanged. No author or correction is authorized.`,
+            },
+          );
+        } catch (error) {
+          if (
+            error instanceof QueueBlocked &&
+            ["conflict-resolution-exhausted", "rebase-conflict"].includes(error.reason)
+          )
+            throw new QueueBlocked("verification-only-refresh-conflict", error.diagnostics);
+          throw error;
+        }
+        if (result.status !== "ready") return result;
+        const pair = await passingReview(
+          item,
+          result.config.stateDirectory,
+          "refresh-review-not-accepted",
+        );
+        return {
+          status: "accepted",
+          head: pair.candidate.head,
+          reviewId: pair.selected.attempt.id,
+          stateDirectory: result.config.stateDirectory,
+        };
+      }
       demand(
         (await optionalRecord(item.source.stateDirectory, "publication")) === ABSENT,
         "source-cannot-publish",
@@ -4373,14 +5183,14 @@ export function repositoryQueueAdapter(
         await acceptedPair(item, "source", "passed");
         const { candidate, selected } = await passingReview(
           item,
-          item.source.stateDirectory,
+          result.stateDirectory ?? item.source.stateDirectory,
           "source-review-not-accepted",
         );
         return {
           status: "accepted",
           head: candidate.head,
           reviewId: selected.attempt.id,
-          stateDirectory: item.source.stateDirectory,
+          stateDirectory: result.stateDirectory ?? item.source.stateDirectory,
           ...(result.retries ? { retries: result.retries } : {}),
         };
       } catch (error) {
@@ -4433,14 +5243,14 @@ export function repositoryQueueAdapter(
         await acceptedPair(item, "repair", "passed");
         const { candidate, selected } = await passingReview(
           item,
-          item.repair.stateDirectory,
+          result.stateDirectory ?? item.repair.stateDirectory,
           "repair-review-state-unknown",
         );
         return {
           status: "accepted",
           head: candidate.head,
           reviewId: selected.attempt.id,
-          stateDirectory: item.repair.stateDirectory,
+          stateDirectory: result.stateDirectory ?? item.repair.stateDirectory,
           ...(result.retries ? { retries: result.retries } : {}),
         };
       } catch (error) {
@@ -4482,6 +5292,88 @@ export function repositoryQueueAdapter(
       }
     },
     async delivery(item, accepted): Promise<QueueDeliveryResult> {
+      if (item.verificationOnly) {
+        const pair = await passingReview(
+          item,
+          accepted.stateDirectory,
+          "refresh-review-not-accepted",
+        );
+        demand(
+          pair.candidate.head === accepted.head && pair.selected.attempt.id === accepted.reviewId,
+          "delivery-source-drift",
+        );
+        const pinned = (await json(accepted.stateDirectory, "config")).config as SourceConfig;
+        const delivery: DeliveryConfig = {
+          controller: config.controller,
+          run: config.run,
+          issue: item.issue,
+          repository: item.source.repository,
+          controllerRoot: config.controllerRoot,
+          controllerRevision: config.controllerRevision,
+          repositoryRoot: item.setup.repositoryRoot,
+          worktree: item.source.worktree,
+          reviewWorktree: item.source.reviewWorktree,
+          stateDirectory: accepted.stateDirectory,
+          candidateHead: accepted.head,
+          retries: accepted.retries ?? 0,
+          requiredChecks: item.delivery.requiredChecks,
+          policy: item.delivery.policy,
+          ...(item.delivery.localBranch ? { localBranch: item.delivery.localBranch } : {}),
+        };
+        if (
+          (await optionalRecord(accepted.stateDirectory, "publication")) === ABSENT &&
+          (await optionalRecord(accepted.stateDirectory, "publication-intent")) === ABSENT &&
+          (await optionalRecord(accepted.stateDirectory, "cleanup")) === ABSENT
+        )
+          demand(
+            (await currentMain((args) => native.git(delivery.worktree, args))) ===
+              (pinned.mainBase ?? pinned.base),
+            "current-main-moved",
+          );
+        try {
+          const result = await deliveryStep(
+            delivery,
+            {
+              ...deliveryAdapter,
+              async source() {
+                return verificationEvidence(delivery, accepted.reviewId);
+              },
+            },
+            deliveryPolicy,
+          );
+          if (result.status === "failed")
+            throw new QueueBlocked("verification-only-candidate-failed", JSON.stringify(result));
+          if (result.status === "complete" && options.repository)
+            await options.repository.afterMerge({ config: delivery, delivery: result });
+          return result;
+        } catch (error) {
+          if (error instanceof DeliveryBlocked && error.reason === "published-candidate-conflict")
+            throw new QueueBlocked("verification-only-refresh-conflict");
+          if (
+            error instanceof LocalGateFailure &&
+            error.evidence?.cause === "diagnostic" &&
+            deliveryAdapter.attributeGate
+          ) {
+            const attribution = await deliveryAdapter.attributeGate(
+              delivery,
+              error.gate,
+              error.evidence,
+              pinned.mainBase ?? pinned.base,
+            );
+            throw new QueueBlocked(
+              attribution.cause === "candidate"
+                ? "verification-only-candidate-failed"
+                : attribution.cause === "base"
+                  ? `gate-base-failed:${error.gate}`
+                  : attribution.cause === "host"
+                    ? `gate-host-failed:${error.gate}`
+                    : `gate-attribution-unknown:${error.gate}`,
+              error.evidence.log,
+            );
+          }
+          throw error;
+        }
+      }
       const stopped = await optionalRecord(accepted.stateDirectory, "gate-stop");
       const recoveryDirectory = resolve(accepted.stateDirectory, "gate-stop-continuation");
       const grant = config.gateStopAuthorization;
@@ -4718,7 +5610,7 @@ export function repositoryQueueAdapter(
           }
         : originalEvidence;
       delivery.candidateHead = integrating?.spent ? item.base : originalCandidate.head;
-      if (correctionRecord !== ABSENT) {
+      if (correctionRecord !== ABSENT && !correctionRecord.preReview) {
         const correction = correctionRecord;
         let completed = await optionalRecord(correctionOrigin, "gate-correction-result");
         if (completed === ABSENT) {
