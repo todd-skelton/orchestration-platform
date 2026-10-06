@@ -1088,9 +1088,44 @@ export async function verificationStop(
   const grant = config.verificationOnly;
   if (!grant || grant.issueKey !== selected.key) return undefined;
   const reason = "verification-only-mismatch";
+  const runState = resolve(config.stateRoot, config.run);
+  const reservation = await optionalRecord(grant.attemptDirectory, "verification-only");
+  let retained: any;
+  if (reservation !== ABSENT) {
+    demand(queueDigest(reservation.grant) === queueDigest(grant), reason);
+    retained = reservation.stop;
+  } else {
+    // ISS-233: locate the latest same-key stop across cycles before deciding
+    // whether this caller's historical cycle is the granted target. A larger
+    // ordinal in an older cycle must never displace a newer cycle's stop.
+    for (const name of await readdir(runState)) {
+      const match = /^cycle-(\d+)-stop-(\d+)\.json$/.exec(name);
+      if (!match) continue;
+      const cycle = Number(match[1]);
+      const ordinal = Number(match[2]);
+      const selection = await json(runState, `cycle-${cycle}-selected`);
+      const stop = await json(runState, name.slice(0, -5));
+      if (selection.key !== selected.key && stop.selection?.key !== selected.key) continue;
+      demand(
+        selection.cycle === cycle &&
+          queueDigest(stop.selection) === queueDigest(selection) &&
+          stop.stop === ordinal,
+        reason,
+      );
+      if (
+        !retained ||
+        cycle > retained.selection.cycle ||
+        (cycle === retained.selection.cycle && ordinal > retained.stop)
+      )
+        retained = stop;
+    }
+  }
+  demand(retained, reason);
+  if (selected.cycle !== undefined && retained.selection.cycle !== selected.cycle) return undefined;
   const prior = await json(grant.attemptDirectory, "attempt");
   demand(
-    prior.run === config.run &&
+    grant.run === config.run &&
+      prior.run === config.run &&
       prior.phase === "failed" &&
       prior.item?.startsWith(`${selected.key}:`) &&
       prior.issue === `https://github.com/${config.repository}/issues/${selected.number}` &&
@@ -1126,29 +1161,10 @@ export async function verificationStop(
     sourceDirectory = directory;
   }
   demand(sourceDirectory, reason);
-  const runState = resolve(config.stateRoot, config.run);
-  const stops = (await readdir(runState)).filter((name) => /^cycle-\d+-stop-\d+\.json$/.test(name));
-  let retained: any;
-  for (const name of stops) {
-    const stop = await json(runState, name.slice(0, -5));
-    if (
-      stop.selection?.key !== selected.key ||
-      (selected.cycle && stop.selection.cycle !== selected.cycle)
-    )
-      continue;
-    if (!retained || stop.selection.cycle > retained.selection.cycle || stop.stop > retained.stop)
-      retained = stop;
-  }
-  const reservation = await optionalRecord(grant.attemptDirectory, "verification-only");
-  if (reservation !== ABSENT) {
-    demand(queueDigest(reservation.grant) === queueDigest(grant), reason);
-    retained = reservation.stop;
-  }
   demand(
-    retained &&
-      retained.attempts === prior.candidateAttempt &&
+    retained.attempts === prior.candidateAttempt &&
       ["implementation-attempt-ceiling-exhausted", "reviewer-failed"].includes(retained.reason) &&
-      (selected.cycle === undefined || retained.selection.cycle === selected.cycle) &&
+      retained.marker === `loop-stop:${config.run}:${retained.selection.cycle}:${retained.stop}` &&
       retained.selection.number === selected.number,
     reason,
   );
@@ -1214,8 +1230,7 @@ async function verificationQueue(
     receipt !== ABSENT &&
       receipt.stop === stop.stop &&
       queueDigest(receipt.selection) === queueDigest(stop.selection) &&
-      queueDigest(receipt.history) === queueDigest(stop.history) &&
-      stop.marker === `loop-stop:${config.run}:${stop.selection.cycle}:${stop.stop}`,
+      queueDigest(receipt.history) === queueDigest(stop.history),
     reason,
   );
   const command =

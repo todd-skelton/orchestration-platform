@@ -1880,6 +1880,322 @@ async function verificationOnlyFixture(cycleNumber = 1) {
   };
 }
 
+// ISS-233 fixtures retain completed stops, not completed cycles: the latter
+// bypass completedItemStop and cannot reproduce VO-HISTORY-1.
+async function mixedVerificationHistory(targetCycle = 3) {
+  const f = await verificationOnlyFixture(targetCycle);
+  const directory = resolve(f.loop.stateRoot, f.loop.run);
+  // Retain charged participants from both unrelated issues. The original
+  // fixture's composition closure shares this accumulated history array.
+  for (const participant of f.cycle.initialHistory) participant.ordinal++;
+  f.cycle.initialHistory.unshift({
+    ...participant(1, "cs-360:1", "source", "author", "failed"),
+    id: randomUUID(),
+    placement: f.loop.author!,
+  });
+  for (const name of [
+    "cs-361-attempt-4/attempt",
+    `cycle-${targetCycle}-stop-1`,
+    `cycle-${targetCycle}-stop-1-complete`,
+  ]) {
+    const path = resolve(directory, `${name}.json`);
+    const record = JSON.parse(await readFile(path, "utf8"));
+    record.history = f.cycle.initialHistory;
+    await writeFile(path, JSON.stringify(record));
+  }
+  const host: SupervisionAdapter = {
+    ...f.supervisor,
+    async issue(config, number, purpose) {
+      return { ...(await f.supervisor.issue(config, number, purpose)), key: `cs-${number}` };
+    },
+  };
+  const laterHistory = [
+    ...f.cycle.initialHistory,
+    { ...participant(10, "cs-362:1", "source", "author", "failed"), id: randomUUID() },
+  ];
+  // Create the target first and the other cycles in reverse order. Cycle 10
+  // additionally sorts before cycle 2 in a lexical directory enumeration.
+  for (let cycle = targetCycle + 1; cycle >= 1; cycle--) {
+    if (cycle === targetCycle) continue;
+    const sameKey = cycle === 2;
+    const retained = {
+      selection: {
+        cycle,
+        key: sameKey ? f.selected.key : `cs-${cycle === 1 ? 360 : 362}`,
+        number: sameKey ? f.selected.number : cycle === 1 ? 360 : 362,
+        base: f.selected.base,
+      },
+      initialHistory:
+        cycle > targetCycle ? laterHistory : f.cycle.initialHistory.slice(0, cycle === 1 ? 1 : 7),
+    };
+    await persistCycle(f.loop, retained);
+    for (const reason of sameKey
+      ? [
+          "current-main-unavailable",
+          "issue-observation-unavailable",
+          "provider-unavailable",
+          "refresh-review-failed",
+        ]
+      : ["implementation-attempt-ceiling-exhausted"])
+      await stopCycle(f.loop, retained, reason, 3, host, repositoryPolicy);
+  }
+  const resume = (loop = f.loop) => nextCycle(loop, f.repository, host, repositoryPolicy);
+  const authority = async () => {
+    await expect(
+      readFile(resolve(f.grant.attemptDirectory, "verification-only.json")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    return f.authority();
+  };
+  return {
+    ...f,
+    directory,
+    host,
+    laterHistory,
+    resume,
+    compose: (loop = f.loop) => f.compose(loop, authority),
+    before: await snapshot(directory),
+    change: async (name: string, mutate: (record: any) => void) => {
+      const path = resolve(directory, `${name}.json`);
+      const record = JSON.parse(await readFile(path, "utf8"));
+      mutate(record);
+      await writeFile(path, JSON.stringify(record));
+    },
+  };
+}
+
+it.each([3, 10])(
+  "ISS-233 mixed stopped history reaches only cycle %s and preserves replay accounting",
+  async (targetCycle) => {
+    const f = await mixedVerificationHistory(targetCycle);
+    for (let replay = 0; replay < 2; replay++) {
+      expect((await f.resume())?.selection).toEqual(f.cycle.selection);
+      expect((await verificationStop(f.loop, f.cycle.selection))?.stop.marker).toBe(
+        `loop-stop:${f.loop.run}:${targetCycle}:1`,
+      );
+    }
+    const configBytes = JSON.stringify(f.loop);
+    const q = await f.compose();
+    expect(q.initialHistory).toEqual(f.laterHistory);
+    expect(q.items[0]!.implementationAttempt).toBe(4);
+    expect(q.nativeLaunchCeiling).toBe(64);
+    const reservationPath = resolve(f.grant.attemptDirectory, "verification-only.json");
+    const reservation = await readFile(reservationPath, "utf8");
+    expect(JSON.parse(reservation).stop.marker).toBe(`loop-stop:${f.loop.run}:${targetCycle}:1`);
+    const adapter = f.adapter(q);
+    for (let replay = 0; replay < 2; replay++) {
+      expect((await f.resume())?.selection).toEqual(f.cycle.selection);
+      expect((await queueStep(await f.compose(), adapter)).status).toBe("observing-reviewer");
+      expect(await readFile(reservationPath, "utf8")).toBe(reservation);
+    }
+    expect(f.launches).toEqual(["reviewer"]);
+    expect(f.captures()).toBe(1);
+    f.finish(true);
+    await expect(queueStep(q, adapter)).rejects.toMatchObject({ reason: "refresh-review-failed" });
+    await stopCycle(
+      f.loop,
+      { ...f.cycle, initialHistory: await adapter.history() },
+      "refresh-review-failed",
+      4,
+      f.host,
+      repositoryPolicy,
+    );
+    for (let replay = 0; replay < 2; replay++) {
+      await expect(queueStep(await f.compose(), adapter)).rejects.toMatchObject({
+        reason: "refresh-review-failed",
+      });
+      expect(await f.resume()).toBeUndefined();
+    }
+    const attempt = JSON.parse(await readFile(resolve(q.stateDirectory, "attempt.json"), "utf8"));
+    expect(attempt).toMatchObject({
+      candidateAttempt: 4,
+      retries: 1,
+      authorFailures: { count: 4 },
+    });
+    const charged = await adapter.history();
+    expect(charged.slice(0, 10)).toEqual(f.laterHistory);
+    expect(charged).toHaveLength(11);
+    expect(charged[10]).toMatchObject({ ordinal: 11, role: "reviewer", item: "cs-361:4" });
+    await expect(
+      f.compose({
+        ...f.loop,
+        verificationOnly: {
+          ...f.grant,
+          authorityUrl: f.grant.authorityUrl.replace("9001", "9002"),
+        },
+      }),
+    ).rejects.toMatchObject({ reason: "verification-only-mismatch" });
+    const { verificationOnly: _grant, ...ordinary } = f.loop;
+    await expect(f.resume(ordinary)).rejects.toMatchObject({ reason: "verification-only-spent" });
+    expect(f.launches).toEqual(["reviewer"]);
+    expect(f.effects).toEqual([]);
+    expect(JSON.stringify(f.loop)).toBe(configBytes);
+    for (const [path, bytes] of f.before) expect(await readFile(path, "utf8"), path).toBe(bytes);
+  },
+);
+
+it("ISS-233 orders stop ordinals numerically within the latest cycle", async () => {
+  const f = await mixedVerificationHistory();
+  for (const suffix of ["", "-complete"])
+    await rm(resolve(f.directory, `cycle-3-stop-1${suffix}.json`));
+  for (let stop = 1; stop <= 10; stop++)
+    await stopCycle(
+      f.loop,
+      f.cycle,
+      stop === 10 ? "reviewer-failed" : "current-main-unavailable",
+      4,
+      f.host,
+      repositoryPolicy,
+    );
+  expect((await f.resume())?.selection).toEqual(f.cycle.selection);
+  const q = await f.compose();
+  const saved = JSON.parse(
+    await readFile(resolve(f.grant.attemptDirectory, "verification-only.json"), "utf8"),
+  );
+  expect(saved.stop.marker).toBe(`loop-stop:${f.loop.run}:3:10`);
+  expect(q.items[0]!.implementationAttempt).toBe(4);
+  expect(f.launches).toEqual([]);
+});
+
+it.each([
+  "head",
+  "review",
+  "run",
+  "review-status",
+  "absolute-attempt",
+  "attempt",
+  "marker",
+  "completion",
+  "key",
+  "number",
+  "reason",
+  "older-match",
+])("ISS-233 rejects target %s before reservation without falling back", async (mode) => {
+  const f = await mixedVerificationHistory();
+  if (mode === "run")
+    await f.change("cs-361-attempt-4/attempt", (r) => {
+      r.run = "foreign-run";
+    });
+  if (mode === "review-status")
+    await f.change("cs-361-attempt-4/source/reviewer-terminal", (r) => {
+      r.status = "passed";
+    });
+  if (mode === "absolute-attempt")
+    await f.change("cs-361-attempt-4/attempt", (r) => {
+      r.candidateAttempt = 3;
+    });
+  if (mode === "head")
+    await f.change("cs-361-attempt-4/attempt", (r) => {
+      r.head = "f".repeat(40);
+    });
+  if (mode === "review")
+    await f.change("cs-361-attempt-4/attempt", (r) => {
+      r.reviewId = randomUUID();
+    });
+  if (mode === "attempt")
+    await f.change("cycle-3-stop-1", (r) => {
+      r.attempts = 3;
+    });
+  if (mode === "marker")
+    await f.change("cycle-3-stop-1", (r) => {
+      r.marker += ":foreign";
+    });
+  if (mode === "completion")
+    await f.change("cycle-3-stop-1-complete", (r) => {
+      r.history = [];
+    });
+  if (mode === "key")
+    await f.change("cycle-3-stop-1", (r) => {
+      r.selection.key = "cs-999";
+    });
+  if (mode === "number")
+    await f.change("cycle-3-stop-1", (r) => {
+      r.selection.number = 999;
+    });
+  if (mode === "reason" || mode === "older-match")
+    await f.change("cycle-3-stop-1", (r) => {
+      r.reason = "author-failed";
+    });
+  if (mode === "older-match")
+    await f.change("cycle-2-stop-4", (r) => {
+      r.reason = "implementation-attempt-ceiling-exhausted";
+      r.attempts = 4;
+    });
+  const before = await snapshot(f.directory);
+  if (mode === "completion") {
+    expect((await f.resume())?.selection).toEqual(f.cycle.selection);
+    await expect(f.compose()).rejects.toMatchObject({ reason: "verification-only-mismatch" });
+  } else {
+    // A malformed target must refuse discovery, not quietly become idle.
+    await expect(f.resume()).rejects.toMatchObject({ reason: "verification-only-mismatch" });
+  }
+  expect(await snapshot(f.directory)).toEqual(before);
+  expect(f.captures()).toBe(0);
+  expect(f.launches).toEqual([]);
+  expect(f.effects).toEqual([]);
+});
+
+it.each([true, false])(
+  "ISS-233 reconciles pending notes with historical applicability (target: %s)",
+  async (target) => {
+    const f = await mixedVerificationHistory();
+    const cycle = target
+      ? f.cycle
+      : {
+          selection: JSON.parse(
+            await readFile(resolve(f.directory, "cycle-2-selected.json"), "utf8"),
+          ),
+          initialHistory: f.cycle.initialHistory.slice(0, 7),
+        };
+    const number = target ? 1 : 4;
+    await rm(resolve(f.directory, `cycle-${cycle.selection.cycle}-stop-${number}-complete.json`));
+    expect((await f.resume())?.selection).toEqual(cycle.selection);
+    const outcome = await reconcilePendingStop(f.loop, cycle, f.host, repositoryPolicy);
+    expect(outcome).toEqual(
+      target ? undefined : { scope: "item", reason: "refresh-review-failed" },
+    );
+    expect(
+      JSON.parse(
+        await readFile(
+          resolve(f.directory, `cycle-${cycle.selection.cycle}-stop-${number}-complete.json`),
+          "utf8",
+        ),
+      ).selection,
+    ).toEqual(cycle.selection);
+    expect((await f.resume())?.selection).toEqual(f.cycle.selection);
+    await f.compose();
+    expect(f.captures()).toBe(1);
+    expect(f.launches).toEqual([]);
+  },
+);
+
+it("ISS-233 leaves no-grant and foreign-key history ordinary", async () => {
+  const f = await mixedVerificationHistory();
+  const { verificationOnly: _grant, ...ordinary } = f.loop;
+  expect(await f.resume(ordinary)).toBeUndefined();
+  expect(await verificationStop(f.loop, { key: "cs-362", number: 362, cycle: 4 })).toBeUndefined();
+  expect(await snapshot(f.directory)).toEqual(f.before);
+  expect(f.captures()).toBe(0);
+  expect(f.launches).toEqual([]);
+});
+
+it.each(["malformed", "unreadable"])(
+  "ISS-233 does not suppress %s historical records",
+  async (mode) => {
+    const f = await mixedVerificationHistory();
+    const path = resolve(f.directory, "cycle-2-stop-1.json");
+    if (mode === "malformed") await writeFile(path, "{");
+    else {
+      await rm(path);
+      await mkdir(path);
+    }
+    await expect(f.resume()).rejects.toThrow();
+    await expect(
+      readFile(resolve(f.grant.attemptDirectory, "verification-only.json")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    expect(f.launches).toEqual([]);
+  },
+);
+
 async function pinnedVerificationFixture() {
   const f = await verificationOnlyFixture();
   const focused =
