@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  CHASE_REVIEW_DELIVERY_BOUNDARY,
   correctGate,
   QueueBlocked,
   reviewRefresh,
@@ -239,10 +240,20 @@ function nativeChannel(root: string) {
   return { admission, written, invoke, flush };
 }
 
+it("ISS-232 does not add the Chase delivery statement to a self reviewer", async () => {
+  const f = await fixture();
+  f.config.repository = "todd-skelton/orchestration-platform";
+  await f.run();
+  f.authorDone();
+  expect((await f.run()).status).toBe("observing-reviewer");
+  expect(f.launchPrompts.at(-1)).not.toContain(CHASE_REVIEW_DELIVERY_BOUNDARY);
+});
+
 it.each(["source", "repair", "gate", "conflict-boundary", "review-refresh"])(
   "retains the composed native profile method at the %s entry without a production request",
   async (caller) => {
     const f = await fixture();
+    f.config.repository = "chase-sets/chase-sets";
     const root = resolve(f.config.stateDirectory, "..");
     const c = nativeChannel(root);
     const receivers = new Set<Adapter>();
@@ -329,6 +340,10 @@ it.each(["source", "repair", "gate", "conflict-boundary", "review-refresh"])(
       status: caller === "review-refresh" ? "observing-reviewer" : "observing-author",
     });
     expect(c.written).toEqual([]);
+    for (const [index, role] of f.launches.entries())
+      expect(f.launchPrompts[index]!.split(CHASE_REVIEW_DELIVERY_BOUNDARY)).toHaveLength(
+        role === "reviewer" ? 2 : 1,
+      );
     expect(receivers.size).toBeGreaterThan(0);
     // The spread callers hand flow a new object; the direct callers hand it the composition.
     expect([...receivers].some((adapter) => adapter !== composed)).toBe(
@@ -341,9 +356,28 @@ it.each(["source", "repair", "gate", "conflict-boundary", "review-refresh"])(
     }
     const requests = receivers.size;
     expect(c.written).toHaveLength(requests);
+    if (["gate", "review-refresh"].includes(caller)) {
+      if (caller === "gate") f.authorDone();
+      await expect(run()).resolves.toMatchObject({ status: "observing-reviewer" });
+      const count = f.launches.length;
+      await expect(run()).resolves.toMatchObject({ status: "observing-reviewer" });
+      expect(f.launches).toHaveLength(count);
+      f.statuses.reviewer = "malformed";
+      f.retry("running");
+      await expect(run()).resolves.toMatchObject({ status: "observing-reviewer", retries: 1 });
+      expect(f.launches).toHaveLength(count + 1);
+      for (const [index, role] of f.launches.entries())
+        if (role === "reviewer") {
+          expect(f.launchPrompts[index]!.split(CHASE_REVIEW_DELIVERY_BOUNDARY)).toHaveLength(2);
+          expect(f.launchPrompts[index]).toContain(
+            "missing or inadequate test results remain findings",
+          );
+        }
+    }
     if (caller !== "source") return;
     f.authorDone();
     await expect(run()).resolves.toMatchObject({ status: "observing-reviewer" });
+    expect(f.launchPrompts.at(-1)!.split(CHASE_REVIEW_DELIVERY_BOUNDARY)).toHaveLength(2);
     f.reviewerDone();
     await expect(run()).resolves.toMatchObject({ status: "awaiting-publication" });
     await f.publish();
@@ -783,7 +817,7 @@ async function fixture() {
   const publish = () =>
     writeFile(
       resolve(stateDirectory, "publication.json"),
-      JSON.stringify({ head, url: "https://github.com/owner/repo/pull/320" }),
+      JSON.stringify({ head, url: `https://github.com/${config.repository}/pull/320` }),
     );
   return {
     config,
@@ -1412,6 +1446,7 @@ describe("supervised sequential pilot (fake attempts, never live acceptance)", (
     "keeps selected repair evidence and delta scope discoverable across resume and %s reviewer retry",
     async (failure) => {
       const f = await fixture();
+      f.config.repository = "chase-sets/chase-sets";
       const initialTrace = resolve(f.config.stateDirectory, "initial-author.jsonl");
       await writeFile(
         resolve(f.config.stateDirectory, "author-attempt.json"),
@@ -1452,6 +1487,7 @@ describe("supervised sequential pilot (fake attempts, never live acceptance)", (
       f.retry("running");
       await expect(dispatch()).resolves.toMatchObject({ status: "observing-reviewer", retries: 1 });
       for (const prompt of f.launchPrompts.slice(1)) {
+        expect(prompt.split(CHASE_REVIEW_DELIVERY_BOUNDARY)).toHaveLength(2);
         await expectAuthorEvidence(f.config, prompt);
         expect(prompt).not.toContain(JSON.stringify(initialTrace));
         expect(prompt).toContain("DELTA review inheriting complete predecessor initial-reviewer");
@@ -1482,6 +1518,7 @@ describe("supervised sequential pilot (fake attempts, never live acceptance)", (
 
   it("waits before gate corrections and replaces a provider-dead correction", async () => {
     const f = await fixture();
+    f.config.repository = "chase-sets/chase-sets";
     const probe = fakeProvider(f, [undefined, "offline", undefined]);
     f.statuses.author = "dead";
     f.summarize("author", "HTTP 502");
@@ -1489,6 +1526,7 @@ describe("supervised sequential pilot (fake attempts, never live acceptance)", (
     const result = await correctGate(f.config, f.adapter, f.pilot, "typecheck", "type error");
     expect(result.status).toBe("observing-reviewer");
     expect(f.launches).toEqual(["author", "author", "reviewer"]);
+    expect(f.launchPrompts[2]!.split(CHASE_REVIEW_DELIVERY_BOUNDARY)).toHaveLength(2);
     expect(f.launchPrompts[1]).toContain("type error");
     expect(probe.polls).toEqual([
       { at: 0, launches: 0 },

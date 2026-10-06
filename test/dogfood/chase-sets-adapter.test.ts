@@ -192,6 +192,61 @@ if (args[0] === "api" && args.some((arg) => arg.includes("issue(number:"))) {
 }
 
 it.skipIf(process.platform === "win32")(
+  "ISS-232 observes body/time together and reuses product refinement on the fetched issue",
+  async () => {
+    const f = await scopedFixture();
+    const row = f.issues[0]!;
+    Object.assign(row, {
+      url: "https://github.com/chase-sets/chase-sets/issues/4382",
+      updatedAt: "2026-10-06T02:14:02Z",
+      milestone: f.milestones[0],
+    });
+    row.body = ` \n${row.body}\n\t `;
+    await f.save();
+    const input = {
+      repository: "chase-sets/chase-sets",
+      number: 4382,
+      executorRoot: f.executorRoot,
+    };
+    const observed = await chaseSets.verificationBrief(input);
+    expect(observed).toMatchObject({
+      body: row.body,
+      updatedAt: "2026-10-06T02:14:02Z",
+      refined: true,
+      routing: { row: 7, review: 11 },
+    });
+    expect(Number.isFinite(Date.parse(observed.observedAt))).toBe(true);
+    const calls = (await readFile(f.callsPath, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(calls).toHaveLength(1);
+    expect(calls[0].join(" ")).toContain("body updatedAt");
+    const original = structuredClone(row);
+    row.labels.nodes = row.labels.nodes.filter((label) => !label.name.startsWith("priority:"));
+    await f.save();
+    expect((await chaseSets.verificationBrief(input)).refined).toBe(false);
+    Object.assign(row, structuredClone(original));
+    row.body = row.body.replace('"row":7', '"row":8');
+    await f.save();
+    expect(await chaseSets.verificationBrief(input)).toMatchObject({
+      routing: { row: 8 },
+      refined: true,
+    });
+    Object.assign(row, structuredClone(original));
+    row.body = row.body.replace("## Acceptance Criteria", "## Missing criteria");
+    await f.save();
+    expect((await chaseSets.verificationBrief(input)).refined).toBe(false);
+    Object.assign(row, structuredClone(original));
+    row.body = row.body.replace('"row":7', '"row":"invalid"');
+    await f.save();
+    await expect(chaseSets.verificationBrief(input)).rejects.toMatchObject({
+      reason: "routing-marker-malformed",
+    });
+  },
+);
+
+it.skipIf(process.platform === "win32")(
   "pause/resume previews current Chase priorities without bypassing eligibility or scope",
   async () => {
     const f = await scopedFixture();

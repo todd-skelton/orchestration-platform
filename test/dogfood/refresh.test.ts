@@ -27,6 +27,7 @@ import {
   type QueueItem,
 } from "../../scripts/dogfood/queue.js";
 import type { Adapter, Config, Attempt, NativeDbIdentity } from "../../scripts/dogfood/flow.js";
+import { CHASE_REVIEW_DELIVERY_BOUNDARY } from "../../scripts/dogfood/flow.js";
 import {
   createNativeDbAdmission,
   nativeDbProfileAdapter,
@@ -2361,6 +2362,40 @@ it.each([
     ]);
   },
 );
+
+it("ISS-232 adds the delivery boundary to the actual conflict DELTA after prompt replacement", async () => {
+  const f = await conflictingFixture();
+  const directory = resolve(f.state, "chase-conflict");
+  await mkdir(directory);
+  const config = { ...f.source, repository: "chase-sets/chase-sets", stateDirectory: directory };
+  const main = await f.git(f.repo, ["rev-parse", "HEAD"]);
+  const conflict: Conflict = {};
+  const run = () =>
+    resolveConflict(
+      config,
+      f.native,
+      f.item.setup.pilotWorktree,
+      main,
+      f.head,
+      conflict,
+      async () => {},
+    );
+  f.setReviewRunning(true);
+  expect((await run()).status).toBe("observing-reviewer");
+  expect((await run()).status).toBe("observing-reviewer");
+  expect(f.prompts).toHaveLength(1);
+  expect(f.prompts[0]!.split(CHASE_REVIEW_DELIVERY_BOUNDARY)).toHaveLength(2);
+  expect(f.prompts[0]).toContain("independent DELTA review of conflict resolution");
+  expect(f.authorPrompts[0]).not.toContain(CHASE_REVIEW_DELIVERY_BOUNDARY);
+  f.setReviewRunning(false);
+  f.malformReview();
+  expect((await run()).status).toBe("awaiting-publication");
+  expect(f.prompts).toHaveLength(2);
+  expect(f.prompts[1]!.split(CHASE_REVIEW_DELIVERY_BOUNDARY)).toHaveLength(2);
+  expect(f.prompts[1]).toContain("missing or inadequate test results remain findings");
+  expect((await run()).status).toBe("awaiting-publication");
+  expect(f.prompts).toHaveLength(2);
+});
 
 async function conflictingFixture() {
   const f = await fixture();
