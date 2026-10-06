@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
   appendFile,
+  chmod,
   cp,
   mkdir,
   mkdtemp,
@@ -14,7 +15,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { resolve } from "node:path";
+import { delimiter, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -44,7 +45,11 @@ import {
   writeEvidence,
 } from "./fixtures/continuation.js";
 import type { Adapter, Attempt } from "../../scripts/dogfood/flow.js";
-import { step as sourceStep, workerPrompt } from "../../scripts/dogfood/flow.js";
+import {
+  CHASE_REVIEW_DELIVERY_BOUNDARY,
+  step as sourceStep,
+  workerPrompt,
+} from "../../scripts/dogfood/flow.js";
 import { codexAdapter } from "../../scripts/dogfood/dispatch-adapter.js";
 import { MAX_TERMINAL_SUMMARY_LENGTH } from "../../scripts/dogfood/terminal-summary.mjs";
 import prefixedAuthor from "./fixtures/iss-177-prefixed-author.json" with { type: "json" };
@@ -1486,6 +1491,12 @@ async function verificationOnlyFixture(cycleNumber = 1) {
     }),
   );
   await writeFile(resolve(f.repository, "pnpm-lock.yaml"), "synthetic lock\n");
+  await writeFile(resolve(f.repository, "vitest.scripts.config.mjs"), "export default {};\n");
+  await mkdir(resolve(f.repository, "scripts/check-structure"), { recursive: true });
+  await writeFile(
+    resolve(f.repository, "scripts/check-structure/synthetic.test.mjs"),
+    "// fixture\n",
+  );
   await writeFile(
     resolve(f.repository, "worker/package.json"),
     '{"name":"@chase-sets/app-platform-worker"}',
@@ -1531,6 +1542,7 @@ async function verificationOnlyFixture(cycleNumber = 1) {
   }));
   const source = {
     ...original.items[0]!.source,
+    routing: { row: 2, review: 11 as const },
     stateDirectory: sourceDirectory,
     worktree: oldTree,
     reviewWorktree: oldReview,
@@ -1681,12 +1693,12 @@ async function verificationOnlyFixture(cycleNumber = 1) {
       capturedAt: "2026-10-05T23:30:00.000Z",
     };
   };
-  const observeIssue = async () => ({
+  const observeIssue = vi.fn(async () => ({
     number: f.selected.number,
     url: source.issue,
     state: "OPEN",
     title: "Synthetic verification-only candidate",
-  });
+  }));
   const compose = (current = loop, observeGrant = authority) =>
     queueConfigFromLoop(
       current,
@@ -1700,6 +1712,8 @@ async function verificationOnlyFixture(cycleNumber = 1) {
       observeIssue,
     );
   const launches: string[] = [];
+  const prompts: string[] = [];
+  let focusedArgv = focused.split(" ").slice(1);
   let reviewRunning = true;
   let rejectReview = false;
   const native: Adapter = {
@@ -1713,6 +1727,8 @@ async function verificationOnlyFixture(cycleNumber = 1) {
     async launch(role, current, prompt) {
       expect(role).toBe("reviewer");
       launches.push(role);
+      prompts.push(prompt);
+      expect(prompt.split(CHASE_REVIEW_DELIVERY_BOUNDARY)).toHaveLength(2);
       expect(prompt).toContain(grant.priorReviewId);
       expect(prompt).toContain(JSON.stringify(author.trace));
       const calls = (await readFile(gateCalls, "utf8"))
@@ -1722,16 +1738,7 @@ async function verificationOnlyFixture(cycleNumber = 1) {
       expect(calls.map((call) => call.argv)).toEqual([
         ["run", "verify:static:scoped"],
         ["run", "typecheck"],
-        [
-          "--filter",
-          "@chase-sets/app-platform-worker",
-          "exec",
-          "vitest",
-          "run",
-          "--config",
-          "./vitest.config.ts",
-          "__tests__/projection-wake-interest-graph.test.ts",
-        ],
+        focusedArgv,
       ]);
       return {
         id: randomUUID(),
@@ -1841,6 +1848,9 @@ async function verificationOnlyFixture(cycleNumber = 1) {
   return {
     ...f,
     loop,
+    policy,
+    observeIssue,
+    prompts,
     grant,
     compose,
     supervisor,
@@ -1857,6 +1867,9 @@ async function verificationOnlyFixture(cycleNumber = 1) {
     adapter,
     delivery,
     effects,
+    focusedArgv: (argv: string[]) => {
+      focusedArgv = argv;
+    },
     hostedGreen: () => {
       green = true;
     },
@@ -1866,6 +1879,352 @@ async function verificationOnlyFixture(cycleNumber = 1) {
     },
   };
 }
+
+async function pinnedVerificationFixture() {
+  const f = await verificationOnlyFixture();
+  const focused =
+    "pnpm exec vitest run --config ./vitest.scripts.config.mjs scripts/check-structure/synthetic.test.mjs";
+  const body = ` \r\n<!-- routing: {"version":1,"row":2,"review":11} -->\n## Acceptance\n- Execute ${focused}\n- Repaired synthetic acceptance: café.\n\r\n \t`;
+  const brief = {
+    number: f.selected.number,
+    url: `https://github.com/chase-sets/chase-sets/issues/${f.selected.number}`,
+    title: "Synthetic repaired brief",
+    state: "OPEN",
+    body,
+    updatedAt: "2026-10-06T02:14:02Z",
+    observedAt: "2026-10-06T02:20:00.000Z",
+    routing: { row: 2, review: 11 as const },
+    refined: true,
+  };
+  const pin = {
+    sha256: createHash("sha256").update(body).digest("hex"),
+    updatedAt: brief.updatedAt,
+  };
+  f.loop.verificationOnly = { ...f.grant, briefRevision: pin };
+  f.policy.verificationBrief = vi.fn(async () => ({ ...brief }));
+  const grantObservation = async () => {
+    const observation = await f.authority();
+    return { ...observation, body: `${observation.body}\n${pin.sha256}\n${pin.updatedAt}` };
+  };
+  f.focusedArgv(focused.split(" ").slice(1));
+  return { ...f, brief, pin, compose: (loop = f.loop) => f.compose(loop, grantObservation) };
+}
+
+it.each([
+  "body",
+  "time",
+  "unreadable",
+  "routing",
+  "refinement",
+  "nested-key",
+  "instant",
+  "calendar",
+  "digest",
+])("ISS-232 rejects the %s brief-pin bypass before reservation", async (mode) => {
+  const f = await pinnedVerificationFixture();
+  if (mode === "body") f.brief.body += "\n";
+  if (mode === "time") f.brief.updatedAt = "2026-10-06T02:14:03Z";
+  if (mode === "routing") f.brief.routing.row = 3;
+  if (mode === "refinement") f.brief.refined = false;
+  if (mode === "unreadable")
+    f.policy.verificationBrief = async () => {
+      throw new Error("synthetic transport failure");
+    };
+  if (mode === "nested-key") Object.assign(f.pin, { unknown: true });
+  if (mode === "instant") f.pin.updatedAt = "2026-10-06T02:14:02";
+  if (mode === "calendar") f.pin.updatedAt = "2026-02-30T02:14:02Z";
+  if (mode === "digest") f.pin.sha256 = "A".repeat(64);
+  const before = await snapshot(resolve(f.loop.stateRoot, f.loop.run));
+  await expect(f.compose()).rejects.toBeInstanceOf(QueueBlocked);
+  expect(await snapshot(resolve(f.loop.stateRoot, f.loop.run))).toEqual(before);
+  expect(f.launches).toEqual([]);
+  expect(f.effects).toEqual([]);
+});
+
+it.skipIf(process.platform === "win32")(
+  "ISS-232 carries the real adapter issue observation through admission to review launch",
+  async () => {
+    const f = await pinnedVerificationFixture();
+    // Only GitHub transport and the product's imported reader implementations
+    // are synthetic; use the shipped adapter, admission and prompt consumers.
+    const scripts = resolve(f.repository, "scripts");
+    await writeFile(
+      resolve(scripts, "dispatch-window.mjs"),
+      'export const derivePullWindow = () => [];\nexport const isRunnableRefined = (issue) => issue.state === "open" && issue.labels.some(x => x.name === "kind:slice") && issue.blockedBy.length === 0;\n',
+    );
+    await writeFile(
+      resolve(scripts, "milestone-policy.mjs"),
+      "export const isExecutableOutcome = () => true;\n",
+    );
+    await writeFile(
+      resolve(scripts, "backlog-classify.mjs"),
+      "export const classified = () => true;\n",
+    );
+    await f.git(f.repository, ["add", "."]);
+    await f.git(f.repository, ["commit", "-m", "synthetic product readers"]);
+    await f.git(f.remote, ["fetch", f.repository, "main:main"]);
+    const tools = resolve(f.stateRoot, "tools");
+    await mkdir(tools);
+    const provider = resolve(tools, "issue.json");
+    const calls = resolve(tools, "calls.jsonl");
+    await writeFile(
+      provider,
+      JSON.stringify({
+        data: {
+          repository: {
+            issue: {
+              ...f.brief,
+              labels: { pageInfo: { hasNextPage: false }, nodes: [{ name: "kind:slice" }] },
+              blockedBy: { pageInfo: { hasNextPage: false }, nodes: [] },
+            },
+          },
+        },
+      }),
+    );
+    const gh = resolve(tools, "gh");
+    await writeFile(
+      gh,
+      `#!${process.execPath}\nconst {appendFileSync,readFileSync,writeFileSync} = require('node:fs');\nappendFileSync(${JSON.stringify(calls)},JSON.stringify(process.argv.slice(2))+'\\n');\nwriteFileSync(process.stdout.fd,readFileSync(${JSON.stringify(provider)}));\n`,
+    );
+    await chmod(gh, 0o755);
+    vi.stubEnv("PATH", `${tools}${delimiter}${process.env.PATH}`);
+    f.policy.verificationBrief = chaseAdapter.verificationBrief;
+    const q = await f.compose();
+    const saved = JSON.parse(
+      await readFile(resolve(f.grant.attemptDirectory, "verification-only.json"), "utf8"),
+    );
+    expect(saved.issue).toMatchObject({
+      body: f.brief.body,
+      updatedAt: f.pin.updatedAt,
+      refined: true,
+      routing: { row: 2, review: 11 },
+    });
+    expect(Number.isFinite(Date.parse(saved.issue.observedAt))).toBe(true);
+    expect((await readFile(calls, "utf8")).trim().split("\n")).toHaveLength(1);
+    expect(await readFile(calls, "utf8")).toContain("body updatedAt");
+    await rm(provider);
+    await queueStep(q, f.adapter(q));
+    await queueStep(await f.compose(), f.adapter(q));
+    expect(f.prompts).toHaveLength(1);
+    expect(f.prompts[0]).toContain(f.brief.body);
+    expect(f.prompts[0]).toContain(JSON.stringify(f.pin));
+    expect((await readFile(calls, "utf8")).trim().split("\n")).toHaveLength(1);
+  },
+);
+
+it.each([false, true])(
+  "ISS-232 binds exact brief bytes through native launch and next-day replay (refresh: %s)",
+  async (refresh) => {
+    const f = await pinnedVerificationFixture();
+    if (refresh) {
+      await writeFile(resolve(f.repository, "later-main.ts"), "export const later = true;\n");
+      await f.git(f.repository, ["add", "."]);
+      await f.git(f.repository, ["commit", "-m", "synthetic later main"]);
+      await f.git(f.remote, ["fetch", f.repository, "main:main"]);
+    }
+    const q = await f.compose();
+    const saved = JSON.parse(
+      await readFile(resolve(f.grant.attemptDirectory, "verification-only.json"), "utf8"),
+    );
+    expect(saved.issue).toEqual(f.brief);
+    const oldPrompt = f.original.items[0]!.source.reviewer.prompt;
+    const marker = `Selected issue ${f.selected.key} (#${f.selected.number}):\n\n`;
+    expect(q.items[0]!.source.reviewer.prompt).toBe(
+      oldPrompt.slice(0, oldPrompt.indexOf(marker) + marker.length) +
+        f.brief.body +
+        `\nOne verification-only DELTA against failed review ${f.grant.priorReviewId}. Retained records: ${resolve(f.grant.attemptDirectory, "source")}. Challenge all findings and every original acceptance criterion. Historical FAIL remains unchanged and no author or correction is authorized. Retained brief revision: ${JSON.stringify(f.pin)}; exact bytes and observation: ${resolve(f.grant.attemptDirectory, "verification-only.json")}.`,
+    );
+    const pinnedBody = f.brief.body;
+    f.brief.body = "Next-day edited live body must never be read.";
+    f.brief.updatedAt = "2026-10-07T02:14:02Z";
+    expect((await queueStep(q, f.adapter(q))).status).toBe("observing-reviewer");
+    const resumed = await f.compose();
+    expect((await queueStep(resumed, f.adapter(resumed))).status).toBe("observing-reviewer");
+    expect(f.prompts).toHaveLength(1);
+    expect(f.prompts[0]).toContain(marker + pinnedBody + "\nOne verification-only DELTA");
+    expect(f.prompts[0]).not.toContain("projection-wake-interest-graph");
+    expect(f.prompts[0]).toContain(f.pin.sha256);
+    expect(f.prompts[0]).toContain("Delivery main base:");
+    const refreshRecord = JSON.parse(
+      await readFile(resolve(q.items[0]!.source.stateDirectory, "native-refresh.json"), "utf8"),
+    );
+    const reviewConfig = JSON.parse(
+      await readFile(resolve(refreshRecord.directory, "config.json"), "utf8"),
+    );
+    expect(reviewConfig.config.reviewer.prompt).toContain(marker + pinnedBody);
+    expect(reviewConfig.config.reviewer.prompt).toContain(JSON.stringify(f.pin));
+    expect(reviewConfig.fingerprint).toBe(
+      createHash("sha256")
+        .update(
+          JSON.stringify({
+            config: reviewConfig.config,
+            prompts: [reviewConfig.config.author.prompt, reviewConfig.config.reviewer.prompt],
+          }),
+        )
+        .digest("hex"),
+    );
+    expect(reviewConfig.config.mainBase).toBe(refreshRecord.main);
+    expect(refreshRecord.main === f.selected.base).toBe(!refresh);
+    expect(f.policy.verificationBrief).toHaveBeenCalledTimes(1);
+    expect(f.observeIssue).not.toHaveBeenCalled();
+    f.finish();
+    expect((await queueStep(q, f.adapter(q))).status).toBe("observing-hosted-checks");
+    const terminal = JSON.parse(
+      await readFile(resolve(refreshRecord.directory, "reviewer-terminal.json"), "utf8"),
+    );
+    expect(terminal.head).toBe(refreshRecord.head);
+    expect(JSON.parse(terminal.summary)).toMatchObject({
+      head: refreshRecord.head,
+      verdict: "PASS",
+    });
+    f.hostedGreen();
+    expect((await queueStep(q, f.adapter(q))).status).toBe("complete");
+    expect((await queueStep(await f.compose(), f.adapter(await f.compose()))).status).toBe(
+      "complete",
+    );
+    expect(f.effects).toEqual(["publish", "merge", "cleanup", "deployment"]);
+    expect(f.launches).toEqual(["reviewer"]);
+    for (const [path, bytes] of f.old) expect(await readFile(path, "utf8"), path).toBe(bytes);
+    await expect(
+      f.compose({
+        ...f.loop,
+        verificationOnly: {
+          ...f.loop.verificationOnly!,
+          briefRevision: { ...f.pin, sha256: "a".repeat(64) },
+        },
+      }),
+    ).rejects.toMatchObject({ reason: "verification-only-mismatch" });
+  },
+);
+
+it("ISS-232 preserves retained repair context outside the selected brief", async () => {
+  const f = await pinnedVerificationFixture();
+  const path = resolve(f.grant.attemptDirectory, "source/config.json");
+  const record = JSON.parse(await readFile(path, "utf8"));
+  const suffix =
+    "\n\nContinue from rejected candidate " +
+    f.grant.candidateHead +
+    " after terminal repair-author FAIL. Synthetic retained trace context.\n";
+  record.config.reviewer.prompt += suffix;
+  record.fingerprint = createHash("sha256")
+    .update(
+      JSON.stringify({
+        config: record.config,
+        prompts: [record.config.author.prompt, record.config.reviewer.prompt],
+      }),
+    )
+    .digest("hex");
+  await writeFile(path, JSON.stringify(record));
+  const before = await readFile(path, "utf8");
+  const q = await f.compose();
+  await queueStep(q, f.adapter(q));
+  expect(f.prompts[0]).toContain(f.brief.body + suffix + "\nOne verification-only DELTA");
+  expect(await readFile(path, "utf8")).toBe(before);
+});
+
+it("ISS-232 leaves unpinned saved prompt bytes and ISS-231 issue observation unchanged", async () => {
+  const f = await verificationOnlyFixture();
+  f.policy.verificationBrief = vi.fn(async () => {
+    throw new Error("no optional fetch");
+  });
+  const q = await f.compose();
+  const original = f.original.items[0]!.source.reviewer.prompt;
+  expect(q.items[0]!.source.reviewer.prompt).toBe(
+    `${original}\nOne verification-only DELTA against failed review ${f.grant.priorReviewId}. Retained records: ${resolve(f.grant.attemptDirectory, "source")}. Challenge all findings and every original acceptance criterion. Historical FAIL remains unchanged and no author or correction is authorized.`,
+  );
+  expect(f.observeIssue).toHaveBeenCalledTimes(1);
+  expect(f.policy.verificationBrief).not.toHaveBeenCalled();
+  await queueStep(q, f.adapter(q));
+  expect(f.prompts[0]).toContain(q.items[0]!.source.reviewer.prompt);
+  expect(f.prompts[0]!.split(CHASE_REVIEW_DELIVERY_BOUNDARY)).toHaveLength(2);
+  await f.compose();
+  expect(f.observeIssue).toHaveBeenCalledTimes(1);
+});
+
+it.each(["red", "wrong-head", "missing"])(
+  "ISS-232 retains the post-PASS hosted %s refusal and zero merges",
+  async (mode) => {
+    const f = await pinnedVerificationFixture();
+    const q = await f.compose();
+    await queueStep(q, f.adapter(q));
+    f.finish();
+    await queueStep(q, f.adapter(q));
+    f.delivery.checks = async (current) => ({
+      head: mode === "wrong-head" ? "f".repeat(40) : current.candidateHead,
+      checks:
+        mode === "missing"
+          ? []
+          : [
+              {
+                name: "PR Required",
+                bucket: mode === "red" ? "fail" : "pass",
+                link: "https://github.com/chase-sets/chase-sets/actions/runs/9003/job/9004",
+                actions: { run: 9003, attempt: 1, job: 9004, workflow: 9005 },
+              },
+            ],
+    });
+    f.delivery.failedCheckLog = vi.fn(
+      async () => "Synthetic exact-head candidate assertion failed\n",
+    );
+    const reason =
+      mode === "red"
+        ? "verification-only-candidate-failed"
+        : mode === "wrong-head"
+          ? "hosted-head-drift"
+          : "missing-or-duplicate-check:PR Required";
+    await expect(queueStep(q, f.adapter(q))).rejects.toMatchObject({ reason });
+    await expect(queueStep(await f.compose(), f.adapter(await f.compose()))).rejects.toMatchObject({
+      reason,
+    });
+    expect(f.delivery.failedCheckLog).toHaveBeenCalledTimes(mode === "red" ? 1 : 0);
+    if (mode === "red") {
+      const refresh = JSON.parse(
+        await readFile(resolve(q.items[0]!.source.stateDirectory, "native-refresh.json"), "utf8"),
+      );
+      const failureLog = await readFile(resolve(refresh.directory, "hosted-failure.log"), "utf8");
+      expect(JSON.parse(failureLog.split("\n")[0]!)).toMatchObject({
+        head: refresh.head,
+        publication: { head: refresh.head },
+        checks: [{ actions: { run: 9003, attempt: 1, job: 9004, workflow: 9005 } }],
+      });
+      expect(failureLog).toContain("Synthetic exact-head candidate assertion failed");
+    }
+    expect(f.effects).toEqual(["publish"]);
+    expect(f.launches).toEqual(["reviewer"]);
+  },
+);
+
+it.each(["old-review", "malformed", "blocking-review"])(
+  "ISS-232 retains the brief pin on stopped %s replay without renewing review",
+  async (mode) => {
+    const f = await pinnedVerificationFixture();
+    const q = await f.compose();
+    await queueStep(q, f.adapter(q));
+    if (mode === "blocking-review") f.finish(true);
+    else
+      f.native.observe = async (_role, current, attempt) => ({
+        id: attempt.id,
+        status: mode === "malformed" ? "malformed" : "passed",
+        head: f.selected.base,
+        summary: JSON.stringify({
+          run: current.run,
+          role: "reviewer",
+          head: f.selected.base,
+          verdict: "PASS",
+          findings: [],
+          g0: "Synthetic stale review; never current authority.",
+        }),
+      });
+    await expect(queueStep(q, f.adapter(q))).rejects.toBeInstanceOf(QueueBlocked);
+    const stopped = await snapshot(q.stateDirectory);
+    f.brief.body = "Later live brief";
+    await expect(queueStep(await f.compose(), f.adapter(q))).rejects.toBeInstanceOf(QueueBlocked);
+    expect(await snapshot(q.stateDirectory)).toEqual(stopped);
+    expect(f.launches).toEqual(["reviewer"]);
+    expect(f.effects).toEqual([]);
+    expect(f.policy.verificationBrief).toHaveBeenCalledTimes(1);
+  },
+);
 
 it.each(["pass", "review-fail", "host-fail", "refresh", "conflict", "pending-note"])(
   "ISS-231 enters the completed-stop supervisor route once and retains attempt four: %s",
@@ -2413,10 +2772,15 @@ it.each([
   "unknown",
   "retry",
   "repair",
+  "missing-focused",
+  "missing-focused-retry",
 ])(
   "ISS-231 runs native gates before reviewer intent, including first-review correction: %s",
   async (mode) => {
-    const f = await loopFixture();
+    const missingFocused = mode.startsWith("missing-focused");
+    const focusedCriterion =
+      "Execute pnpm exec vitest run test/focused.test.ts and retain its passing result.";
+    const f = await loopFixture(false, missingFocused ? `- ${focusedCriterion}` : undefined);
     f.loop.repository = "chase-sets/chase-sets";
     const git = async (tree: string, args: string[]) =>
       (await execute(f.gitExecutable, ["-C", tree, ...args])).stdout.trim();
@@ -2424,8 +2788,16 @@ it.each([
       resolve(f.repository, "package.json"),
       JSON.stringify({
         scripts: { "verify:static:scoped": "node gate.mjs", typecheck: "node gate.mjs" },
+        ...(missingFocused ? { devDependencies: { vitest: "4.1.10" } } : {}),
       }),
     );
+    if (missingFocused) {
+      await mkdir(resolve(f.repository, "test"));
+      await writeFile(
+        resolve(f.repository, "test/focused.test.ts"),
+        'import { it, expect } from "vitest";\nit("synthetic focus", () => expect(1 + 1).toBe(2));\n',
+      );
+    }
     await writeFile(resolve(f.repository, "pnpm-lock.yaml"), "synthetic lock\n");
     await git(f.repository, ["add", "."]);
     await git(f.repository, ["commit", "-m", "synthetic gate toolchain"]);
@@ -2465,7 +2837,14 @@ it.each([
     const item = q.items[0]!;
     const launches: string[] = [];
     const prompts: string[] = [];
-    let malformed = mode === "retry";
+    let malformed = mode === "retry" || mode === "missing-focused-retry";
+    let reviewing = missingFocused;
+    const missingFinding = {
+      file: "synthetic.ts",
+      line: 1,
+      severity: "blocking",
+      text: "Synthetic NC3 case: the required focused-test result is missing. Successful native gates do not supply it (ISS-139).",
+    };
     const native: Adapter = {
       async preflight() {},
       git,
@@ -2488,6 +2867,7 @@ it.each([
           );
         else {
           prompts.push(prompt);
+          expect(prompt.split(CHASE_REVIEW_DELIVERY_BOUNDARY)).toHaveLength(2);
           const head = await git(current.worktree, ["rev-parse", "HEAD"]);
           for (const gate of current.localGates!) {
             const directory = resolve(
@@ -2518,13 +2898,14 @@ it.each([
       async observe(role, current, attempt) {
         const head =
           role === "author" ? current.base : await git(current.worktree, ["rev-parse", "HEAD"]);
+        if (role === "reviewer" && reviewing) return { id: attempt.id, status: "running" };
         if (role === "reviewer" && malformed) {
           malformed = false;
           return { id: attempt.id, status: "malformed", summary: "synthetic truncated reply" };
         }
         const reject =
           role === "reviewer" &&
-          mode === "repair" &&
+          (mode === "repair" || missingFocused) &&
           current.stateDirectory === item.source.stateDirectory;
         return {
           id: attempt.id,
@@ -2538,14 +2919,16 @@ it.each([
                   head,
                   verdict: reject ? "FAIL" : "PASS",
                   findings: reject
-                    ? [
-                        {
-                          file: "synthetic.ts",
-                          line: 1,
-                          severity: "blocking",
-                          text: "Synthetic semantic correction requested.",
-                        },
-                      ]
+                    ? missingFocused
+                      ? [missingFinding]
+                      : [
+                          {
+                            file: "synthetic.ts",
+                            line: 1,
+                            severity: "blocking",
+                            text: "Synthetic semantic correction requested.",
+                          },
+                        ]
                     : [],
                   g0: "Synthetic independent reviewer after real native gate execution.",
                 }),
@@ -2558,6 +2941,8 @@ it.each([
       },
     };
     const delivery = githubDeliveryAdapter(undefined, f.gitExecutable);
+    const publish = vi.spyOn(delivery, "publish");
+    const merge = vi.spyOn(delivery, "merge");
     const runGate = delivery.runGate;
     delivery.runGate = async (...args) => {
       if (
@@ -2589,6 +2974,82 @@ it.each([
       reviewId: accepted.reviewId,
       retries: accepted.retries ?? 0,
     });
+    if (missingFocused) {
+      // ISS-232 NC3: actual queue composition, native gate execution and flow.
+      // The scripted FAIL is explicitly synthetic, never semantic review authority.
+      expect((await queueStep(q, adapter)).status).toBe("observing-reviewer");
+      expect((await queueStep(q, adapter)).status).toBe("observing-reviewer");
+      expect(prompts).toHaveLength(1);
+      reviewing = false;
+      if (mode === "missing-focused")
+        await expect(
+          sourceStep(item.source, native, item.setup.pilotWorktree),
+        ).rejects.toMatchObject({
+          reason: "reviewer-failed",
+        });
+      const result = await adapter.source(item);
+      expect(result).toMatchObject({ status: "fixable-review", findings: [missingFinding] });
+      expect(prompts).toHaveLength(mode === "missing-focused-retry" ? 2 : 1);
+      for (const prompt of prompts) {
+        expect(prompt).toContain(focusedCriterion);
+        expect(prompt).toContain("missing or inadequate test results remain findings");
+        expect(prompt).toContain("ISS-139");
+        expect(prompt.split(CHASE_REVIEW_DELIVERY_BOUNDARY)).toHaveLength(2);
+      }
+      const terminal = JSON.parse(
+        await readFile(resolve(item.source.stateDirectory, "reviewer-terminal.json"), "utf8"),
+      );
+      const head = await git(item.source.worktree, ["rev-parse", "HEAD"]);
+      expect(terminal).toMatchObject({ status: "failed", head });
+      expect(JSON.parse(terminal.summary)).toMatchObject({
+        head,
+        verdict: "FAIL",
+        findings: [missingFinding],
+      });
+      // Test the flow barrier itself as well as its queue consumer. A bypass
+      // must not be hidden by the queue's additional exact-PASS checks.
+      await expect(sourceStep(item.source, native, item.setup.pilotWorktree)).rejects.toMatchObject(
+        {
+          reason: "reviewer-failed",
+          diagnostics: terminal.summary,
+        },
+      );
+      expect((await readFile(calls, "utf8")).trim().split("\n")).toHaveLength(2);
+      expect(publish).not.toHaveBeenCalled();
+      expect(merge).not.toHaveBeenCalled();
+      await expect(
+        readFile(resolve(item.source.stateDirectory, "publication.json")),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+      const evidence = process.env.ISS232_EVIDENCE_DIRECTORY;
+      if (evidence) {
+        // Optional author evidence capture retains this disposable fixture so
+        // every absolute artifact path in the effective prompt remains readable.
+        const root = resolve(f.repository, "..");
+        roots.splice(roots.indexOf(root), 1);
+        await mkdir(evidence, { recursive: true });
+        await writeFile(
+          resolve(evidence, `${mode}.json`),
+          JSON.stringify(
+            {
+              fixture: "ISS-232 NC3 synthetic missing focused-test result",
+              root,
+              source: item.source,
+              prompts,
+              result,
+              terminal,
+              gateCalls: calls,
+              publicationCalls: publish.mock.calls.length,
+              mergeCalls: merge.mock.calls.length,
+              semanticJudgment:
+                "Reserved for the ordinary independent implementation reviewer; this fixture verdict is synthetic.",
+            },
+            null,
+            2,
+          ),
+        );
+      }
+      return;
+    }
     if (["base", "unknown", "second-failure"].includes(mode)) {
       await expect(queueStep(q, adapter)).rejects.toMatchObject({
         reason:

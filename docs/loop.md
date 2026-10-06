@@ -1588,7 +1588,7 @@ Saved-stop recovery needs the separate authorization below (ISS-157).
 
 ### Accepted replans and stopped-gate recovery
 
-ISS-231 adds one explicit `verificationOnly` grant with exactly `run`, `issueKey`,
+ISS-231 adds one explicit `verificationOnly` grant with required `run`, `issueKey`,
 `attemptDirectory`, `candidateHead`, `priorReviewId` and `authorityUrl`. The host
 interprets and supplies the grant. Before exclusively creating
 `verification-only.json` beneath the retained attempt, admission captures its
@@ -1596,6 +1596,39 @@ live comment identity, author, full body, UTC observation and owning open issue,
 and matches the failed review, completed item stop and unchanged candidate tree.
 Other recovery instruments cannot coexist with it. The saved cycle resumes
 directly; readiness and reviewer prose grant no admission.
+
+ISS-232 adds optional `briefRevision: { sha256, updatedAt }` to that same grant.
+Immediately before reservation, the Chase Sets adapter reads the owning issue's
+body and update instant together and applies its existing product refinement
+reader, acceptance-item extraction and routing parser. The raw UTF-8 body hash
+and exact timezone-bearing instant must match the grant; routing stays unchanged.
+The host's captured ruling must bind both revision fields and the reviewed repair.
+The existing reservation retains that issue observation, including the complete
+body. The continuation replaces only the saved selected-brief section, retaining
+all other prompt bytes, source records, traces and the full-diff base. Its saved
+review configuration and fingerprint bind the effective body and revision to the
+exact-head verdict, including after native main refresh. Replay reads the retained
+body, never later live edits. Without the key, ISS-231's observation and saved
+prompt content remain unchanged. The pinned path resolves the brief's literal
+focused Vitest command and its package/config/test paths in the candidate tree;
+it grants no author, correction, additional review or budget.
+
+At the common reviewer launch, every Chase Sets role (including saved prompts,
+retries, repairs and conflict/gate/continuation DELTAs) receives exactly once:
+"Publication, required hosted final-head checks, merge and deployment run only
+after review PASS and are enforced by the loop on the exact landing head. Their
+absence before the verdict is not a finding; a red required hosted check after
+PASS stops delivery. All pre-PASS evidence obligations, including executor-native
+gate evidence and focused tests, remain findings when missing (ISS-139)."
+This changes evidence timing, never independent judgment, available failed hosted
+evidence, verdict schemas, self prompts or post-PASS hosted enforcement. Historical
+prompts and fingerprints are not rewritten. NC3's synthetic missing-focused-result
+fixture exercises the actual prompt, parser and non-PASS barrier, including a
+discriminating bypass mutation. It proves wiring, not semantic review authority.
+The ordinary independent implementation reviewer judges the synthetic absence
+under ISS-139 after author completion and records that judgment separately from
+candidate findings; no extra probe or earlier semantic verdict is required.
+No installation or live continuation is authorized here.
 
 New worktrees and records under that attempt's `verification/` retain the same
 absolute attempt, participant history, routing counts and spent allowances.

@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
 import { mkdir, readFile, readdir, realpath, rename, writeFile } from "node:fs/promises";
-import { basename, dirname, isAbsolute, relative, resolve, sep } from "node:path";
+import { basename, dirname, isAbsolute, posix, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { unparkInstructions as selfUnparkInstructions } from "../../adapters/self.mjs";
 import { localGates as chaseLocalGates } from "../../adapters/chase-sets.mjs";
@@ -186,12 +186,52 @@ export interface LoopConfig {
 }
 
 export interface VerificationOnly {
+  briefRevision?: { sha256: string; updatedAt: string };
   run: string;
   issueKey: string;
   attemptDirectory: string;
   candidateHead: string;
   priorReviewId: string;
   authorityUrl: string;
+}
+
+function validBriefRevision(value: VerificationOnly["briefRevision"]) {
+  if (value === undefined) return true;
+  if (!exactKeys(value, ["sha256", "updatedAt"])) return false;
+  if (typeof value.sha256 !== "string" || !/^[a-f0-9]{64}$/.test(value.sha256)) return false;
+  // Keep the supplied spelling for equality; require a real timezone-bearing instant.
+  if (typeof value.updatedAt !== "string") return false;
+  const parts =
+    /^(\d{4}-\d{2}-\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.\d+)?(Z|[+-](\d{2}):(\d{2}))$/.exec(
+      value.updatedAt,
+    );
+  return (
+    !!parts &&
+    Number(parts[2]) < 24 &&
+    Number(parts[3]) < 60 &&
+    Number(parts[4]) < 60 &&
+    (parts[5] === "Z" || (Number(parts[6]) < 24 && Number(parts[7]) < 60)) &&
+    Number.isFinite(Date.parse(value.updatedAt)) &&
+    new Date(`${parts[1]}T00:00:00Z`).toISOString().slice(0, 10) === parts[1]
+  );
+}
+
+function verificationFocusedTest(body: string): string[] {
+  // ISS-232 needs the pinned scripts test as well as ISS-231's workspace test.
+  // Accept only a literal focused Vitest invocation, never a shell command.
+  const commands = [
+    ...body.matchAll(
+      /\bpnpm ((?:--filter @[\w.-]+\/[\w.-]+ )?exec vitest run --config (?:\.\/)?[\w./-]+ [\w./-]+\.(?:test|spec)\.[cm]?[jt]sx?)(?=[\s`]|$)/g,
+    ),
+  ];
+  const unique = [...new Set(commands.map((match) => match[1]!))];
+  demand(unique.length === 1, "verification-only-focused-test-unavailable");
+  const argv = unique[0]!.split(" ");
+  demand(
+    argv.every((arg) => !arg.startsWith("/") && !arg.split("/").includes("..")),
+    "verification-only-focused-test-unavailable",
+  );
+  return argv;
 }
 
 export interface Prerequisite {
@@ -411,7 +451,9 @@ export function validateLoopConfig(config: LoopConfig) {
         "candidateHead",
         "priorReviewId",
         "authorityUrl",
+        ...(grant.briefRevision === undefined ? [] : ["briefRevision"]),
       ]) &&
+        validBriefRevision(grant.briefRevision) &&
         grant.run === config.run &&
         /^[A-Za-z0-9][A-Za-z0-9-]*$/.test(grant.issueKey) &&
         typeof grant.attemptDirectory === "string" &&
@@ -1178,15 +1220,25 @@ async function verificationQueue(
   );
   const command =
     "pnpm --filter @chase-sets/app-platform-worker exec vitest run --config ./vitest.config.ts __tests__/projection-wake-interest-graph.test.ts";
-  demand(
-    source.reviewer.prompt.includes(command) || source.author.prompt.includes(command),
-    reason,
-  );
+  if (!grant.briefRevision)
+    demand(
+      source.reviewer.prompt.includes(command) || source.author.prompt.includes(command),
+      reason,
+    );
   let authority;
   let issue;
+  let brief: Awaited<ReturnType<NonNullable<RepositoryAdapter["verificationBrief"]>>> | undefined;
   try {
     authority = await observeAuthority(grant.authorityUrl);
-    issue = await observeIssue(config.repository, selected.number);
+    if (grant.briefRevision) {
+      demand(repositoryAdapter.verificationBrief, reason);
+      brief = await repositoryAdapter.verificationBrief({
+        repository: config.repository,
+        number: selected.number,
+        executorRoot: executor.repositoryRoot,
+      });
+      issue = brief;
+    } else issue = await observeIssue(config.repository, selected.number);
   } catch {
     throw new QueueBlocked("verification-only-authority-unavailable");
   }
@@ -1201,6 +1253,7 @@ async function verificationQueue(
         grant.attemptDirectory,
         grant.candidateHead,
         grant.priorReviewId,
+        ...(grant.briefRevision ? [grant.briefRevision.sha256, grant.briefRevision.updatedAt] : []),
       ].every((value) => authority.body.includes(value)) &&
       grant.authorityUrl.startsWith(`${prior.issue}#`) &&
       issue.number === selected.number &&
@@ -1208,6 +1261,34 @@ async function verificationQueue(
       issue.state === "OPEN",
     reason,
   );
+  let reviewerPrompt = source.reviewer.prompt;
+  if (brief) {
+    demand(
+      createHash("sha256").update(brief.body, "utf8").digest("hex") ===
+        grant.briefRevision!.sha256 &&
+        brief.updatedAt === grant.briefRevision!.updatedAt &&
+        brief.refined === true &&
+        source.routing &&
+        queueDigest(brief.routing) === queueDigest(source.routing),
+      reason,
+    );
+    verificationFocusedTest(brief.body);
+    const marker = `Selected issue ${selected.key} (#${selected.number}):\n\n`;
+    const start = reviewerPrompt.indexOf(marker);
+    demand(start >= 0, reason);
+    const bodyStart = start + marker.length;
+    // The ordinary queue serializer puts the brief last, before these optional
+    // retained continuation contexts. Keep those contexts and all prefix bytes.
+    const suffix = reviewerPrompt
+      .slice(bodyStart)
+      .search(
+        /\n\n(?:Continue from rejected candidate |Independent DELTA review\. ISS-160 |ISS-215 ordinary attempt 3 )/,
+      );
+    reviewerPrompt =
+      reviewerPrompt.slice(0, bodyStart) +
+      brief.body +
+      (suffix < 0 ? "" : reviewerPrompt.slice(bodyStart + suffix));
+  }
   let history = priorHistory.length > prior.history.length ? priorHistory : prior.history;
   for (const name of await readdir(resolve(config.stateRoot, config.run))) {
     if (!/^cycle-\d+(?:-stop-\d+)?-complete\.json$/.test(name)) continue;
@@ -1239,7 +1320,7 @@ async function verificationQueue(
       ...source.reviewer,
       ...priorReviewer.placement,
       ...(priorReviewer.rung === undefined ? {} : { rung: priorReviewer.rung }),
-      prompt: `${source.reviewer.prompt}\nOne verification-only DELTA against failed review ${grant.priorReviewId}. Retained records: ${sourceDirectory}. Challenge all findings and every original acceptance criterion. Historical FAIL remains unchanged and no author or correction is authorized.`,
+      prompt: `${reviewerPrompt}\nOne verification-only DELTA against failed review ${grant.priorReviewId}. Retained records: ${sourceDirectory}. Challenge all findings and every original acceptance criterion. Historical FAIL remains unchanged and no author or correction is authorized.${brief ? ` Retained brief revision: ${JSON.stringify(grant.briefRevision)}; exact bytes and observation: ${resolve(grant.attemptDirectory, "verification-only.json")}.` : ""}`,
     },
   };
   demand(
@@ -1280,7 +1361,7 @@ async function verificationQueue(
     source: nextSource,
     repair: {
       stateDirectory: resolve(directory, "repair"),
-      acceptanceCriteria: [source.reviewer.prompt],
+      acceptanceCriteria: [reviewerPrompt],
       author: source.author,
       reviewer: nextSource.reviewer,
     },
@@ -2477,7 +2558,9 @@ export function validateQueueConfig(config: QueueConfig) {
             "candidateHead",
             "priorReviewId",
             "authorityUrl",
+            ...(continuation.grant.briefRevision === undefined ? [] : ["briefRevision"]),
           ]) &&
+          validBriefRevision(continuation.grant.briefRevision) &&
           continuation.grant.run === config.run &&
           continuation.grant.candidateHead === item.base &&
           isAbsolute(continuation.sourceDirectory) &&
@@ -4553,25 +4636,38 @@ export function repositoryQueueAdapter(
             ];
             for (const gate of gates) {
               try {
+                const pinned = item.verificationOnly?.grant.briefRevision;
                 const focused =
                   item.verificationOnly && gate === "test"
-                    ? [
-                        "--filter",
-                        "@chase-sets/app-platform-worker",
-                        "exec",
-                        "vitest",
-                        "run",
-                        "--config",
-                        "./vitest.config.ts",
-                        "__tests__/projection-wake-interest-graph.test.ts",
-                      ]
+                    ? pinned
+                      ? verificationFocusedTest(
+                          (
+                            await json(
+                              item.verificationOnly.grant.attemptDirectory,
+                              "verification-only",
+                            )
+                          ).issue.body,
+                        )
+                      : [
+                          "--filter",
+                          "@chase-sets/app-platform-worker",
+                          "exec",
+                          "vitest",
+                          "run",
+                          "--config",
+                          "./vitest.config.ts",
+                          "__tests__/projection-wake-interest-graph.test.ts",
+                        ]
                     : undefined;
                 if (focused) {
                   const paths = (
                     await native.git(current.worktree, ["ls-tree", "-r", "--name-only", head])
                   ).split("\n");
-                  const packages: string[] = [];
-                  for (const path of paths.filter((path) => path.endsWith("/package.json"))) {
+                  const filtered = focused[0] === "--filter";
+                  const packages: string[] = filtered ? [] : ["."];
+                  for (const path of paths.filter(
+                    (path) => filtered && path.endsWith("/package.json"),
+                  )) {
                     const manifest = JSON.parse(
                       await native.git(current.worktree, ["show", `${head}:${path}`]),
                     );
@@ -4579,9 +4675,11 @@ export function repositoryQueueAdapter(
                   }
                   demand(
                     packages.length === 1 &&
-                      ["vitest.config.ts", focused.at(-1)!].every((path) =>
-                        paths.includes(`${packages[0]}/${path}`),
-                      ),
+                      [
+                        "package.json",
+                        focused[focused.indexOf("--config") + 1]!,
+                        focused.at(-1)!,
+                      ].every((path) => paths.includes(posix.join(packages[0]!, path))),
                     "verification-only-focused-test-unavailable",
                   );
                 }

@@ -285,6 +285,17 @@ function listItems(section) {
   return items;
 }
 
+function bodyCriteria(body) {
+  const heading = /^#{1,6}\s+Acceptance(?: Criteria)?\s*$/im.exec(body);
+  const section = heading
+    ? body
+        .slice(heading.index + heading[0].length)
+        .split(/^#{1,6}\s+/m, 1)[0]
+        .trim()
+    : "";
+  return listItems(section);
+}
+
 export async function issueContext({
   repository,
   key,
@@ -347,15 +358,8 @@ export async function issueContext({
     }
     row = current;
   }
-  const heading = /^#{1,6}\s+Acceptance(?: Criteria)?\s*$/im.exec(row.body);
   const routing = parseRoutingMarker(row.body);
-  const section = heading
-    ? row.body
-        .slice(heading.index + heading[0].length)
-        .split(/^#{1,6}\s+/m, 1)[0]
-        .trim()
-    : "";
-  const acceptanceCriteria = listItems(section);
+  const acceptanceCriteria = bodyCriteria(row.body);
   let deliverySkill;
   try {
     deliverySkill = await readFile(
@@ -374,6 +378,58 @@ export async function issueContext({
     body: row.body,
     acceptanceCriteria: acceptanceCriteria.length > 0 ? acceptanceCriteria : [row.body],
     rules: `${LANE_RULES}\n\n${productRules.trimEnd()}\n\n${deliverySkill}`,
+  };
+}
+
+// ISS-232: one live snapshot for the explicit verification-only brief pin.
+// This uses the product's refinement reader, not fresh queue selection.
+export async function verificationBrief({ repository, number, executorRoot }) {
+  requireRepository(repository);
+  const [owner, name] = repository.split("/");
+  const query = `query($owner:String!, $name:String!, $number:Int!) {
+    repository(owner:$owner, name:$name) {
+      issue(number:$number) {
+        number url title body updatedAt state
+        issueType { name }
+        milestone { id number title description state }
+        labels(first:100) { pageInfo { hasNextPage } nodes { name } }
+        blockedBy(first:100) { pageInfo { hasNextPage } nodes { number state } }
+      }
+    }
+  }`;
+  const row = (await graphqlPage(query, owner, name, undefined, number))?.data?.repository?.issue;
+  if (
+    row?.number !== number ||
+    typeof row.body !== "string" ||
+    typeof row.updatedAt !== "string" ||
+    row.labels?.pageInfo?.hasNextPage !== false ||
+    row.blockedBy?.pageInfo?.hasNextPage !== false
+  )
+    throw new Error("malformed-chase-sets-authority");
+  const product = await readers(executorRoot);
+  const issue = {
+    ...row,
+    state: row.state.toLowerCase(),
+    issueTypeName: row.issueType?.name ?? null,
+    milestone: row.milestone
+      ? { ...row.milestone, state: row.milestone.state.toLowerCase() }
+      : null,
+    labels: row.labels.nodes,
+    blockedBy: row.blockedBy.nodes.map((blocker) => ({
+      ...blocker,
+      state: blocker.state.toLowerCase(),
+    })),
+  };
+  return {
+    number: row.number,
+    url: row.url,
+    state: row.state,
+    title: row.title,
+    body: row.body,
+    updatedAt: row.updatedAt,
+    observedAt: new Date().toISOString(),
+    routing: parseRoutingMarker(row.body),
+    refined: product.isRunnableRefined(issue) && bodyCriteria(row.body).length > 0,
   };
 }
 

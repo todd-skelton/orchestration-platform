@@ -64,6 +64,17 @@ export function validateOpsAdmission(input: {
 }
 
 export interface RepositoryAdapter {
+  verificationBrief?(input: { repository: string; number: number; executorRoot: string }): Promise<{
+    number: number;
+    url: string;
+    state: string;
+    title: string;
+    body: string;
+    updatedAt: string;
+    observedAt: string;
+    routing: import("./routing.mjs").RoutingSelection;
+    refined: boolean;
+  }>;
   selectCandidates(input: {
     repository: string;
     executorRoot: string;

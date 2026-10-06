@@ -8,6 +8,8 @@ import * as continuation from "./continuation.ts";
 import type { PreReviewEvidence } from "./continuation.js";
 
 export type Role = "author" | "reviewer";
+export const CHASE_REVIEW_DELIVERY_BOUNDARY =
+  "Publication, required hosted final-head checks, merge and deployment run only after review PASS and are enforced by the loop on the exact landing head. Their absence before the verdict is not a finding; a red required hosted check after PASS stops delivery. All pre-PASS evidence obligations, including executor-native gate evidence and focused tests, remain findings when missing (ISS-139).";
 export interface Config {
   authorFailures?: { count: number; ids: string[]; diagnostics?: Record<string, string> };
   routing?: import("./routing.mjs").RoutingSelection;
@@ -529,12 +531,16 @@ async function runStep(
         }
         const reviewHead = role === "author" ? config.base : reviewerHead;
         requireThat(typeof reviewHead === "string", "review-head-identity-unknown");
+        const deliveryBoundary =
+          role === "reviewer" && config.repository === "chase-sets/chase-sets"
+            ? `\n${CHASE_REVIEW_DELIVERY_BOUNDARY}\n`
+            : "";
         const prompt = `${workerPrompt(
           config,
           role,
           reviewHead,
           prompts[role === "author" ? 0 : 1],
-        )}${authorEvidence}${retryContext}`;
+        )}${authorEvidence}${retryContext}${deliveryBoundary}`;
         let launched: Attempt;
         for (;;) {
           // Persist selection before dispatch; a running attempt carries this same rung.
