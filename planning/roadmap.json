@@ -910,6 +910,14 @@
       "summary": "Pin the repaired brief on the verification-only continuation and state the reviewer delivery boundary without changing attempts or hosted enforcement.",
       "milestone": "M1",
       "blockedBy": ["ISS-231"]
+    },
+    {
+      "key": "ISS-233",
+      "file": "planning/drafts/ISS-233.md",
+      "title": "Skip earlier same-key completed stops when locating a verification-only continuation",
+      "summary": "Reach the granted retained stop through earlier same-key history without weakening verification-only admission or renewing attempts.",
+      "milestone": "M1",
+      "blockedBy": []
     }
   ]
 }
