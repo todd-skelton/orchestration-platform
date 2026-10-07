@@ -3824,7 +3824,9 @@ it("ISS-235 resumes the baseline-exhausted attempt-2 candidate with only reviewe
     async waitForProvider() {},
     async launch(role, config, prompt) {
       launches.push(role);
-      expect(prompt).toContain(resolve(priorSource, "hosted-failure.log"));
+      expect(prompt).toContain(
+        JSON.stringify(await realpath(resolve(priorSource, "hosted-failure.log"))),
+      );
       if (role === "author")
         await writeFile(resolve(config.worktree, "docs/loop.md"), "# ISS-235 synthetic partial\n");
       return {
@@ -3957,7 +3959,7 @@ it("ISS-235 resumes the baseline-exhausted attempt-2 candidate with only reviewe
       budgetPolicy,
       resumed.initialHistory,
     );
-    expect(q.stateDirectory).toBe(resolve(priorDirectory, "../iss-234-attempt-2"));
+    expect(q.stateDirectory).toBe(await realpath(resolve(priorDirectory, "../iss-234-attempt-2")));
     expect(q.items[0]!.implementationAttempt).toBe(2);
     await expect(queueStep(q, adapter())).resolves.toMatchObject({ status: "observing-reviewer" });
     expect(deliveries).toBe(0);
