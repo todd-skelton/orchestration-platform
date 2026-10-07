@@ -2324,6 +2324,7 @@ type Mode =
   | "published-allowance"
   | "published-allowance-declaration-faults"
   | "published-allowance-record-faults"
+  | "published-allowance-history-faults"
   | "published-allowance-authority-faults"
   | "published-allowance-retry"
   | "published-allowance-nonpass"
@@ -2433,6 +2434,7 @@ it.each([
       "published-allowance",
       "published-allowance-declaration-faults",
       "published-allowance-record-faults",
+      "published-allowance-history-faults",
       "published-allowance-authority-faults",
       "published-allowance-retry",
       "published-allowance-nonpass",
@@ -3383,14 +3385,11 @@ it.each([
         "wrong-attempt",
         "wrong-stop",
       ],
-      "published-allowance-record-faults": [
-        "reservation",
-        "claim",
-        "stop",
-        "publication",
-        "participant",
-        "missing-stop-completion",
-      ],
+      // ISS-235's hosted remainder failure exceeded 30 seconds for all six
+      // record faults in one case. Keep every fault and the positive control,
+      // with three full delivery passes per case and the same timeout.
+      "published-allowance-record-faults": ["reservation", "claim", "publication"],
+      "published-allowance-history-faults": ["stop", "participant", "missing-stop-completion"],
       "published-allowance-authority-faults": [
         "absent",
         "unreadable",
