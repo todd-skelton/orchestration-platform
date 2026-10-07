@@ -802,7 +802,7 @@ async function locationFixture(mode: string) {
     severity: mode === "blocker" ? "blocking" : "note",
     text: "Synthetic context, not a correction target.",
   };
-  const mixed = mode === "mixed" || mode === "escape";
+  const mixed = mode === "mixed" || mode === "escape" || mode === "repair-fail";
   const findings = mixed ? [blocker, note] : [note];
   const launches: { stage: string; prompt: string }[] = [];
   const effects: string[] = [];
@@ -830,12 +830,18 @@ async function locationFixture(mode: string) {
       return { id: randomUUID(), pid: 111, trace, launchedAt: 1 };
     },
     async observe(role, config, attempt) {
+      if (
+        mode === "repair-fail" &&
+        config.stateDirectory !== item.source.stateDirectory &&
+        config.stateDirectory !== item.repair.stateDirectory
+      )
+        return { id: attempt.id, status: "running" };
       if (config.stateDirectory === item.repair.stateDirectory && !repairDone)
         return { id: attempt.id, status: "running" };
       if (role === "author") return { id: attempt.id, status: "passed", head: config.base };
       const head = await git(config.reviewWorktree, ["rev-parse", "HEAD"]);
       const source = config.stateDirectory === item.source.stateDirectory;
-      const fail = source && (mixed || mode === "blocker");
+      const fail = (source && (mixed || mode === "blocker")) || mode === "repair-fail";
       const report = {
         run: config.run,
         role,
@@ -932,8 +938,8 @@ async function locationFixture(mode: string) {
     cleaned = true;
     effects.push("cleanup");
   };
-  const adapter = () =>
-    repositoryQueueAdapter(q, f.repository, {
+  const adapter = (current = q) =>
+    repositoryQueueAdapter(current, f.repository, {
       native,
       delivery,
       gitExecutable: f.gitExecutable,
@@ -1134,6 +1140,81 @@ it.each(["mixed", "escape"])(
     expect(f.effects).toEqual([]);
   },
 );
+
+it("ISS-243 repair FAIL carries unchanged-file notes into attempt 3 only as advisory context", async () => {
+  const f = await locationFixture("repair-fail");
+  await expect(f.run()).resolves.toMatchObject({ status: "observing-author" });
+  f.finishRepair();
+  await expect(f.run()).resolves.toMatchObject({ status: "advancing-attempt", cursor: 2 });
+  expect(f.launches.map((launch) => launch.stage)).toEqual([
+    "author",
+    "reviewer",
+    "repair-author",
+    "repair-reviewer",
+  ]);
+  const failed = JSON.parse(await readFile(resolve(f.q.stateDirectory, "attempt.json"), "utf8"));
+  expect(failed).toMatchObject({ phase: "failed", candidateAttempt: 2, findings: f.findings });
+  const candidate = JSON.parse(
+    await readFile(resolve(f.item.repair.stateDirectory, "candidate.json"), "utf8"),
+  );
+  expect(candidate.changed).toEqual(["feature.txt"]);
+  expect(failed.head).toBe(candidate.head);
+  expect(
+    await f.git(f.item.source.worktree, ["cat-file", "-t", `${failed.head}:${f.context}`]),
+  ).toBe("blob");
+  const sourceRecords = await snapshot(f.item.source.stateDirectory);
+  const repairRecords = await snapshot(f.item.repair.stateDirectory);
+  const terminal = JSON.parse(
+    await readFile(resolve(f.item.repair.stateDirectory, "reviewer-terminal.json"), "utf8"),
+  );
+  expect(terminal).toMatchObject({ id: failed.reviewId, head: failed.head, status: "failed" });
+  expect(JSON.parse(terminal.summary).findings).toEqual(f.findings);
+
+  const third = await queueConfigFromLoop(f.loop, f.repository, f.selected, repositoryPolicy);
+  expect(third.items[0]).toMatchObject({
+    implementationAttempt: 3,
+    source: { allowedPaths: ["."] },
+  });
+  expect(third.initialHistory).toEqual(failed.history);
+  await expect(queueStep(third, f.adapter(third))).resolves.toMatchObject({
+    status: "observing-author",
+  });
+  expect(f.launches.map((launch) => launch.stage)).toEqual([
+    "author",
+    "reviewer",
+    "repair-author",
+    "repair-reviewer",
+    "author",
+  ]);
+  const prompt = f.launches.at(-1)!.prompt;
+  expect(prompt).toContain(
+    `Apply these reviewer-prescribed fixes verbatim: ${JSON.stringify([f.blocker])}`,
+  );
+  expect(prompt).toContain(
+    `Advisory context only (not correction targets or edit permission): ${JSON.stringify([f.note])}.`,
+  );
+  expect(prompt).not.toContain(
+    `Apply these reviewer-prescribed fixes verbatim: ${JSON.stringify(f.findings)}`,
+  );
+  expect(await snapshot(f.item.source.stateDirectory)).toEqual(sourceRecords);
+  expect(await snapshot(f.item.repair.stateDirectory)).toEqual(repairRecords);
+  expect(
+    JSON.parse(await readFile(resolve(f.q.stateDirectory, "attempt.json"), "utf8")).findings,
+  ).toEqual(f.findings);
+  const retained = await snapshot(f.q.stateDirectory);
+  const current = await snapshot(third.stateDirectory);
+  const counts = f.counts();
+  expect(await queueConfigFromLoop(f.loop, f.repository, f.selected, repositoryPolicy)).toEqual(
+    third,
+  );
+  await expect(queueStep(third, f.adapter(third))).resolves.toMatchObject({
+    status: "observing-author",
+  });
+  expect(f.counts()).toEqual(counts);
+  expect(await snapshot(f.q.stateDirectory)).toEqual(retained);
+  expect(await snapshot(third.stateDirectory)).toEqual(current);
+  expect(f.effects).toEqual([]);
+});
 
 // ISS-195: a real native source pair, then a real delivery refresh whose DELTA reviewer
 // FAILs at one of the three refresh origins, parked through ordinary supervision.

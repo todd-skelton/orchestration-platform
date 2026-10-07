@@ -2283,7 +2283,7 @@ export async function queueConfigFromLoop(
         : repairFailurePrompt
           ? `${baseSourcePrompt}\n\n${repairFailurePrompt}`
           : prescribedFindings?.length
-            ? `${baseSourcePrompt}\n\nStart from rejected candidate ${rejectedHead}. Apply these reviewer-prescribed fixes verbatim: ${JSON.stringify(prescribedFindings)}`
+            ? `${baseSourcePrompt}\n\nStart from rejected candidate ${rejectedHead}. Apply these reviewer-prescribed fixes verbatim: ${JSON.stringify(prescribedFindings.filter((finding) => finding.severity === "blocking"))}\n\nAdvisory context only (not correction targets or edit permission): ${JSON.stringify(prescribedFindings.filter((finding) => finding.severity === "note"))}.`
             : baseSourcePrompt;
   if (repairFailurePrompt) reviewerPrompt += `\n\n${repairFailurePrompt}`;
   const setup: SetupConfig = {
