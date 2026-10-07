@@ -2293,6 +2293,30 @@ it("stops unavailable or moving main before gates and retains the reviewed inter
   ).toHaveLength(2);
 });
 
+it("ISS-234 native refresh retains the reviewed predecessor across its post-review main recheck", async () => {
+  const f = await fixture();
+  const main = await f.advanceMain();
+  f.setMoving();
+  await expect(f.deliver()).rejects.toThrow("current-main-moved");
+  const first = JSON.parse(await readFile(resolve(f.sourceState, "native-refresh.json"), "utf8"));
+  expect(first.main).toBe(main);
+  const terminalPath = resolve(first.directory, "reviewer-terminal.json");
+  const terminal = await readFile(terminalPath, "utf8");
+  expect(f.gateHeads).toEqual([]);
+  expect(f.publication()).toBeUndefined();
+  await expect(f.deliver()).resolves.toMatchObject({ status: "observing-hosted-checks" });
+  const second = JSON.parse(await readFile(resolve(f.sourceState, "native-refresh.json"), "utf8"));
+  expect(second).toMatchObject({
+    previousHead: first.head,
+    previousDirectory: first.directory,
+    previousReview: JSON.parse(terminal).id,
+  });
+  expect(second.main).not.toBe(main);
+  expect(await readFile(terminalPath, "utf8")).toBe(terminal);
+  expect(f.gateHeads).toEqual([second.head]);
+  expect(f.prompts).toHaveLength(2);
+});
+
 it("retains a failed delta review and stops without starting another implementation", async () => {
   const f = await fixture();
   await f.advanceMain();

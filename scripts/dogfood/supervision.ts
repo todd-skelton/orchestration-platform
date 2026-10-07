@@ -190,15 +190,24 @@ async function completedItemStop(
     if (config?.verificationOnly?.issueKey === selection.key) {
       const binding = await queue.verificationStop(config, selection);
       if (binding?.stop.marker === intent.marker) continue;
+      // A later stop owns disposition, including ordinary candidate parking.
+      // Skipping this old note grants no work: the later note and terminal remain.
+      if (
+        intent.reason === "current-main-moved" &&
+        (await optionalRecord(directory, `cycle-${cycle}-stop-${stop + 1}`)) !== ABSENT
+      )
+        continue;
+      if (
+        intent.reason === "current-main-moved" &&
+        (await queue.verificationMovement(config, selection))
+      )
+        continue;
     }
     if (intent.reason !== "author-failed" && isItemStopReason(intent.reason))
       return completed.history as QueueParticipant[];
     if (config?.verificationOnly?.issueKey === selection.key) {
-      const terminal = await optionalRecord(
-        resolve(config.verificationOnly.attemptDirectory, "verification"),
-        "verification-stop",
-      );
-      if (terminal !== ABSENT && terminal.reason === intent.reason)
+      const terminal = await queue.verificationTerminalStop(config);
+      if (terminal && (terminal.reason === intent.reason || intent.reason === "current-main-moved"))
         throw new QueueBlocked(terminal.reason, terminal.diagnostics);
     }
   }
@@ -990,14 +999,8 @@ export async function stopCycle(
   if (config.verificationOnly?.issueKey === cycle.selection.key) {
     const reserved = verification;
     if (reserved !== ABSENT && reserved.stop.marker !== intent.marker) {
-      const continuation = resolve(config.verificationOnly.attemptDirectory, "verification");
-      if ((await optionalRecord(continuation, "verification-stop")) === ABSENT) {
-        await mkdir(continuation, { recursive: true });
-        await record(continuation, "verification-stop", {
-          reason: intent.reason,
-          ...(diagnostics ? { diagnostics } : {}),
-        });
-      }
+      await mkdir(reserved.queue.stateDirectory, { recursive: true });
+      await queue.saveVerificationStop(reserved.queue, intent.reason, diagnostics);
     }
   }
   const scope =
@@ -1088,6 +1091,11 @@ export async function reconcilePendingStop(
     if (config.verificationOnly?.issueKey === cycle.selection.key) {
       const binding = await queue.verificationStop(config, cycle.selection);
       if (binding?.stop.marker === intent.marker) return undefined;
+      if (
+        intent.reason === "current-main-moved" &&
+        (await queue.verificationMovement(config, cycle.selection))
+      )
+        return undefined;
     }
     if (
       scope === "item" &&

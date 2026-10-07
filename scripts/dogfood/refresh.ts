@@ -67,6 +67,45 @@ interface Refresh {
   publicationRefresh?: PublicationRefresh;
 }
 
+// A terminal's status alone cannot authorize a successor integration (ISS-234).
+export async function refreshReviewVerdict(
+  directory: string,
+  run: string,
+  head: string,
+  id?: string,
+  identity?: { issue: string; repository: string },
+) {
+  try {
+    const [candidate, attempt, terminal, pinned] = await Promise.all(
+      ["candidate", "reviewer-attempt", "reviewer-terminal", "config"].map((name) =>
+        readOptional(resolve(directory, `${name}.json`)),
+      ),
+    );
+    if (!(
+      candidate?.head === head &&
+      pinned?.config?.run === run &&
+      pinned.config.stateDirectory === directory &&
+      (!identity ||
+        (pinned.config.issue === identity.issue &&
+          pinned.config.repository === identity.repository)) &&
+      attempt?.id &&
+      terminal?.id === attempt.id &&
+      (id === undefined || id === terminal.id) &&
+      terminal.head === head &&
+      ["passed", "failed"].includes(terminal.status)
+    ))
+      return undefined;
+    const verdict = parseReview(terminal.summary, run, head).verdict;
+    return terminal.status === (verdict === "PASS" ? "passed" : "failed") ? verdict : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export async function refreshReviewPassed(...args: Parameters<typeof refreshReviewVerdict>) {
+  return (await refreshReviewVerdict(...args)) === "PASS";
+}
+
 // ISS-148: one saved integration at a time. Prior source and delivery records remain evidence.
 export async function refreshDelivery(
   delivery: DeliveryConfig,
@@ -149,6 +188,12 @@ export async function refreshDelivery(
       if (!sourceRetries) active.retries++;
       await save(origin, "native-refresh", active);
     }
+    if (
+      active?.head &&
+      reviewed?.status === "passed" &&
+      !(await refreshReviewPassed(directory, delivery.run, active.head, undefined, delivery))
+    )
+      throw new QueueBlocked("refresh-review-failed");
     if (!active || (active.head && reviewed?.status === "passed" && main !== active.main)) {
       const previousHead = active?.head ?? delivery.candidateHead;
       let ancestor;

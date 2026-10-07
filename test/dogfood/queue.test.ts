@@ -1716,16 +1716,23 @@ async function verificationOnlyFixture(cycleNumber = 1) {
     );
   const launches: string[] = [];
   const prompts: string[] = [];
+  const observations: { event: string; head: string }[] = [];
   let focusedArgv = focused.split(" ").slice(1);
   let reviewRunning = true;
   let rejectReview = false;
   const native: Adapter = {
     async preflight() {},
     async git(tree, args) {
-      return git(
+      const result = await git(
         tree,
         args[0] === "fetch" ? args.map((arg) => (arg === "origin" ? remote : arg)) : args,
       );
+      if (args[0] === "fetch")
+        observations.push({
+          event: "fetch",
+          head: await git(tree, ["rev-parse", "refs/remotes/origin/main"]),
+        });
+      return result;
     },
     async launch(role, current, prompt) {
       expect(role).toBe("reviewer");
@@ -1738,7 +1745,7 @@ async function verificationOnlyFixture(cycleNumber = 1) {
         .trim()
         .split("\n")
         .map((line) => JSON.parse(line));
-      expect(calls.map((call) => call.argv)).toEqual([
+      expect(calls.slice(-3).map((call) => call.argv)).toEqual([
         ["run", "verify:static:scoped"],
         ["run", "typecheck"],
         focusedArgv,
@@ -1753,6 +1760,7 @@ async function verificationOnlyFixture(cycleNumber = 1) {
     async observe(role, current, attempt) {
       if (reviewRunning) return { id: attempt.id, status: "running" };
       const head = await git(current.worktree, ["rev-parse", "HEAD"]);
+      observations.push({ event: rejectReview ? "FAIL" : "PASS", head });
       return {
         id: attempt.id,
         status: rejectReview ? "failed" : "passed",
@@ -1854,6 +1862,7 @@ async function verificationOnlyFixture(cycleNumber = 1) {
     policy,
     observeIssue,
     prompts,
+    observations,
     grant,
     compose,
     supervisor,
@@ -1870,6 +1879,10 @@ async function verificationOnlyFixture(cycleNumber = 1) {
     adapter,
     delivery,
     effects,
+    gateCalls,
+    waitReview: () => {
+      reviewRunning = true;
+    },
     focusedArgv: (argv: string[]) => {
       focusedArgv = argv;
     },
@@ -1882,6 +1895,455 @@ async function verificationOnlyFixture(cycleNumber = 1) {
     },
   };
 }
+
+async function verificationMovementFixture(
+  fixture?: Awaited<ReturnType<typeof verificationOnlyFixture>>,
+) {
+  const f = fixture ?? (await verificationOnlyFixture());
+  const q = await f.compose();
+  const updater = resolve(f.loop.worktreeRoot, "main-updater");
+  await f.git(f.repository, ["worktree", "add", "--detach", updater, f.selected.base]);
+  const read = async (directory: string, name: string) =>
+    JSON.parse(await readFile(resolve(directory, `${name}.json`), "utf8"));
+  const move = async (file = "main.ts") => {
+    await writeFile(
+      resolve(updater, file),
+      `export const main = ${JSON.stringify(randomUUID())};\n`,
+    );
+    await f.git(updater, ["add", "."]);
+    await f.git(updater, ["commit", "-m", "compatible synthetic main"]);
+    const head = await f.git(updater, ["rev-parse", "HEAD"]);
+    await f.git(f.remote, ["fetch", updater, "HEAD:refs/heads/main"]);
+    return head;
+  };
+  const resume = async () => {
+    const cycle = await nextCycle(f.loop, f.repository, f.supervisor, repositoryPolicy);
+    expect(cycle?.selection).toEqual(f.cycle.selection);
+    expect(
+      await reconcilePendingStop(f.loop, cycle!, f.supervisor, repositoryPolicy),
+    ).toBeUndefined();
+    expect(await retainedPostMergeDelivery(f.loop, f.selected)).toBeUndefined();
+    const current = await f.compose();
+    return queueStep(current, f.adapter(current));
+  };
+  const accept = async () => {
+    await resume();
+    f.finish();
+    const adapter = f.adapter(q);
+    await queueStep(q, {
+      ...adapter,
+      async delivery() {
+        return { status: "observing-reviewer" };
+      },
+    });
+    return read(q.stateDirectory, "attempt");
+  };
+  return { ...f, q, read, move, resume, accept, updater };
+}
+
+it.each(["during-review", "accepted", "retained-stop", "pending-stop"])(
+  "ISS-234 integrates moving main through production replay: %s",
+  async (mode) => {
+    const f = await verificationMovementFixture();
+    const { q } = f;
+    const reservation = await readFile(
+      resolve(f.grant.attemptDirectory, "verification-only.json"),
+      "utf8",
+    );
+    const configBytes = JSON.stringify(f.loop);
+    const mainA = await f.move("a.ts");
+    expect((await f.resume()).status).toBe("observing-reviewer");
+    const first = await f.read(q.items[0]!.source.stateDirectory, "native-refresh");
+    expect(first.main).toBe(mainA);
+    f.finish();
+    if (mode === "accepted") {
+      const adapter = f.adapter(q);
+      await queueStep(q, {
+        ...adapter,
+        async delivery() {
+          return { status: "observing-reviewer" };
+        },
+      });
+      expect((await f.read(q.stateDirectory, "attempt")).phase).toBe("delivery");
+    } else if (mode !== "during-review") {
+      // Stop exactly after native source PASS but before the queue accepts it,
+      // reproducing the pre-ISS-234 persisted incident without editing live state.
+      const adapter = f.adapter(q);
+      await adapter.source(q.items[0]!);
+      await writeFile(
+        resolve(q.stateDirectory, "verification-stop.json"),
+        JSON.stringify({ reason: "current-main-moved" }),
+      );
+      await stopCycle(
+        f.loop,
+        { ...f.cycle, initialHistory: await adapter.history() },
+        "current-main-moved",
+        4,
+        f.supervisor,
+        repositoryPolicy,
+      );
+      if (mode === "pending-stop")
+        await rm(resolve(f.loop.stateRoot, f.loop.run, "cycle-1-stop-2-complete.json"));
+    }
+    const mainB = await f.move("b.ts");
+    if (mode === "during-review") {
+      expect((await f.resume()).status).toBe("observing-reviewer");
+      expect(f.launches).toHaveLength(1);
+    }
+    f.waitReview();
+    expect((await f.resume()).status).toBe("observing-reviewer");
+    expect((await f.resume()).status).toBe("observing-reviewer");
+    expect(f.launches).toHaveLength(2);
+    expect(f.effects).toEqual([]);
+    const origin = mode === "accepted" ? first.directory : q.items[0]!.source.stateDirectory;
+    const second = await f.read(origin, "native-refresh");
+    expect(second).toMatchObject({
+      main: mainB,
+      previousHead: first.head,
+      previousDirectory: first.directory,
+    });
+    expect(second.head).not.toBe(first.head);
+    expect(f.observations.filter((row) => row.event === "fetch").map((row) => row.head)).toContain(
+      mainA,
+    );
+    const passed = f.observations.findIndex(
+      (row) => row.event === "PASS" && row.head === first.head,
+    );
+    const fetched = f.observations.findIndex((row) => row.event === "fetch" && row.head === mainB);
+    expect(passed).toBeGreaterThanOrEqual(0);
+    // Native refresh brackets review with fresh remote observations, not selection's pin.
+    // During-review movement may first be observed before the terminal is collected;
+    // its post-review recheck must still observe exactly B before yielding.
+    expect(f.observations.slice(passed + 1)).toContainEqual({ event: "fetch", head: mainB });
+    expect(fetched).toBeGreaterThanOrEqual(0);
+    for (const gate of ["verify:static:scoped", "typecheck", "test"]) {
+      const relative = `gate-${createHash("sha256").update(gate).digest("hex")}`;
+      for (const refresh of [first, second])
+        expect(
+          await f.read(resolve(refresh.directory, relative), "candidate-terminal"),
+        ).toMatchObject({ head: refresh.head, code: 0 });
+    }
+    expect(f.prompts[1]).toContain(second.previousReview);
+    expect(f.prompts[1]).toContain(first.directory);
+    f.finish();
+    expect((await f.resume()).status).toBe("observing-hosted-checks");
+    expect(f.effects).toEqual(["publish"]);
+    // Once publication exists, moving main is ordinary publication reconciliation.
+    await f.move("after-publication.ts");
+    expect((await f.resume()).status).toBe("observing-hosted-checks");
+    f.hostedGreen();
+    expect((await f.resume()).status).toBe("complete");
+    expect((await queueStep(await f.compose(), f.adapter(q))).status).toBe("complete");
+    expect(await retainedPostMergeDelivery(f.loop, f.selected)).toBeDefined();
+    expect(f.effects).toEqual(["publish", "merge", "cleanup", "deployment"]);
+    expect(f.launches).toHaveLength(2);
+    expect(
+      await readFile(resolve(f.grant.attemptDirectory, "verification-only.json"), "utf8"),
+    ).toBe(reservation);
+    expect(JSON.stringify(f.loop)).toBe(configBytes);
+    for (const [path, bytes] of f.old) expect(await readFile(path, "utf8"), path).toBe(bytes);
+    expect(f.captures()).toBe(1);
+  },
+);
+
+it.each(["missing", "malformed", "wrong-head", "wrong-id", "failed", "foreign-issue"])(
+  "ISS-234 retained movement requires a complete bound PASS: %s",
+  async (mode) => {
+    const f = await verificationMovementFixture();
+    await f.accept();
+    const active = await f.read(f.q.items[0]!.source.stateDirectory, "native-refresh");
+    const terminalPath = resolve(active.directory, "reviewer-terminal.json");
+    const terminal = await f.read(active.directory, "reviewer-terminal");
+    if (mode === "missing") await rm(terminalPath);
+    else if (mode === "malformed") await writeFile(terminalPath, "{");
+    else if (mode === "foreign-issue") {
+      const pinned = await f.read(active.directory, "config");
+      pinned.config.issue += "1";
+      await writeFile(resolve(active.directory, "config.json"), JSON.stringify(pinned));
+    } else {
+      if (mode === "wrong-head") terminal.head = "a".repeat(40);
+      if (mode === "wrong-id") terminal.id = "foreign-review";
+      if (mode === "failed") terminal.status = "failed";
+      await writeFile(terminalPath, JSON.stringify(terminal));
+    }
+    await writeFile(
+      resolve(f.q.stateDirectory, "verification-stop.json"),
+      JSON.stringify({ reason: "current-main-moved" }),
+    );
+    await f.move();
+    await expect(queueStep(f.q, f.adapter(f.q))).rejects.toBeInstanceOf(QueueBlocked);
+    expect(f.launches).toHaveLength(1);
+    expect(f.effects).toEqual([]);
+  },
+);
+
+it.each([
+  "incompatible-main",
+  "source-head",
+  "source-review",
+  "spent-stop",
+  "delta-fail",
+  "conflict",
+  "gate-fail",
+])("ISS-234 protection %s is load-bearing before publication", async (mode) => {
+  const f = await verificationMovementFixture();
+  const accepted = await f.accept();
+  if (mode === "source-head" || mode === "source-review") {
+    accepted[mode === "source-head" ? "head" : "reviewId"] =
+      mode === "source-head" ? "a".repeat(40) : "foreign-review";
+    await writeFile(resolve(f.q.stateDirectory, "attempt.json"), JSON.stringify(accepted));
+  } else if (mode === "spent-stop") {
+    await writeFile(
+      resolve(f.q.stateDirectory, "verification-stop.json"),
+      JSON.stringify({ reason: "gate-host-failed:typecheck" }),
+    );
+  }
+  if (mode === "incompatible-main") {
+    // Keep a shared Git ancestor but remove the recorded delivery-main base.
+    const old = await f.git(f.updater, ["rev-parse", `${f.selected.base}^`]);
+    await f.git(f.remote, ["update-ref", "refs/heads/main", old]);
+    // Acquire that actual remote commit rather than testing Git's non-fast-forward
+    // transport refusal against an already populated tracking ref.
+    await f.git(f.q.items[0]!.source.worktree, ["update-ref", "-d", "refs/remotes/origin/main"]);
+  } else await f.move(mode === "conflict" ? "feature.ts" : "main.ts");
+  if (mode === "gate-fail") vi.stubEnv("npm_execpath", resolve(f.stateRoot, "missing-pnpm.mjs"));
+  f.waitReview();
+  const reason =
+    mode === "incompatible-main"
+      ? "current-main-incompatible"
+      : mode.startsWith("source-")
+        ? "delivery-source-drift"
+        : mode === "spent-stop"
+          ? "gate-host-failed:typecheck"
+          : mode === "conflict"
+            ? "verification-only-refresh-conflict"
+            : mode === "gate-fail"
+              ? "gate-attribution-unknown:verify:static:scoped"
+              : "refresh-review-failed";
+  if (mode === "delta-fail") {
+    expect((await f.resume()).status).toBe("observing-reviewer");
+    f.finish(true);
+  }
+  await expect(queueStep(f.q, f.adapter(f.q))).rejects.toMatchObject({ reason });
+  await f.move("later.ts");
+  await expect(queueStep(await f.compose(), f.adapter(f.q))).rejects.toMatchObject({ reason });
+  expect(f.effects).toEqual([]);
+  expect(f.launches).toHaveLength(mode === "delta-fail" ? 2 : 1);
+});
+
+it.each([false, true])(
+  "ISS-234 a later failure supersedes the preserved movement stop in every reader (interrupted: %s)",
+  async (interrupted) => {
+    const f = await verificationMovementFixture();
+    const accepted = await f.accept();
+    const stoppedPath = resolve(f.q.stateDirectory, "verification-stop.json");
+    await writeFile(stoppedPath, JSON.stringify({ reason: "current-main-moved" }));
+    await stopCycle(
+      f.loop,
+      { ...f.cycle, initialHistory: await f.adapter(f.q).history() },
+      "current-main-moved",
+      4,
+      f.supervisor,
+      repositoryPolicy,
+    );
+    const bytes = await readFile(stoppedPath, "utf8");
+    await f.move();
+    f.waitReview();
+    expect((await f.resume()).status).toBe("observing-reviewer");
+    f.finish(true);
+    await expect(
+      interrupted ? f.adapter(f.q).delivery(f.q.items[0]!, accepted) : f.resume(),
+    ).rejects.toMatchObject({ reason: "refresh-review-failed" });
+    for (const observe of [
+      () => queueStep(f.q, f.adapter(f.q)),
+      () => nextCycle(f.loop, f.repository, f.supervisor, repositoryPolicy),
+      () => retainedPostMergeDelivery(f.loop, f.selected),
+    ])
+      await expect(observe()).rejects.toMatchObject({ reason: "refresh-review-failed" });
+    expect(await readFile(stoppedPath, "utf8")).toBe(bytes);
+    expect(f.launches).toHaveLength(2);
+    await stopCycle(
+      f.loop,
+      { ...f.cycle, initialHistory: await f.adapter(f.q).history() },
+      "refresh-review-failed",
+      4,
+      f.supervisor,
+      repositoryPolicy,
+    );
+    expect(await nextCycle(f.loop, f.repository, f.supervisor, repositoryPolicy)).toBeUndefined();
+  },
+);
+
+it("ISS-234 repeated movement charges reviewers and stops at the existing native ceiling", async () => {
+  const f = await verificationOnlyFixture();
+  // Sixty-one retained launches plus three reviews; the configured 64 stays fixed.
+  for (let index = 0; index < 53; index++)
+    f.cycle.initialHistory.push({
+      ...participant(index + 9, `cs-${800 + index}:1`, "source", "author", "failed"),
+      id: randomUUID(),
+      placement: f.loop.author!,
+    });
+  for (const path of [
+    resolve(f.grant.attemptDirectory, "attempt.json"),
+    resolve(f.loop.stateRoot, f.loop.run, "cycle-1-stop-1.json"),
+    resolve(f.loop.stateRoot, f.loop.run, "cycle-1-stop-1-complete.json"),
+  ]) {
+    const saved = JSON.parse(await readFile(path, "utf8"));
+    saved.history = f.cycle.initialHistory;
+    await writeFile(path, JSON.stringify(saved));
+  }
+  const q = await f.compose();
+  const updater = resolve(f.loop.worktreeRoot, "moving-main");
+  await f.git(f.repository, ["worktree", "add", "--detach", updater, f.selected.base]);
+  for (let index = 0; index < 3; index++) {
+    f.waitReview();
+    expect((await queueStep(q, f.adapter(q))).status).toBe("observing-reviewer");
+    expect((await queueStep(await f.compose(), f.adapter(q))).status).toBe("observing-reviewer");
+    expect(f.launches).toHaveLength(index + 1);
+    await writeFile(resolve(updater, `main-${index}.ts`), "// main\n");
+    await f.git(updater, ["add", "."]);
+    await f.git(updater, ["commit", "-m", "move during review"]);
+    await f.git(f.remote, ["fetch", updater, "HEAD:refs/heads/main"]);
+    f.finish();
+    expect((await queueStep(q, f.adapter(q))).status).toBe("observing-reviewer");
+  }
+  await expect(queueStep(q, f.adapter(q))).rejects.toMatchObject({
+    reason: "native-launch-ceiling-exhausted",
+  });
+  await expect(queueStep(await f.compose(), f.adapter(q))).rejects.toMatchObject({
+    reason: "native-launch-ceiling-exhausted",
+  });
+  expect(await f.adapter(q).history()).toHaveLength(64);
+  expect(f.launches).toHaveLength(3);
+  expect(f.effects).toEqual([]);
+});
+
+it("ISS-234 retained post-merge reconciliation accepts completion before the queue result write", async () => {
+  const f = await verificationMovementFixture();
+  const accepted = await f.accept();
+  await f.move();
+  f.waitReview();
+  await f.resume();
+  f.finish();
+  f.hostedGreen();
+  const before = await readFile(resolve(f.q.stateDirectory, "attempt.json"), "utf8");
+  expect(await f.adapter(f.q).delivery(f.q.items[0]!, accepted)).toMatchObject({
+    status: "complete",
+  });
+  const refresh = await f.read(accepted.stateDirectory, "native-refresh");
+  expect(refresh.head).not.toBe(accepted.head);
+  expect(await retainedPostMergeDelivery(f.loop, f.selected)).toBeDefined();
+  expect(await readFile(resolve(f.q.stateDirectory, "attempt.json"), "utf8")).toBe(before);
+  expect((await queueStep(await f.compose(), f.adapter(f.q))).status).toBe("complete");
+  expect(await retainedPostMergeDelivery(f.loop, f.selected)).toBeDefined();
+  expect(f.effects.filter((effect) => ["publish", "merge", "cleanup"].includes(effect))).toEqual([
+    "publish",
+    "merge",
+    "cleanup",
+  ]);
+  expect(f.launches).toHaveLength(2);
+});
+
+it("ISS-234 retains the pinned brief and focused execution at the successor head", async () => {
+  const pinned = await pinnedVerificationFixture();
+  const body = pinned.brief.body;
+  const f = await verificationMovementFixture(pinned);
+  const accepted = await f.accept();
+  await f.move();
+  pinned.brief.body = "Unrelated later live edit";
+  f.waitReview();
+  expect((await f.resume()).status).toBe("observing-reviewer");
+  const active = await f.read(accepted.stateDirectory, "native-refresh");
+  expect(f.prompts[1]).toContain(body);
+  expect(f.prompts[1]).toContain(JSON.stringify(pinned.pin));
+  const directory = resolve(
+    active.directory,
+    `gate-${createHash("sha256").update("test").digest("hex")}`,
+  );
+  expect(await f.read(directory, "candidate-terminal")).toMatchObject({
+    head: active.head,
+    code: 0,
+  });
+  expect(pinned.policy.verificationBrief).toHaveBeenCalledTimes(1);
+  expect(f.effects).toEqual([]);
+});
+
+it("ISS-234 resumes the integration before launch without another verification reservation", async () => {
+  const f = await verificationMovementFixture();
+  await f.resume();
+  f.finish();
+  await f.move();
+  expect((await f.resume()).status).toBe("observing-reviewer");
+  f.native.waitForProvider = async () => {
+    throw new QueueBlocked("provider-unavailable");
+  };
+  await expect(f.adapter(f.q).source(f.q.items[0]!)).rejects.toMatchObject({
+    reason: "provider-unavailable",
+  });
+  const active = await f.read(f.q.items[0]!.source.stateDirectory, "native-refresh");
+  await expect(readFile(resolve(active.directory, "reviewer-attempt.json"))).rejects.toMatchObject({
+    code: "ENOENT",
+  });
+  delete f.native.waitForProvider;
+  f.waitReview();
+  expect((await f.resume()).status).toBe("observing-reviewer");
+  expect(f.launches).toHaveLength(2);
+  expect(f.captures()).toBe(1);
+  expect(f.effects).toEqual([]);
+});
+
+it("ISS-234 a malformed integration reviewer cannot renew the consumed worker retry", async () => {
+  const f = await verificationMovementFixture();
+  await f.accept();
+  await f.move();
+  f.waitReview();
+  await f.resume();
+  f.native.observe = async (_role, _current, attempt) => ({ id: attempt.id, status: "malformed" });
+  await expect(f.resume()).rejects.toBeInstanceOf(QueueBlocked);
+  await expect(queueStep(f.q, f.adapter(f.q))).rejects.toBeInstanceOf(QueueBlocked);
+  expect(f.launches).toHaveLength(2);
+  expect(f.effects).toEqual([]);
+});
+
+it.each(["intent", "published", "cleanup", "published-conflict"])(
+  "ISS-234 publication protection preserves %s across main movement",
+  async (mode) => {
+    const f = await verificationMovementFixture();
+    const accepted = await f.accept();
+    if (mode === "intent") {
+      const publish = f.delivery.publish;
+      const observe = f.delivery.observePublication;
+      let uncertain = false;
+      f.delivery.observePublication = async (...args) =>
+        uncertain ? { state: "unknown" } : observe(...args);
+      f.delivery.publish = async (...args) => {
+        await publish(...args);
+        uncertain = true;
+        throw new Error("lost response");
+      };
+      await expect(f.adapter(f.q).delivery(f.q.items[0]!, accepted)).rejects.toBeDefined();
+      f.delivery.publish = publish;
+      f.delivery.observePublication = observe;
+      expect(await f.read(accepted.stateDirectory, "publication-intent")).toBeDefined();
+    } else {
+      if (mode === "cleanup") f.hostedGreen();
+      await queueStep(f.q, f.adapter(f.q));
+    }
+    const before = await snapshot(accepted.stateDirectory);
+    await f.move();
+    if (mode === "published-conflict")
+      f.delivery.checks = async () => {
+        throw new DeliveryBlocked("published-candidate-conflict");
+      };
+    const resumed = await queueStep(f.q, f.adapter(f.q)).catch((error: unknown) => error);
+    expect(f.launches).toHaveLength(1);
+    expect(f.effects.filter((effect) => effect === "publish")).toHaveLength(1);
+    for (const [path, bytes] of before) expect(await readFile(path, "utf8"), path).toBe(bytes);
+    if (mode === "published-conflict")
+      expect(resumed).toMatchObject({ reason: "verification-only-refresh-conflict" });
+    else expect(resumed).not.toBeInstanceOf(Error);
+  },
+);
 
 // ISS-233 fixtures retain completed stops, not completed cycles: the latter
 // bypass completedItemStop and cannot reproduce VO-HISTORY-1.

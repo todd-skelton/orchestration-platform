@@ -1691,11 +1691,22 @@ Conflict-free native refresh precedes the configured gates and pinned brief's
 focused test, whose package and paths are resolved in the exact candidate tree.
 One independent DELTA challenges the retained FAIL, which remains unchanged.
 There is no author, correction, attempt increment or ceiling increase. Only the
-new PASS proceeds through ordinary delivery and hosted checks. Later main
-movement or conflict requires another independent host decision, not a second
-reviewer. Candidate failures park; host, environment and unknown failures do
-not. Post-reservation stops stay in `verification-stop.json`; replay cannot
-renew the continuation even after a host stop. Old records remain unchanged.
+new PASS proceeds through ordinary delivery and hosted checks. ISS-234 fixes
+VO-MAIN-1: after a complete bound verification PASS, compatible main movement
+before publication uses ordinary native refresh, including when the first PASS
+preceded queue acceptance. Each integration runs fresh configured gates and the
+retained focused test before its independent DELTA, then ordinary final-head
+delivery gates and hosted checks. One active refresh resumes its reviewer;
+another movement yields to the next observation within the existing native
+launch ceiling, without a new attempt, grant, reservation or retry allowance.
+The saved post-PASS `current-main-moved` stop and supervisor note remain history;
+all retained readers admit that transition only through the bound PASS or its
+in-flight successor. Later failures in the active refresh's `verification-stop.json`
+take precedence. Conflicts and every other spent stop still require independent
+host disposition. Candidate failures park; host, environment and unknown failures
+do not. Publication, publication intent and cleanup retain their reconciliation
+without integrating later main. Original FAIL, source bindings, prompts and
+earlier gate/review evidence remain unchanged; no author or correction is admitted.
 This supplies no live grant, installation, issue mutation, preserved-run start
 or product ownership authority.
 

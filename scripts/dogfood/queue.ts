@@ -46,8 +46,14 @@ import { correctGate, QueueBlocked, step } from "./flow.ts";
 // @ts-expect-error Node 24 executes this private TypeScript composition directly.
 import { classifyStop } from "./fault-class.ts";
 import type { Adapter, Attempt, Config as SourceConfig, Role } from "./flow.js";
-// @ts-expect-error Node 24 executes this private TypeScript composition directly.
-import { currentMain, rebaseOnto, refreshDelivery } from "./refresh.ts";
+import {
+  currentMain,
+  rebaseOnto,
+  refreshDelivery,
+  refreshReviewPassed,
+  refreshReviewVerdict,
+  // @ts-expect-error Node 24 executes this private TypeScript composition directly.
+} from "./refresh.ts";
 export { QueueBlocked, DeliveryBlocked };
 import {
   reviewedRepairAdapter,
@@ -2826,8 +2832,13 @@ export async function retainedPostMergeDelivery(config: LoopConfig, selected: Se
     const reserved = await optionalRecord(original, "verification-only");
     if (reserved !== ABSENT && reserved.grant.issueKey === selected.key) {
       const directory = resolve(original, "verification");
-      const stopped = await optionalRecord(directory, "verification-stop");
-      if (stopped !== ABSENT) throw new QueueBlocked(stopped.reason, stopped.diagnostics);
+      const progress = await verificationProgress(reserved.queue);
+      const stopped = progress.stopped;
+      if (
+        stopped !== ABSENT &&
+        !(stopped.reason === "current-main-moved" && (await verificationMovement(config, selected)))
+      )
+        throw new QueueBlocked(stopped.reason, stopped.diagnostics);
       directories.push(directory);
     }
   }
@@ -2878,7 +2889,7 @@ export async function retainedPostMergeDelivery(config: LoopConfig, selected: Se
         (verifying
           ? attempt.acceptedStage === "source" &&
             attempt.stateDirectory === integrated.directory &&
-            attempt.head === integrated.head
+            (await refreshReviewPassed(attempt.stateDirectory, config.run, integrated.head))
           : attempt.stateDirectory === resolve(directory, attempt.acceptedStage) ||
             (preReview !== ABSENT &&
               preReview.preReview &&
@@ -2894,6 +2905,14 @@ export async function retainedPostMergeDelivery(config: LoopConfig, selected: Se
       "retained-post-merge-identity-mismatch",
     );
     const source = await json(origin, "delivery-source");
+    if (verifying) {
+      const identity = { issue, repository: config.repository };
+      await verificationDeliveryBinding(config.run, identity, attempt);
+      demand(
+        await refreshReviewPassed(origin, config.run, source.head, source.reviewId, identity),
+        "retained-post-merge-identity-mismatch",
+      );
+    }
     demand(
       origin !== attempt.stateDirectory ||
         (source.head === attempt.head && source.reviewId === attempt.reviewId),
@@ -3583,11 +3602,11 @@ function assertItemReviewHistory(
   if (item.verificationOnly) {
     const launched = history.slice(priorParticipants);
     demand(
-      launched.length === 1 &&
-        launched[0]?.role === "reviewer" &&
-        launched[0].stage === "refresh" &&
-        launched[0].outcome === "passed" &&
-        launched[0].id === reviewId &&
+      launched.length >= 1 &&
+        launched.every(
+          (p) => p.role === "reviewer" && p.stage === "refresh" && p.outcome === "passed",
+        ) &&
+        launched.at(-1)?.id === reviewId &&
         reviewId !== item.verificationOnly.grant.priorReviewId,
       "item-review-history-mismatch",
     );
@@ -3731,10 +3750,160 @@ function attemptFailureRecord(
   };
 }
 
+async function verificationDeliveryBinding(
+  run: string,
+  identity: { issue: string; repository: string },
+  accepted: { head: string; reviewId: string; stateDirectory: string },
+) {
+  const original = await json(accepted.stateDirectory, "candidate");
+  const review = await json(accepted.stateDirectory, "reviewer-terminal");
+  demand(
+    await refreshReviewPassed(accepted.stateDirectory, run, original.head, review.id, identity),
+    "delivery-source-drift",
+  );
+  if (original.head === accepted.head && review.id === accepted.reviewId) return;
+  const active = await optionalRecord(accepted.stateDirectory, "native-refresh");
+  demand(active !== ABSENT, "delivery-source-drift");
+  const directory = active.head === accepted.head ? active.directory : active.previousDirectory;
+  demand(
+    typeof directory === "string" &&
+      (active.head === accepted.head ||
+        (active.previousHead === accepted.head && active.previousReview === accepted.reviewId)) &&
+      (await refreshReviewPassed(directory, run, accepted.head, accepted.reviewId, identity)),
+    "delivery-source-drift",
+  );
+  const evidence = await json(directory, "delivery-source");
+  demand(
+    evidence.head === accepted.head && evidence.reviewId === accepted.reviewId,
+    "delivery-source-drift",
+  );
+}
+
+// Follow the same active integration pointers as delivery, including its nested
+// refresh after source acceptance. Historical movement stops stay untouched.
+async function verificationProgress(config: QueueConfig) {
+  let origin = config.items[0]!.source.stateDirectory;
+  let active: any;
+  let stopped = await optionalRecord(config.stateDirectory, "verification-stop");
+  for (;;) {
+    const next = await optionalRecord(origin, "native-refresh");
+    if (next === ABSENT) break;
+    active = next;
+    origin = active.reviewDirectory ?? active.directory;
+    const later = await optionalRecord(origin, "verification-stop");
+    if (later !== ABSENT) stopped = later;
+  }
+  // Native failure evidence can precede the queue stop write on interruption.
+  if (active && stopped !== ABSENT && stopped.reason === "current-main-moved") {
+    const gate = await optionalRecord(origin, "gate-stop");
+    if (gate !== ABSENT) stopped = gate;
+    else if (
+      (await refreshReviewVerdict(
+        origin,
+        config.run,
+        active.head,
+        undefined,
+        config.items[0]!.source,
+      )) === "FAIL"
+    )
+      stopped = { reason: "refresh-review-failed" };
+  }
+  return { active, directory: origin, stopped };
+}
+
+export async function verificationTerminalStop(config: LoopConfig) {
+  const grant = config.verificationOnly!;
+  const saved = await optionalRecord(grant.attemptDirectory, "verification-only");
+  if (saved === ABSENT) return undefined;
+  demand(queueDigest(saved.configuration) === queueDigest(config), "verification-only-mismatch");
+  const { stopped } = await verificationProgress(saved.queue);
+  return stopped === ABSENT ? undefined : stopped;
+}
+
+export async function saveVerificationStop(
+  config: QueueConfig,
+  reason: string,
+  diagnostics?: string,
+) {
+  const root = await optionalRecord(config.stateDirectory, "verification-stop");
+  if (root !== ABSENT && root.reason === reason) return;
+  const directory =
+    root === ABSENT ? config.stateDirectory : (await verificationProgress(config)).directory;
+  if ((await optionalRecord(directory, "verification-stop")) === ABSENT)
+    await record(directory, "verification-stop", {
+      reason,
+      ...(diagnostics ? { diagnostics } : {}),
+    });
+}
+
+async function verificationMovementReady(config: QueueConfig) {
+  const { active, directory } = await verificationProgress(config);
+  if (!active || active.conflict) return false;
+  const terminal = await optionalRecord(directory, "reviewer-terminal");
+  if (terminal !== ABSENT)
+    return refreshReviewPassed(
+      directory,
+      config.run,
+      active.head,
+      undefined,
+      config.items[0]!.source,
+    );
+  // A successor already selected from a PASS may be before launch or in flight.
+  return (
+    typeof active.previousDirectory === "string" &&
+    refreshReviewPassed(
+      active.previousDirectory,
+      config.run,
+      active.previousHead,
+      active.previousReview,
+      config.items[0]!.source,
+    )
+  );
+}
+
+async function verificationIntegration(config: QueueConfig, directory: string) {
+  const progress = await verificationProgress(config);
+  const active = progress.active;
+  return (
+    active &&
+    !active.conflict &&
+    progress.directory === directory &&
+    typeof active.previousDirectory === "string" &&
+    refreshReviewPassed(
+      active.previousDirectory,
+      config.run,
+      active.previousHead,
+      active.previousReview,
+      config.items[0]!.source,
+    )
+  );
+}
+
+export async function verificationMovement(
+  config: LoopConfig,
+  selected: { key: string; number: number; cycle?: number },
+) {
+  if (config.verificationOnly?.issueKey !== selected.key) return false;
+  const binding = await verificationStop(config, selected);
+  if (!binding) return false;
+  const saved = await optionalRecord(config.verificationOnly.attemptDirectory, "verification-only");
+  if (saved === ABSENT) return false;
+  demand(queueDigest(saved.configuration) === queueDigest(config), "verification-only-mismatch");
+  const { stopped } = await verificationProgress(saved.queue);
+  return (
+    (stopped === ABSENT || stopped.reason === "current-main-moved") &&
+    verificationMovementReady(saved.queue)
+  );
+}
+
 export async function queueStep(config: QueueConfig, adapter: QueueAdapter): Promise<QueueResult> {
   if (!config.items[0]?.verificationOnly) return runQueueStep(config, adapter);
-  const stopped = await optionalRecord(config.stateDirectory, "verification-stop");
-  if (stopped !== ABSENT) throw new QueueBlocked(stopped.reason, stopped.diagnostics);
+  const { stopped } = await verificationProgress(config);
+  if (
+    stopped !== ABSENT &&
+    !(stopped.reason === "current-main-moved" && (await verificationMovementReady(config)))
+  )
+    throw new QueueBlocked(stopped.reason, stopped.diagnostics);
   try {
     return await runQueueStep(config, adapter);
   } catch (error) {
@@ -3743,6 +3912,15 @@ export async function queueStep(config: QueueConfig, adapter: QueueAdapter): Pro
         ? error.reason
         : "verification-only-execution-unknown";
     const originalReason = reason;
+    // Yield to the ordinary observer; one integration per queue step, no busy retry.
+    if (reason === "current-main-moved" && (await verificationMovementReady(config)))
+      return {
+        status: "observing-reviewer",
+        run: config.run,
+        item: config.items[0]!.id,
+        issue: config.items[0]!.issue,
+        cursor: 0,
+      };
     if (classifyStop(reason).legacyParking) reason = "verification-only-execution-unknown";
     const diagnostics =
       error instanceof QueueBlocked || error instanceof DeliveryBlocked
@@ -3750,11 +3928,7 @@ export async function queueStep(config: QueueConfig, adapter: QueueAdapter): Pro
           ? error.diagnostics
           : `${originalReason}: ${error.diagnostics ?? ""}`
         : undefined;
-    if ((await optionalRecord(config.stateDirectory, "verification-stop")) === ABSENT)
-      await record(config.stateDirectory, "verification-stop", {
-        reason,
-        ...(diagnostics ? { diagnostics } : {}),
-      });
+    await saveVerificationStop(config, reason, diagnostics);
     throw new QueueBlocked(reason, diagnostics);
   }
 }
@@ -4665,7 +4839,8 @@ export function repositoryQueueAdapter(
           async beforeReview(current: SourceConfig, head: string) {
             if (
               item.verificationOnly &&
-              (await readHistory()).length > config.initialHistory.length
+              (await readHistory()).length > config.initialHistory.length &&
+              !(await verificationIntegration(config, current.stateDirectory))
             )
               throw new QueueBlocked(
                 "verification-only-execution-unknown",
@@ -4917,7 +5092,11 @@ export function repositoryQueueAdapter(
       );
       if (item.verificationOnly)
         demand(
-          role === "reviewer" && priorHistory.length === config.initialHistory.length,
+          role === "reviewer" &&
+            stage === "refresh" &&
+            (priorHistory.length === config.initialHistory.length ||
+              ((await optionalRecord(current.stateDirectory, "reviewer-attempt")) === ABSENT &&
+                (await verificationIntegration(config, current.stateDirectory)))),
           "verification-only-spent",
         );
       if (
@@ -5499,12 +5678,9 @@ export function repositoryQueueAdapter(
           accepted.stateDirectory,
           "refresh-review-not-accepted",
         );
-        demand(
-          pair.candidate.head === accepted.head && pair.selected.attempt.id === accepted.reviewId,
-          "delivery-source-drift",
-        );
+        await verificationDeliveryBinding(config.run, item.source, accepted);
         const pinned = (await json(accepted.stateDirectory, "config")).config as SourceConfig;
-        const delivery: DeliveryConfig = {
+        let delivery: DeliveryConfig = {
           controller: config.controller,
           run: config.run,
           issue: item.issue,
@@ -5515,29 +5691,43 @@ export function repositoryQueueAdapter(
           worktree: item.source.worktree,
           reviewWorktree: item.source.reviewWorktree,
           stateDirectory: accepted.stateDirectory,
-          candidateHead: accepted.head,
+          candidateHead: pair.candidate.head,
           retries: accepted.retries ?? 0,
           requiredChecks: item.delivery.requiredChecks,
           policy: item.delivery.policy,
           ...(item.delivery.localBranch ? { localBranch: item.delivery.localBranch } : {}),
         };
-        if (
-          (await optionalRecord(accepted.stateDirectory, "publication")) === ABSENT &&
-          (await optionalRecord(accepted.stateDirectory, "publication-intent")) === ABSENT &&
-          (await optionalRecord(accepted.stateDirectory, "cleanup")) === ABSENT
-        )
-          demand(
-            (await currentMain((args) => native.git(delivery.worktree, args))) ===
-              (pinned.mainBase ?? pinned.base),
-            "current-main-moved",
-          );
+        let reviewId = pair.selected.attempt.id;
+        let mainBase = pinned.mainBase ?? pinned.base;
         try {
+          const refreshed = await refreshDelivery(
+            delivery,
+            pinned,
+            verificationEvidence(delivery, reviewId),
+            boundedNative(item, "refresh"),
+            item.setup.pilotWorktree,
+            item.source.inheritedWorkerRetry ? 1 : 0,
+            undefined,
+            true,
+            {
+              main: item.verificationOnly.main,
+              inheritedDirectory: item.verificationOnly.sourceDirectory,
+              context: `Ordinary delivery integration after verification PASS ${reviewId}. No author or correction is authorized.`,
+            },
+          );
+          if (refreshed.status !== "ready") return refreshed;
+          delivery = refreshed.config;
+          reviewId = refreshed.evidence.reviewId;
+          if (delivery.stateDirectory !== accepted.stateDirectory) {
+            await passingReview(item, delivery.stateDirectory, "refresh-review-not-accepted");
+            mainBase = (await json(delivery.stateDirectory, "config")).config.mainBase;
+          }
           const result = await deliveryStep(
             delivery,
             {
               ...deliveryAdapter,
               async source() {
-                return verificationEvidence(delivery, accepted.reviewId);
+                return verificationEvidence(delivery, reviewId);
               },
             },
             deliveryPolicy,
@@ -5548,6 +5738,11 @@ export function repositoryQueueAdapter(
             await options.repository.afterMerge({ config: delivery, delivery: result });
           return result;
         } catch (error) {
+          if (
+            error instanceof QueueBlocked &&
+            ["conflict-resolution-exhausted", "rebase-conflict"].includes(error.reason)
+          )
+            throw new QueueBlocked("verification-only-refresh-conflict", error.diagnostics);
           if (error instanceof DeliveryBlocked && error.reason === "published-candidate-conflict")
             throw new QueueBlocked("verification-only-refresh-conflict");
           if (
@@ -5559,7 +5754,7 @@ export function repositoryQueueAdapter(
               delivery,
               error.gate,
               error.evidence,
-              pinned.mainBase ?? pinned.base,
+              mainBase,
             );
             throw new QueueBlocked(
               attribution.cause === "candidate"
