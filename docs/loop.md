@@ -378,7 +378,8 @@ The new worktrees start at S. Native refresh saves a new ISS-199 census before
 author dispatch, then uses the existing resolver and independent DELTA lifecycle.
 No-op cannot accept S. The remaining shared mechanical retry and charged history
 carry forward, allowing at most three launches (two if the retry was spent),
-within the unchanged run ceiling. Later main must descend from M and is merged,
+within the unchanged numeric ceiling (issue-local under ISS-235). Later main
+must descend from M and is merged,
 never rebased over S; a clean refresh needs a new DELTA within that same bound.
 A further conflict or work failure parks as `continuation-failed`, with no source
 repair, gate correction, new attempt or chained recovery. Host uncertainty keeps
@@ -597,7 +598,8 @@ merge, cleanup, eligibility waiver or historical record rewrite is involved.
 This grants no executor installation or preserved-run restart authority.
 
 ISS-187 permits one self prerequisite detour declared by `prerequisite` on the
-existing 64-launch/four-attempt run: `blockedCycle`, `blockedKey`, `blockedNumber`,
+existing 64-launch/four-attempt configuration (issue-local under ISS-235):
+`blockedCycle`, `blockedKey`, `blockedNumber`,
 completed run-scoped `stop`, prerequisite `key`/`number`, and `authorityUrl`.
 Admission requires ordinary current eligibility, a retained pinned source FAIL
 at attempt 1, and no live or uncertain competing owner. Its supervision records
@@ -646,7 +648,7 @@ repeated resume does not replay the failed source or launch attempt 2 (ISS-161).
 
 Old attempts, selections, source/setup records, terminals, stops and worktrees
 remain unchanged. Failure counts and spent allowances remain history; later
-launches still consume the run's ceiling. Missing or mismatched terminals,
+launches still consume the issue's same-run ceiling. Missing or mismatched terminals,
 unfinished authors and non-FAIL results cannot establish this transition.
 Source pilot/configuration checks and executor drift refusals remain in force.
 Parking leaves the self issue open and unready; only explicit planning unpark
@@ -1512,6 +1514,48 @@ Payout Fees remains incomplete until its operator-blocked work is resolved.
 
 ### Worktree setup and provider admission
 
+ISS-235 changes `nativeLaunchCeiling` from run-total admission to an allowance
+per issue across all its attempts in the same run. The config remains unchanged:
+`nativeLaunchCeiling` accepts 1..64 and `attemptCeiling` remains at most four.
+The owning loop has one repository; its canonical `<issue-key>:<attempt>` item
+identities share one allowance after removing only the numeric attempt suffix.
+Exact keys are compared, so prefix-confusable issues stay separate. Direct bounded
+queues retain their distinct opaque item identities, including across repositories.
+Source, repair, correction, conflict and refresh workers, both roles and all
+passed, failed, malformed, dead and unknown charged outcomes count once per worker
+identity. A different attempt, stage, directory, cycle or restart never refunds
+that issue's launches. Special grants retain their own allowances and terminal
+boundaries; this accounting change grants no terminal re-entry.
+
+Full run history keeps every participant in its original global ordinal order,
+including ordinals above 64. The shared reader enumerates existing ordinal files
+and reads each retained record once; gaps, duplicate identities, malformed records
+and conflicting terminals still refuse. Composition, accepted-replan/integration/
+terminal admission, verification continuation, participant synchronization, attempt
+persistence and cycle completion/stop/resume use that same complete history and
+validator. No record field, migration, backfill, renumbering or fingerprint waiver
+is introduced. Unrelated launches remain visible but spend no selected allowance.
+
+The recorded blocker is `m1-iss219-20260930T1030`, cycle 19 stop 1: 61 unrelated
+launches left ISS-234's attempt-2 candidate without its reviewer. A completed
+ordinary source budget stop at the old run-total boundary can resume its retained
+reviewer intent when the selected issue has capacity and the complete saved stop
+history still matches. Native dispatch writes reviewer artifacts before starting
+a child; any reviewer artifact besides that intent retains the ordinary uncertain
+launch refusal. The original source/setup configuration, author terminal, candidate,
+prior failures and completed stop remain unchanged. The existing reviewer lifecycle
+supplies the missing independent exact-head verdict before delivery. No worker
+terminal or earlier PASS is substituted. This narrow pre-dispatch recovery neither
+resumes special grants nor renews a launch with uncertain execution.
+
+The ISS-235 disposable queue/supervision regressions demonstrate old admission
+refusal and same-run recovery, not live recovery, hosted green or installation.
+Independent exact-head review and normal final-head three-OS bootstrap green,
+followed by a host-authorized quiescent executor install and same-run start, remain
+required. The host separately records observed ISS-234 recovery. Preserve the live
+candidate and runtime; actual issue-local exhaustion needs host disposition,
+never a fresh run or state root to reset the budget.
+
 New ordinary attempts use the local source branch
 `codex/run-<sha256(run)>/<issue-key>-attempt-<attempt>`; the hash keeps every
 accepted run name valid in a Git ref. Pilot and review remain detached.
@@ -1669,7 +1713,8 @@ The optional closed `terminalAttemptAdmission` declaration names
 `authorityUrl`, `authorityAuthor` and `authorityBodySha256`. The host must
 interpret and authorize the delegation before supplying it. It cannot coexist
 with `integrationContinuation`, `acceptedReplan` or `gateStopAuthorization`.
-The run retains its four implementation attempts and 64 native launches.
+The run retains its four implementation attempts and 64 native launches per
+issue (ISS-235).
 
 At production composition, after fresh pinned self selection and before setup,
 admission matches the latest completed implementation/integration stop, its

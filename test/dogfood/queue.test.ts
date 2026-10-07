@@ -25,6 +25,8 @@ import {
   queueConfigFromLoop,
   repositoryQueueAdapter,
   queueStep,
+  readQueueHistory,
+  validateHistory,
   retainedSourceFailure,
   retainedPostMergeDelivery,
   validateLoopExecutor,
@@ -334,7 +336,7 @@ it("binds repair FAIL to its retained setup, source, review, author and complete
   expect(await observe()).toBeUndefined();
   expect(await f.stop()).toBe("run");
   await writeFile(terminal, original.get(terminal)!);
-  f.loop.nativeLaunchCeiling = 5;
+  f.loop.nativeLaunchCeiling = 4;
   await expect(observe()).rejects.toMatchObject({ reason: "native-launch-ceiling-exhausted" });
   f.loop.nativeLaunchCeiling = 16;
   expect(await observe()).toMatchObject({ attempts: 3, history: f.cycle.initialHistory });
@@ -511,14 +513,15 @@ it.each([0, 1])(
   "admits each successor launch independently with %i remaining slots",
   async (slots) => {
     const { f, next } = await unparkedRepairFailure();
-    f.loop.nativeLaunchCeiling = next.initialHistory.length + slots;
+    f.loop.nativeLaunchCeiling =
+      next.initialHistory.filter((p) => p.item.startsWith(`${next.selection.key}:`)).length + slots;
     const q = await f.compose(next);
     const calls = f.calls.length;
     await expect(queueStep(q.config, q.adapter)).rejects.toMatchObject({
       reason: "native-launch-ceiling-exhausted",
     });
     expect(f.calls.slice(calls).filter((c) => c.startsWith("launch:"))).toHaveLength(slots);
-    expect((await q.adapter.history()).length).toBe(f.loop.nativeLaunchCeiling);
+    expect((await q.adapter.history()).length).toBe(next.initialHistory.length + slots);
   },
 );
 
@@ -2650,7 +2653,7 @@ it.each([
   ["complete", "complete"],
   ["review-fail", "complete"],
 ])(
-  "ISS-231 carries the verification charge past a later cycle: %s then retained %s",
+  "ISS-235 / ISS-231 carries the verification charge past later cycles above 64: %s then retained %s",
   async (outcome, laterOutcome) => {
     const f = await verificationOnlyFixture(3);
     const closed = new Set<number>();
@@ -2677,10 +2680,10 @@ it.each([
     }
     const retainedHistory = [
       ...f.cycle.initialHistory,
-      ...Array.from({ length: 12 }, (_, index) => ({
+      ...Array.from({ length: 70 }, (_, index) => ({
         ...participant(
           index + 9,
-          `cs-362:${Math.floor(index / 4) + 1}`,
+          `cs-${362 + Math.floor(index / 12)}:${Math.floor((index % 12) / 4) + 1}`,
           index % 4 < 2 ? "source" : "repair",
           index % 2 ? "reviewer" : "author",
           index % 2 ? "failed" : "passed",
@@ -2737,9 +2740,9 @@ it.each([
       await completeCycle(f.loop, resumed, await adapter.history(), host);
     }
     const charged = await adapter.history();
-    expect(charged).toHaveLength(21);
-    expect(charged.slice(0, 20)).toEqual(retainedHistory);
-    expect(charged[20]).toMatchObject({ ordinal: 21, role: "reviewer", item: "cs-361:4" });
+    expect(charged).toHaveLength(79);
+    expect(charged.slice(0, 78)).toEqual(retainedHistory);
+    expect(charged[78]).toMatchObject({ ordinal: 79, role: "reviewer", item: "cs-361:4" });
 
     const policy: RepositoryAdapter = {
       ...repositoryPolicy,
@@ -2803,9 +2806,9 @@ it.each([
       reason: "author-failed",
     });
     const successorHistory = await successorAdapter.history();
-    expect(successorHistory.slice(0, 21)).toEqual(charged);
-    expect(successorHistory).toHaveLength(22);
-    expect(successorHistory[21]).toMatchObject({ ordinal: 22, role: "author", item: "cs-363:1" });
+    expect(successorHistory.slice(0, 79)).toEqual(charged);
+    expect(successorHistory).toHaveLength(80);
+    expect(successorHistory[79]).toMatchObject({ ordinal: 80, role: "author", item: "cs-363:1" });
     expect(f.launches).toEqual(["reviewer"]);
     expect(f.captures()).toBe(1);
     for (const [path, bytes] of before) expect(await readFile(path, "utf8"), path).toBe(bytes);
@@ -3504,6 +3507,503 @@ function participant(
     usage: usage(ordinal, 1),
   };
 }
+
+function budgetHistory(count: number, item: (index: number) => string): QueueParticipant[] {
+  return Array.from({ length: count }, (_, index) => ({
+    ...participant(
+      index + 1,
+      item(index),
+      ["source", "repair", "refresh"][index % 3] as QueueParticipant["stage"],
+      index % 2 ? "reviewer" : "author",
+      ["passed", "failed", "malformed", "dead", "unknown"][
+        index % 5
+      ] as QueueParticipant["outcome"],
+    ),
+    id: `budget-worker-${index + 1}`,
+  }));
+}
+
+const budgetPolicy: RepositoryAdapter = {
+  ...repositoryPolicy,
+  issueContext: (input) => repositoryPolicy.issueContext({ ...input, key: "ISS-104" }),
+};
+
+it("ISS-235 retains distinct opaque repository identities and exact keys in a bounded queue", async () => {
+  const f = await fixture(2);
+  f.config.nativeLaunchCeiling = 64;
+  f.config.initialHistory = budgetHistory(64, (i) => `repo-one:ISS-234:${1 + (i % 4)}`);
+  f.items[0]!.id = "repo-two:ISS-234:1";
+  f.items[1]!.id = "repo-one:ISS-2340:1";
+  f.items[0]!.source.repository = f.items[0]!.setup.repository = "fixture/other-repository";
+  const history = [...f.config.initialHistory];
+  const calls: string[] = [];
+  const adapter: QueueAdapter = {
+    async assertExecutor() {},
+    async history() {
+      return history;
+    },
+    async setup() {
+      return { status: "ready" };
+    },
+    async source(item) {
+      calls.push(item.id);
+      history.push(
+        participant(history.length + 1, item.id, "source", "author", "passed"),
+        participant(history.length + 2, item.id, "source", "reviewer", "passed"),
+      );
+      return {
+        status: "accepted",
+        head: item.base,
+        reviewId: history.at(-1)!.id,
+        stateDirectory: item.source.stateDirectory,
+      };
+    },
+    async repair() {
+      throw new Error("repair not expected");
+    },
+    async delivery(item, accepted) {
+      return deliveryCompletion(item, accepted.head, accepted.reviewId);
+    },
+  };
+  for (let restart = 0; restart < 2; restart++)
+    await expect(queueStep(f.config, adapter)).resolves.toMatchObject({
+      status: "complete",
+      participants: 68,
+    });
+  expect(calls).toEqual(f.items.map((item) => item.id));
+  expect(() => validateHistory(history, 64)).not.toThrow();
+  // A suffix change alone keeps the same canonical issue and exhausts its cap.
+  const extra = {
+    ...participant(69, "repo-one:ISS-234:4", "refresh", "reviewer", "unknown"),
+    id: "extra-charge",
+  };
+  expect(() => validateHistory([...history, extra], 64)).toThrow("native-launch-ceiling-exhausted");
+});
+
+it("ISS-235 reads every ordinal, retaining legacy usage and rejecting gaps, duplicates and malformed records above 64", async () => {
+  const f = await fixture();
+  f.config.nativeLaunchCeiling = 64;
+  const history = budgetHistory(130, (i) => `ISS-${Math.floor(i / 50)}:${1 + (i % 4)}`);
+  for (const p of history)
+    await writeFile(
+      resolve(f.stateDirectory, `participant-${p.ordinal}-terminal.json`),
+      JSON.stringify(p),
+    );
+  expect(await readQueueHistory(f.config)).toEqual(history);
+  expect(await readQueueHistory(f.config)).toEqual(history);
+  const path = resolve(f.stateDirectory, "participant-65-terminal.json");
+  const original = await readFile(path, "utf8");
+  await writeFile(path, JSON.stringify({ ...history[64], usage: undefined }));
+  expect((await readQueueHistory(f.config))[64]!.usage).toEqual({
+    inputTokens: { status: "unavailable" },
+    outputTokens: { status: "unavailable" },
+    costUsd: { status: "unavailable" },
+  });
+  await writeFile(path, JSON.stringify({ ...history[64], outcome: "invented" }));
+  await expect(readQueueHistory(f.config)).rejects.toThrow("malformed-participant-history");
+  await writeFile(path, JSON.stringify({ ...history[64], id: history[0]!.id }));
+  await expect(readQueueHistory(f.config)).rejects.toThrow("reused-participant-identity");
+  await rm(path);
+  await expect(readQueueHistory(f.config)).rejects.toThrow("participant-history-gap");
+  await writeFile(path, original);
+  expect(await readQueueHistory(f.config)).toEqual(history);
+});
+
+it.each([
+  ["ISS-234:1", false],
+  ["ISS-234:4", false],
+  ["ISS-234:4", true],
+] as const)(
+  "ISS-235 refuses own launch 65 across attempts and stages for %s (counter removed: %s)",
+  async (id, bypass) => {
+    const f = await loopFixture(bypass);
+    let factory = repositoryQueueAdapter;
+    if (bypass) {
+      const path = resolve(f.repository, "scripts/dogfood/queue.ts");
+      const original = await readFile(path, "utf8");
+      const mutated = original.replace(
+        "return history.filter((participant) => issues.has(participantIssue(participant.item))).length;",
+        "return 0;",
+      );
+      expect(mutated).not.toBe(original);
+      await writeFile(path, mutated);
+      await execute(f.gitExecutable, ["-C", f.repository, "add", "."]);
+      await execute(f.gitExecutable, [
+        "-C",
+        f.repository,
+        "commit",
+        "-m",
+        "Synthetic counter removal",
+      ]);
+      factory = (await import(/* @vite-ignore */ pathToFileURL(path).href)).repositoryQueueAdapter;
+    }
+    f.loop.nativeLaunchCeiling = 64;
+    const history = budgetHistory(64, (i) => `ISS-234:${1 + (i % 4)}`);
+    const q = await queueConfigFromLoop(
+      f.loop,
+      f.repository,
+      { ...f.selected, key: "ISS-234" },
+      budgetPolicy,
+      history,
+    );
+    const item = q.items[0]!;
+    item.id = id;
+    const launch = vi.fn(async () => {
+      throw new Error("native launch reached");
+    });
+    const adapter = factory(q, f.repository, {
+      native: {
+        ...codexAdapter(f.gitExecutable),
+        async preflight() {},
+        async waitForProvider() {},
+        launch,
+      },
+      setup: gitSetupAdapter({
+        gitExecutable: f.gitExecutable,
+        async install(_launcher, _args, cwd) {
+          await mkdir(resolve(cwd, "node_modules"), { recursive: true });
+          await writeFile(resolve(cwd, "node_modules/.modules.yaml"), "fixture: true\n");
+          return "succeeded";
+        },
+      }),
+      gitExecutable: f.gitExecutable,
+    });
+    await expect(queueStep(q, adapter)).rejects.toThrow(
+      bypass ? "source-flow-state-unknown" : "native-launch-ceiling-exhausted",
+    );
+    if (bypass) {
+      expect(launch).toHaveBeenCalledTimes(1);
+      return;
+    }
+    await expect(queueStep(q, adapter)).rejects.toThrow("author-launch-identity-unknown-reconcile");
+    expect(launch).not.toHaveBeenCalled();
+    expect(await adapter.history()).toEqual(history);
+    // Vary only the owning identity: confusable keys spend no selected allowance.
+    const path = resolve(q.stateDirectory, "participant-64-terminal.json");
+    const other = { ...history[63]!, item: "ISS-2340:1" };
+    await writeFile(path, JSON.stringify(other));
+    q.initialHistory[63] = other;
+    // A separate disposable dispatch with the changed identity, not re-entry past
+    // the retained uncertain-intent boundary of the preceding refusal.
+    await rm(resolve(item.source.stateDirectory, "author-intent.json"));
+    await expect(queueStep(q, adapter)).rejects.toThrow("source-flow-state-unknown");
+    expect(launch).toHaveBeenCalledTimes(1);
+  },
+);
+
+it("ISS-235 resumes the baseline-exhausted attempt-2 candidate with only reviewer ordinal 65", async () => {
+  const f = await loopFixture(true);
+  f.loop.nativeLaunchCeiling = 64;
+  const baselinePath = resolve(f.repository, "scripts/dogfood/queue.ts");
+  const fixedCode = await readFile(baselinePath, "utf8");
+  // Historical admission negative control; no other gate or lifecycle is bypassed.
+  const baselineCode = fixedCode.replace(
+    "issueLaunches(priorHistory, item.id, item.acceptedReplan?.issueKey)",
+    "priorHistory.length",
+  );
+  expect(baselineCode).not.toBe(fixedCode);
+  await writeFile(baselinePath, baselineCode);
+  await execute(f.gitExecutable, ["-C", f.repository, "add", "."]);
+  await execute(f.gitExecutable, [
+    "-C",
+    f.repository,
+    "commit",
+    "-m",
+    "Synthetic historical admission",
+  ]);
+  const old = (await import(/* @vite-ignore */ pathToFileURL(baselinePath).href)) as {
+    repositoryQueueAdapter: typeof repositoryQueueAdapter;
+  };
+  const selected = { ...f.selected, key: "ISS-234" };
+  const history = budgetHistory(61, (i) => `ISS-${i === 0 ? "2340" : 1000 + i}:1`);
+  const firstAuthor = participant(62, "ISS-234:1", "source", "author", "passed");
+  const firstReviewer = participant(63, "ISS-234:1", "source", "reviewer", "passed");
+  history.push(firstAuthor, firstReviewer);
+  const runState = resolve(f.stateRoot, f.loop.run);
+  const priorDirectory = resolve(runState, "iss-234-attempt-1");
+  await mkdir(resolve(priorDirectory, "source"), { recursive: true });
+  const prior = {
+    schemaVersion: "dogfood-bounded-queue-attempt/v1",
+    phase: "failed",
+    run: f.loop.run,
+    index: 0,
+    item: "ISS-234:1",
+    issue: `https://github.com/${f.loop.repository}/issues/${selected.number}`,
+    base: selected.base,
+    candidateAttempt: 1,
+    head: selected.base,
+    reviewId: firstReviewer.id,
+    findings: [
+      {
+        file: "docs/loop.md",
+        line: 1,
+        severity: "blocking",
+        text: "Synthetic hosted assertion failure",
+      },
+    ],
+    history,
+    retries: 0,
+    acceptedStage: null,
+    stateDirectory: null,
+    rebasedBase: selected.base,
+    rebasedMainBase: selected.base,
+  };
+  await writeFile(resolve(priorDirectory, "attempt.json"), JSON.stringify(prior));
+  const priorSource = resolve(priorDirectory, "source");
+  const publication = {
+    number: 234,
+    url: `https://github.com/${f.loop.repository}/pull/234`,
+    head: selected.base,
+    repository: f.loop.repository,
+    sourceBranch: "codex/iss-234",
+    baseBranch: "main",
+    title: "Synthetic prior candidate",
+    body: "Synthetic prior delivery",
+    planDigest: "a".repeat(64),
+  };
+  for (const worker of [firstAuthor, firstReviewer]) {
+    const trace = resolve(priorSource, `${worker.role}.jsonl`);
+    await writeFile(trace, JSON.stringify({ type: "thread.started", thread_id: worker.id }) + "\n");
+    await writeFile(
+      resolve(priorSource, `${worker.role}-attempt.json`),
+      JSON.stringify({ id: worker.id, pid: 1, trace, launchedAt: 1 }),
+    );
+    await writeFile(
+      resolve(priorSource, `${worker.role}-terminal.json`),
+      JSON.stringify({
+        id: worker.id,
+        status: "passed",
+        head: selected.base,
+        summary: JSON.stringify({
+          run: f.loop.run,
+          role: worker.role,
+          head: selected.base,
+          verdict: "PASS",
+          ...(worker.role === "reviewer"
+            ? { findings: [], g0: "Historical synthetic review, not authority for attempt two" }
+            : { summary: "Synthetic earlier implementation" }),
+        }),
+      }),
+    );
+  }
+  await writeFile(resolve(priorSource, "publication.json"), JSON.stringify(publication));
+  await writeFile(
+    resolve(priorSource, "delivery-source.json"),
+    JSON.stringify({
+      repository: f.loop.repository,
+      head: selected.base,
+      reviewId: firstReviewer.id,
+    }),
+  );
+  await writeFile(
+    resolve(priorSource, "hosted-failure.log"),
+    JSON.stringify({
+      repository: f.loop.repository,
+      head: selected.base,
+      publication,
+      checks: [
+        {
+          name: "Node 24 / windows-latest",
+          bucket: "fail",
+          link: `https://github.com/${f.loop.repository}/actions/runs/234/job/235`,
+          actions: { run: 234, attempt: 1, job: 235, workflow: 1 },
+        },
+      ],
+    }) + "\nSynthetic retained hosted assertion failure\n",
+  );
+  const priorBytes = await snapshot(priorDirectory);
+  let q = await queueConfigFromLoop(f.loop, f.repository, selected, budgetPolicy, history);
+  const item = q.items[0]!;
+  expect(item.implementationAttempt).toBe(2);
+  const real = codexAdapter(f.gitExecutable);
+  const launches: string[] = [];
+  let reviewReady = false;
+  const native: Adapter = {
+    ...real,
+    async preflight() {},
+    async waitForProvider() {},
+    async launch(role, config, prompt) {
+      launches.push(role);
+      expect(prompt).toContain(resolve(priorSource, "hosted-failure.log"));
+      if (role === "author")
+        await writeFile(resolve(config.worktree, "docs/loop.md"), "# ISS-235 synthetic partial\n");
+      return {
+        id: `partial-${role}`,
+        pid: 111,
+        trace: resolve(config.stateDirectory, `${role}.jsonl`),
+        launchedAt: 1,
+      };
+    },
+    async observe(role, config, attempt) {
+      if (role === "author") return { id: attempt.id, status: "passed", head: config.base };
+      if (!reviewReady) return { id: attempt.id, status: "running" };
+      const head = await real.git(config.reviewWorktree, ["rev-parse", "HEAD"]);
+      return {
+        id: attempt.id,
+        status: "passed",
+        head,
+        summary: JSON.stringify({
+          run: config.run,
+          role,
+          head,
+          verdict: "PASS",
+          findings: [],
+          g0: "Synthetic independent exact-head review",
+        }),
+      };
+    },
+  };
+  const setup = gitSetupAdapter({
+    gitExecutable: f.gitExecutable,
+    async install(_launcher, _args, cwd) {
+      await mkdir(resolve(cwd, "node_modules"), { recursive: true });
+      await writeFile(resolve(cwd, "node_modules/.modules.yaml"), "fixture: true\n");
+      return "succeeded";
+    },
+  });
+  let deliveries = 0;
+  const adapter = (factory = repositoryQueueAdapter) => ({
+    ...factory(q, f.repository, {
+      native,
+      setup,
+      gitExecutable: f.gitExecutable,
+      async assertExecutor() {},
+    }),
+    async delivery(current: QueueItem, accepted: { head: string; reviewId: string }) {
+      deliveries++;
+      expect(accepted.reviewId).toBe("partial-reviewer");
+      expect(accepted.head).toBe(
+        JSON.parse(await readFile(resolve(item.source.stateDirectory, "candidate.json"), "utf8"))
+          .head,
+      );
+      return deliveryCompletion(current, accepted.head, accepted.reviewId);
+    },
+  });
+  // Baseline admission stops after the author terminal and commit, before reviewer launch.
+  await expect(queueStep(q, adapter(old.repositoryQueueAdapter))).rejects.toThrow(
+    "native-launch-ceiling-exhausted",
+  );
+  expect(launches).toEqual(["author"]);
+  const attemptPath = resolve(q.stateDirectory, "attempt.json");
+  expect(JSON.parse(await readFile(attemptPath, "utf8")).history).toHaveLength(63);
+  expect(await adapter().history()).toHaveLength(64);
+  await expect(
+    readFile(resolve(item.source.stateDirectory, "reviewer-terminal.json")),
+  ).rejects.toMatchObject({ code: "ENOENT" });
+  const preserved = await snapshot(item.source.stateDirectory);
+  const setupBytes = await snapshot(item.setup.stateDirectory);
+  const head = await real.git(item.source.worktree, ["rev-parse", "HEAD"]);
+  const cycle = { selection: { cycle: 1, ...selected }, initialHistory: await adapter().history() };
+  const comments: string[] = [];
+  const host: SupervisionAdapter = {
+    async currentMain() {
+      throw new Error("saved selection must not fetch");
+    },
+    async issue() {
+      return { key: selected.key, state: "OPEN", labels: ["ready"], comments };
+    },
+    async comment(_config, _number, body) {
+      comments.push(body);
+    },
+    async close() {},
+    async removeReady() {
+      throw new Error("budget stop must not park");
+    },
+  };
+  await persistCycle(f.loop, cycle);
+  await stopCycle(f.loop, cycle, "native-launch-ceiling-exhausted", 2, host, repositoryPolicy);
+  const stopBytes = await readFile(resolve(runState, "cycle-1-stop-1-complete.json"));
+  // A real executor revision change must keep saved setup/source fingerprints usable.
+  await writeFile(baselinePath, fixedCode);
+  await real.git(f.repository, ["add", "."]);
+  await real.git(f.repository, ["commit", "-m", "ISS-235 synthetic executor upgrade"]);
+  q = await queueConfigFromLoop(f.loop, f.repository, selected, budgetPolicy, history);
+  for (const mode of ["dispatch-artifact", "pending-stop", "wrong-head"] as const) {
+    const path =
+      mode === "dispatch-artifact"
+        ? resolve(item.source.stateDirectory, "reviewer-uncertain.request.json")
+        : mode === "pending-stop"
+          ? resolve(runState, "cycle-1-stop-1-complete.json")
+          : resolve(item.source.stateDirectory, "reviewer-intent.json");
+    const before = mode === "dispatch-artifact" ? undefined : await readFile(path);
+    if (mode === "dispatch-artifact") await writeFile(path, "{}");
+    else if (mode === "pending-stop") await rm(path);
+    else
+      await writeFile(
+        path,
+        JSON.stringify({ ...JSON.parse(before!.toString()), head: selected.base }),
+      );
+    await expect(queueStep(q, adapter())).rejects.toThrow(
+      "reviewer-launch-identity-unknown-reconcile",
+    );
+    expect(launches).toEqual(["author"]);
+    if (before) await writeFile(path, before);
+    else await rm(path);
+  }
+  for (let restart = 0; restart < 2; restart++) {
+    const resumed = (await nextCycle(
+      f.loop,
+      f.repository,
+      host,
+      repositoryPolicy,
+      async () => {},
+    ))!;
+    expect(resumed.selection).toEqual(cycle.selection);
+    const { cycle: _cycle, ...selection } = resumed.selection;
+    q = await queueConfigFromLoop(
+      f.loop,
+      f.repository,
+      selection,
+      budgetPolicy,
+      resumed.initialHistory,
+    );
+    expect(q.stateDirectory).toBe(resolve(priorDirectory, "../iss-234-attempt-2"));
+    expect(q.items[0]!.implementationAttempt).toBe(2);
+    await expect(queueStep(q, adapter())).resolves.toMatchObject({ status: "observing-reviewer" });
+    expect(deliveries).toBe(0);
+  }
+  expect(launches).toEqual(["author", "reviewer"]);
+  reviewReady = true;
+  for (let restart = 0; restart < 2; restart++)
+    await expect(queueStep(q, adapter())).resolves.toMatchObject({
+      status: "complete",
+      participants: 65,
+    });
+  const charged = await adapter().history();
+  expect(charged.slice(0, 63)).toEqual(history);
+  expect(charged.slice(61).map((p) => p.id)).toEqual([
+    firstAuthor.id,
+    firstReviewer.id,
+    "partial-author",
+    "partial-reviewer",
+  ]);
+  expect(charged.at(-1)).toMatchObject({ ordinal: 65, item: "ISS-234:2", role: "reviewer" });
+  const participantPath = resolve(q.stateDirectory, "participant-65-terminal.json");
+  const participantBytes = await readFile(participantPath);
+  await writeFile(participantPath, JSON.stringify({ ...charged[64], outcome: "failed" }));
+  await expect(adapter().source(q.items[0]!)).rejects.toThrow("participant-terminal-drift");
+  await writeFile(participantPath, participantBytes);
+  expect(await adapter().history()).toEqual(charged);
+  expect(deliveries).toBe(1);
+  expect(await real.git(item.source.worktree, ["rev-parse", "HEAD"])).toBe(head);
+  for (const [path, bytes] of preserved) expect(await readFile(path, "utf8"), path).toBe(bytes);
+  expect(await snapshot(item.setup.stateDirectory)).toEqual(setupBytes);
+  expect(await snapshot(priorDirectory)).toEqual(priorBytes);
+  expect(await readFile(resolve(runState, "cycle-1-stop-1-complete.json"))).toEqual(stopBytes);
+  expect(comments).toHaveLength(1);
+  console.info(
+    JSON.stringify({
+      fixture: "ISS-235 synthetic saved-source replay",
+      baselineAdmission: "native-launch-ceiling-exhausted",
+      candidate: head,
+      attempt: 2,
+      resultingOrdinal: 65,
+      ownCharges: 4,
+      launches,
+      result: "fresh exact-head review before delivery; repeated replay has no effects",
+    }),
+  );
+});
 
 function deliveryCompletion(
   item: QueueItem,
@@ -4792,7 +5292,7 @@ it.each([
   "review-fail",
 ])("recovers saved malformed author transport with real observation and Git: %s", async (mode) => {
   const f = await loopFixture();
-  f.loop.nativeLaunchCeiling = mode === "ceiling" ? 13 : 20;
+  f.loop.nativeLaunchCeiling = mode === "ceiling" ? 2 : 20;
   const inherited = Array.from({ length: 12 }, (_, i) =>
     participant(
       i + 1,
@@ -4802,6 +5302,7 @@ it.each([
       i % 2 ? "failed" : "passed",
     ),
   );
+  if (mode === "ceiling") inherited[0] = { ...inherited[0]!, item: `${f.selected.key}:4` };
   const q = await queueConfigFromLoop(
     f.loop,
     f.repository,
@@ -6044,6 +6545,32 @@ async function unpublishedReplanFixture() {
   const compose = (config = loop) => queueConfigFromLoop(config, f.repository, selected, policy);
   return { ...f, loop, selected, head, history, prior, priorSource, file, compose, policy };
 }
+
+it("ISS-235 a granted replan's custom slug cannot renew its inherited issue allowance", async () => {
+  const f = await acceptedReplanFixture();
+  f.loop.nativeLaunchCeiling = 9;
+  const q = await f.compose();
+  expect(q.items[0]!.id).toBe("cs-7766-replan-8014:5");
+  expect(q.initialHistory).toHaveLength(9);
+  validateQueueConfig(q);
+  const launch = vi.fn(async () => {
+    throw new Error("native launch must remain refused");
+  });
+  const adapter = repositoryQueueAdapter(q, f.repository, {
+    gitExecutable: f.gitExecutable,
+    setup: f.setup,
+    native: {
+      ...codexAdapter(f.gitExecutable),
+      async preflight() {},
+      async waitForProvider() {},
+      launch,
+    },
+  });
+  await expect(queueStep(q, adapter)).rejects.toThrow("native-launch-ceiling-exhausted");
+  expect(launch).not.toHaveBeenCalled();
+  expect(await adapter.history()).toEqual(f.history);
+  for (const [path, bytes] of f.preserved) expect(await readFile(path, "utf8"), path).toBe(bytes);
+});
 
 it("composes an unpublished repair-attempt lineage without importing publication or PASS", async () => {
   const f = await unpublishedReplanFixture();

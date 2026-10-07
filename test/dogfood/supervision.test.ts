@@ -13,6 +13,7 @@ import {
   queueStep,
   validateLoopConfig,
   type LoopConfig,
+  type QueueParticipant,
 } from "../../scripts/dogfood/queue.js";
 import { prerequisiteFixture, prerequisiteProof } from "./fixtures/prerequisite.js";
 import { ACCEPTED_REPLAN, replanPacket } from "./fixtures/continuation.js";
@@ -1037,9 +1038,11 @@ it.each(["park", "note", "completion"])(
     expect(later.initialHistory.slice(0, 6)).toEqual(expectedHistory);
     expect(later.initialHistory).toHaveLength(8);
     await persistCycle(f.loop, later);
-    const exhausted = await f.compose(later);
-    await expect(queueStep(exhausted.config, exhausted.adapter)).rejects.toMatchObject({
-      reason: "native-launch-ceiling-exhausted",
+    const independent = await f.compose(later);
+    // ISS-235: eight retained participants no longer exhaust an unrelated issue.
+    await expect(queueStep(independent.config, independent.adapter)).resolves.toMatchObject({
+      status: "complete",
+      participants: 10,
     });
     expect((await f.advance())!.initialHistory).toEqual(later.initialHistory);
     expect(
@@ -1188,6 +1191,67 @@ function selected(): SupervisedCycle {
   };
   return { selection, initialHistory: [] };
 }
+
+it("ISS-235 retains more than 64 ordered participants through completion, stop and next-cycle replay", async () => {
+  const root = await mkdtemp(resolve(tmpdir(), "iss235-supervision-"));
+  roots.push(root);
+  const config = loop(root);
+  config.nativeLaunchCeiling = 64;
+  expect(() => validateLoopConfig(config)).not.toThrow();
+  const history: QueueParticipant[] = Array.from({ length: 70 }, (_, i) => ({
+    ordinal: i + 1,
+    id: `retained-${i + 1}`,
+    item: `ISS-${100 + Math.floor(i / 10)}:${1 + (i % 4)}`,
+    stage: i % 2 ? "refresh" : "source",
+    role: i % 2 ? "reviewer" : "author",
+    outcome: "passed",
+    usage: {
+      inputTokens: { status: "unavailable" },
+      outputTokens: { status: "unavailable" },
+      costUsd: { status: "unavailable" },
+    },
+  }));
+  const cycle = selected();
+  const observation: IssueObservation = {
+    state: "OPEN",
+    key: cycle.selection.key,
+    labels: [],
+    comments: [],
+  };
+  const host = fakeAdapter(observation);
+  host.currentMain = async () => cycle.selection.base;
+  const policy = { ...repositoryPolicy, selectCandidates: () => [{ key: "ISS-234", number: 750 }] };
+  await persistCycle(config, cycle);
+  for (let replay = 0; replay < 2; replay++) await completeCycle(config, cycle, history, host);
+  const next = (await nextCycle(config, root, host, policy))!;
+  expect(next.initialHistory).toEqual(history);
+  expect(next.selection).toMatchObject({ cycle: 2, key: "ISS-234" });
+  observation.key = "ISS-234";
+  observation.state = "OPEN";
+  await persistCycle(config, next);
+  for (let replay = 0; replay < 2; replay++) {
+    await expect(
+      stopCycle(config, next, "native-launch-ceiling-exhausted", 2, host, policy, undefined, 1),
+    ).resolves.toBe("run");
+    expect(await nextCycle(config, root, host, policy)).toEqual(next);
+  }
+  expect(observation.comments).toHaveLength(1);
+  expect(observation.comments[0]).toContain("unrelated issues remain in full-run history");
+  expect(observation.comments[0]).toContain("never reset the budget with a fresh run");
+  expect(observation.comments[0]).not.toContain(
+    "start an authorized run with enough launch budget",
+  );
+  const directory = resolve(config.stateRoot, config.run);
+  for (const name of ["cycle-1-complete", "cycle-2-stop-1", "cycle-2-stop-1-complete"])
+    expect(JSON.parse(await readFile(resolve(directory, `${name}.json`), "utf8")).history).toEqual(
+      history,
+    );
+  // A later cycle must not replace this full history with an earlier projection.
+  observation.state = "CLOSED";
+  await completeCycle(config, next, history, host);
+  const later = (await nextCycle(config, root, host, policy))!;
+  expect(later.initialHistory).toEqual(history);
+});
 
 function fakeAdapter(observation: IssueObservation): SupervisionAdapter {
   return {
