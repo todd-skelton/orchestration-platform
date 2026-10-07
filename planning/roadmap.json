@@ -926,7 +926,7 @@
       "title": "Refresh verification-only delivery again when main moves after a passing delta review",
       "summary": "Reuse native current-main refresh after verification PASS, including retained movement stops, without renewing the grant, reservation or implementation attempt.",
       "milestone": "M1",
-      "blockedBy": ["ISS-233"]
+      "blockedBy": ["ISS-233", "ISS-243"]
     },
     {
       "key": "ISS-235",
@@ -991,6 +991,14 @@
       "summary": "Prove real-lineage decision and level parity through production recovery paths before ISS-111 adoption.",
       "milestone": "M1",
       "blockedBy": ["ISS-241"]
+    },
+    {
+      "key": "ISS-243",
+      "file": "planning/drafts/ISS-243.md",
+      "title": "Accept valid advisory review notes outside the changed-file set",
+      "summary": "Fix the demonstrated refreshed-PASS location stop without admitting blocking findings outside the candidate or weakening exact-head evidence.",
+      "milestone": "M1",
+      "blockedBy": []
     }
   ]
 }
