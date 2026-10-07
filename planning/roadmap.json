@@ -115,7 +115,8 @@
       "blockedBy": [
         "ISS-110",
         "ISS-137",
-        "ISS-138"
+        "ISS-138",
+        "ISS-242"
       ]
     },
     {
@@ -934,6 +935,62 @@
       "summary": "Isolate native launch admission by issue within a run while preserving complete participant history and same-run partial recovery.",
       "milestone": "M1",
       "blockedBy": []
+    },
+    {
+      "key": "ISS-236",
+      "file": "planning/drafts/ISS-236.md",
+      "title": "Record one defect class for every unsuccessful loop outcome",
+      "summary": "Add causal classification beside ISS-225 fault ownership without changing recovery behavior or retained records.",
+      "milestone": "M1",
+      "blockedBy": ["ISS-234", "ISS-235"]
+    },
+    {
+      "key": "ISS-237",
+      "file": "planning/drafts/ISS-237.md",
+      "title": "Author and independently review bounded planning repairs inside the loop",
+      "summary": "Reuse native worker execution for ISSUE, SET and EPIC planning proposals with independent exact-body review.",
+      "milestone": "M1",
+      "blockedBy": ["ISS-236"]
+    },
+    {
+      "key": "ISS-238",
+      "file": "planning/drafts/ISS-238.md",
+      "title": "Apply reviewed planning repairs through repository adapters and readmit work",
+      "summary": "Let the single writer apply reviewed draft and native issue changes and restore ordinary readiness without manual unpark.",
+      "milestone": "M1",
+      "blockedBy": ["ISS-237"]
+    },
+    {
+      "key": "ISS-239",
+      "file": "planning/drafts/ISS-239.md",
+      "title": "Replace attempt ceilings with judged continuation and independent step-back review",
+      "summary": "Retain count telemetry while judging progress, escalating recovery level and replacing terminal caps with bounded checkpoints.",
+      "milestone": "M1",
+      "blockedBy": ["ISS-238"]
+    },
+    {
+      "key": "ISS-240",
+      "file": "planning/drafts/ISS-240.md",
+      "title": "Wait on native blockers and reserve parking for operator deferral",
+      "summary": "Absorb ISS-225 bounded retry, retire legacy parking and reuse operator notification while unrelated work continues.",
+      "milestone": "M1",
+      "blockedBy": ["ISS-239", "ISS-138"]
+    },
+    {
+      "key": "ISS-241",
+      "file": "planning/drafts/ISS-241.md",
+      "title": "Retire one-off recovery grants in favor of reviewed lineage replanning",
+      "summary": "Absorb ISS-225 continuation retirement while preserving reserved in-flight work and immutable historical records.",
+      "milestone": "M1",
+      "blockedBy": ["ISS-240"]
+    },
+    {
+      "key": "ISS-242",
+      "file": "planning/drafts/ISS-242.md",
+      "title": "Gate Chase Sets adoption on judged-recovery lineage parity",
+      "summary": "Prove real-lineage decision and level parity through production recovery paths before ISS-111 adoption.",
+      "milestone": "M1",
+      "blockedBy": ["ISS-241"]
     }
   ]
 }
