@@ -4191,6 +4191,17 @@ describe.each([
     beforeEach(async () => {
       expect((await fixture.next()).done).toBe(false);
     });
+    if (mode === "published") {
+      // ISS-235 attempt 2 timed out on Windows while this final phase combined
+      // admission, correction and delivery. Keep one lineage and every assertion,
+      // with the existing hook/test bound applied at reviewer observations.
+      beforeEach(async () => {
+        expect((await fixture.next()).done).toBe(false); // recovery DELTA pending
+      });
+      beforeEach(async () => {
+        expect((await fixture.next()).done).toBe(false); // correction DELTA pending
+      });
+    }
     it("retains one native lineage through admission, review, attribution and terminal replay", async () => {
       expect((await fixture.next()).done).toBe(true);
     });
@@ -4814,6 +4825,7 @@ See docs/architecture/bounded-context-structure.md#rules-the-structure-gate-enfo
       expect(integrated.previousReview).toBe(reservation.sourceEvidence.reviewId);
       expect(launches.at(-1)!.stage).toBe("refresh-reviewer");
       expect(launches.at(-1)!.prompt).toContain("independent DELTA");
+      if (mode === "published") yield;
       deltaRunning = false;
       if (mode === "review-fail") {
         for (let replay = 0; replay < 2; replay++)
@@ -4886,6 +4898,7 @@ See docs/architecture/bounded-context-structure.md#rules-the-structure-gate-enfo
     reviewRunning = true;
     for (let replay = 0; replay < 2; replay++)
       await expect(run()).resolves.toMatchObject({ status: "observing-reviewer" });
+    if (executorRecovery && mode === "published") yield;
     reviewRunning = false;
     if (mode === "second failure") {
       for (let replay = 0; replay < 2; replay++)
