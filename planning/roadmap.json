@@ -928,6 +928,14 @@
       "blockedBy": ["ISS-233"]
     },
     {
+      "key": "ISS-235",
+      "file": "planning/drafts/ISS-235.md",
+      "title": "Isolate native launch budgets between issues while preserving same-run recovery",
+      "summary": "Isolate native launch admission by issue within a run while preserving complete participant history and same-run partial recovery.",
+      "milestone": "M1",
+      "blockedBy": []
+    },
+    {
       "key": "ISS-236",
       "file": "planning/drafts/ISS-236.md",
       "title": "Record one defect class for every unsuccessful loop outcome",
