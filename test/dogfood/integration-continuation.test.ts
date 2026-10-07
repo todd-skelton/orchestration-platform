@@ -434,6 +434,644 @@ async function exhaustedFixture(shape: Shape = "conflict", spentRetry = false, a
 // No real external-authority observation is replaced or reinterpreted by this fixture.
 // The persisted shape follows the run: a failed ISS-167 integration whose consumed ISS-200
 // spent resolution failed again after publication, then the completed cycle-11 stop.
+async function conflictSuccessorFixture(prior: 2 | 3 = 3) {
+  const f = await exhaustedFixture();
+  // Disposable synthetic records only; real Git supplies both parents, seed,
+  // implemented successor and its separately refreshed reviewed head.
+  await rm(f.runState, { recursive: true });
+  await mkdir(f.runState);
+  await f.git(["checkout", "-b", "synthetic-seed", f.reviewed]);
+  await expect(f.git(["merge", "--no-commit", "main"])).rejects.toThrow();
+  await f.git(["add", "."]);
+  await f.git(["commit", "-m", "synthetic conflict seed"]);
+  const seed = await f.git(["rev-parse", "HEAD"]);
+  await writeFile(resolve(f.repository, "docs/loop.md"), "# Synthetic resolved successor\n");
+  await f.git(["commit", "-am", "synthetic successor"]);
+  const authoredHead = await f.git(["rev-parse", "HEAD"]);
+  await f.git(["checkout", "main"]);
+  await writeFile(resolve(f.repository, "later-main.txt"), "Synthetic main movement\n");
+  await f.git(["add", "."]);
+  await f.git(["commit", "-m", "synthetic later main"]);
+  const base = await f.git(["rev-parse", "HEAD"]);
+  await f.git(["checkout", "synthetic-seed"]);
+  await f.git(["merge", "main", "-m", "synthetic refreshed successor"]);
+  const terminalHead = await f.git(["rev-parse", "HEAD"]);
+  await f.git(["checkout", "main"]);
+  await f.git(["push", "origin", "main"]);
+  const history: QueueParticipant[] = [];
+  const directory = (n: number) => resolve(f.runState, `${KEY.toLowerCase()}-attempt-${n}`);
+  const put = async (path: string, name: string, value: unknown) => {
+    await mkdir(path, { recursive: true });
+    await f.put(path, name, value);
+  };
+  let conflictId = "";
+  for (let n = 1; n <= prior; n++) {
+    const author = participant(history.length + 1, `${KEY}:${n}`, "source", "author", "passed");
+    const reviewer = participant(history.length + 2, `${KEY}:${n}`, "source", "reviewer", "passed");
+    history.push(author, reviewer);
+    const source = resolve(directory(n), "source");
+    const refresh = resolve(source, `refresh-${base}`);
+    if (n === prior - 1) {
+      const failed = participant(history.length + 1, `${KEY}:${n}`, "refresh", "author", "failed");
+      conflictId = failed.id;
+      history.push(failed);
+      await put(source, "native-refresh", {
+        main: f.main,
+        directory: refresh,
+        resolutionUsed: true,
+        conflict: { seed },
+        retries: 0,
+      });
+      await put(source, "gate-correction", { failedHead: f.reviewed });
+      await put(refresh, "author-attempt", {
+        id: failed.id,
+        retries: 1,
+        trace: resolve(refresh, "author.jsonl"),
+      });
+      await put(refresh, "author-terminal", { id: failed.id, head: seed, status: "failed" });
+    }
+    if (n === prior) {
+      const delta = participant(history.length + 1, `${KEY}:${n}`, "refresh", "reviewer", "passed");
+      history.push(delta);
+      await put(source, "config", { config: { base: seed, mainBase: f.main } });
+      await put(source, "author-attempt", {
+        id: author.id,
+        trace: resolve(source, "author.jsonl"),
+      });
+      await put(source, "author-terminal", { id: author.id, status: "passed", head: seed });
+      await put(source, "candidate", { head: authoredHead, changed: ["docs/loop.md"] });
+      await put(source, "reviewer-attempt", {
+        id: reviewer.id,
+        trace: resolve(source, "reviewer.jsonl"),
+      });
+      await put(source, "reviewer-terminal", {
+        id: reviewer.id,
+        status: "passed",
+        head: authoredHead,
+      });
+      await put(source, "native-refresh", {
+        main: base,
+        head: terminalHead,
+        directory: refresh,
+        resolutionUsed: true,
+      });
+      await put(refresh, "reviewer-attempt", {
+        id: delta.id,
+        trace: resolve(refresh, "reviewer.jsonl"),
+      });
+      await put(refresh, "reviewer-terminal", {
+        id: delta.id,
+        status: "passed",
+        head: terminalHead,
+      });
+    }
+    await put(directory(n), "attempt", {
+      schemaVersion: "dogfood-bounded-queue-attempt/v1",
+      run: RUN,
+      issue: ISSUE,
+      item: `${KEY}:${n}`,
+      index: 0,
+      phase: "failed",
+      base: n === prior ? seed : f.base,
+      candidateAttempt: n,
+      head: n === prior ? terminalHead : n === prior - 1 ? seed : f.reviewed,
+      reviewId: reviewer.id,
+      findings: [],
+      history: [...history],
+      retries: 0,
+      acceptedStage: null,
+      stateDirectory: null,
+      authorFailures: { count: 1, ids: [conflictId || author.id] },
+    });
+    for (const p of history) await put(directory(n), `participant-${p.ordinal}-terminal`, p);
+  }
+  const terminalHistory = [...history];
+  const terminalSelection = {
+    cycle: 1,
+    key: KEY,
+    number: NUMBER,
+    base: f.main,
+    planningRevision: f.main,
+  };
+  const terminalMarker = `loop-stop:${RUN}:1:1`;
+  const terminalBody = `<!-- ${terminalMarker} --> Synthetic controller admission gap after reviewed conflict successor.`;
+  await put(f.runState, "cycle-1-selected", terminalSelection);
+  await put(f.runState, "cycle-1-stop-1", {
+    selection: terminalSelection,
+    stop: 1,
+    reason: "continuation-failed",
+    attempts: prior,
+    marker: terminalMarker,
+    body: terminalBody,
+    history: terminalHistory,
+  });
+  await put(f.runState, "cycle-1-stop-1-complete", {
+    selection: terminalSelection,
+    stop: 1,
+    history: terminalHistory,
+  });
+  await put(f.runState, "cycle-1-complete", {
+    selection: terminalSelection,
+    history: terminalHistory,
+  });
+  history.push(participant(history.length + 1, "SYNTHETIC-OTHER:1", "source", "author", "passed"));
+  const unrelated = { cycle: 2, key: "SYNTHETIC-OTHER", number: 999, base };
+  await put(f.runState, "cycle-2-selected", unrelated);
+  await put(f.runState, "cycle-2-complete", { selection: unrelated, history });
+  const authorityBody =
+    "SYNTHETIC host ruling: controller/admission gap, not a work rejection; authorize one next unused attempt from current main.";
+  const hash = (s: string) => createHash("sha256").update(s).digest("hex");
+  const packet: Extract<TerminalAttemptAdmission, { terminalKind: string }> = {
+    schemaVersion: "dogfood-terminal-attempt-admission/v2",
+    terminalKind: "conflict-successor",
+    terminalHead,
+    repository: f.loop.repository,
+    issueKey: KEY,
+    issueUrl: ISSUE,
+    run: RUN,
+    priorAbsoluteAttempt: prior,
+    nextAbsoluteAttempt: prior === 2 ? 3 : 4,
+    terminalMarker,
+    terminalReceiptUrl: `${ISSUE}#issuecomment-9002`,
+    terminalHistoryDigest: queueDigest(terminalHistory),
+    priorPublication: null,
+    authorityUrl: `${ISSUE}#issuecomment-9004`,
+    authorityAuthor: "synthetic-delegator",
+    authorityBodySha256: hash(authorityBody),
+  };
+  const loop: LoopConfig = { ...f.loop, nativeLaunchCeiling: 64, terminalAttemptAdmission: packet };
+  const selected = { key: KEY, number: NUMBER, base, planningRevision: base };
+  const authority = {
+    id: "9004",
+    url: packet.authorityUrl,
+    author: packet.authorityAuthor,
+    body: authorityBody,
+    capturedAt: "2026-01-01T00:00:00.000Z",
+  };
+  const receipt = {
+    ...authority,
+    id: "9002",
+    url: packet.terminalReceiptUrl,
+    body: `${terminalBody} To unpark, ${unparkInstructions}.`,
+  };
+  const issue = { number: NUMBER, url: ISSUE, state: "OPEN", title: "Synthetic issue" };
+  const calls: string[] = [];
+  const observe = async (url: string) => {
+    calls.push(url);
+    return url === packet.authorityUrl ? authority : receipt;
+  };
+  const observeIssue = async () => {
+    calls.push("issue");
+    return issue;
+  };
+  const compose = (
+    config = loop,
+    observer = observe,
+    issueObserver = observeIssue,
+    selection = selected,
+  ) =>
+    queueConfigFromLoop(
+      config,
+      f.repository,
+      selection,
+      f.policy,
+      history,
+      undefined,
+      observer,
+      async () => {
+        throw new Error("unpublished terminal must not probe PR");
+      },
+      issueObserver,
+    );
+  const reservation = resolve(
+    loop.stateRoot,
+    `terminal-attempt-admission-${queueDigest({ repository: loop.repository, issue: KEY })}.json`,
+  );
+  return {
+    ...f,
+    loop,
+    selected,
+    packet,
+    seed,
+    authoredHead,
+    terminalHead,
+    terminalHistory,
+    history,
+    directory,
+    put,
+    authority,
+    receipt,
+    issue,
+    calls,
+    observe,
+    observeIssue,
+    compose,
+    reservation,
+    terminalBody,
+    terminalSelection,
+  };
+}
+
+it.each([2, 3] as const)(
+  "ISS-244 admits only the next unused attempt after successor %i and replays without observations",
+  async (prior) => {
+    const f = await conflictSuccessorFixture(prior);
+    const retained = await snapshot(f.runState);
+    const { terminalAttemptAdmission: omitted, ...ordinary } = f.loop;
+    await expect(f.compose(ordinary)).rejects.toMatchObject({
+      reason: "continuation-failed",
+      diagnostics: expect.stringContaining("host-interpreted terminalAttemptAdmission"),
+    });
+    expect(f.calls).toEqual([]);
+    await expect(readFile(f.reservation)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readdir(f.runState)).not.toContain(`${KEY.toLowerCase()}-attempt-${prior + 1}`);
+    const queue = await f.compose();
+    const item = queue.items[0]!;
+    expect(item.implementationAttempt).toBe(prior + 1);
+    expect(item.base).toBe(f.selected.base);
+    expect(item.source.base).toBe(f.selected.base);
+    expect(item.setup.sourceBranch).toBe(
+      `codex/run-${createHash("sha256").update(RUN).digest("hex")}/${KEY.toLowerCase()}-attempt-${prior + 1}`,
+    );
+    expect(item.delivery.policy).toMatchObject({
+      sourceBranch: `codex/${KEY.toLowerCase()}-attempt-${prior + 1}`,
+    });
+    expect(item.source.author.prompt).toContain(`ordinary attempt ${prior + 1}`);
+    expect(item.source.author.prompt).toContain(f.directory(prior - 1));
+    expect(item.source.author.prompt).toContain(f.directory(prior));
+    expect(item.source.author.prompt).not.toContain("Apply these reviewer-prescribed");
+    expect(queue.initialHistory).toEqual(f.history);
+    const saved = JSON.parse(await readFile(f.reservation, "utf8"));
+    expect(saved).toMatchObject({
+      binding: { packet: f.packet },
+      initialHistory: f.history,
+      inheritedWorkerRetry: true,
+      resolutionUsed: true,
+      correctionUsed: true,
+      authorFailures: {
+        ids: [f.history.find((p) => p.role === "author" && p.outcome === "failed")!.id],
+      },
+    });
+    expect(f.calls).toHaveLength(3);
+    expect(await f.compose()).toEqual(queue);
+    expect(f.calls).toHaveLength(3);
+    for (const [path, bytes] of retained) expect(await readFile(path, "utf8"), path).toBe(bytes);
+  },
+);
+
+it("ISS-244 keeps v1 packets and reservations byte-readable without normalizing an implicit kind", async () => {
+  const f = await terminalAdmissionFixture();
+  const bytes = JSON.stringify(f.packet);
+  validateLoopConfig(f.loop);
+  const queue = await f.compose();
+  const saved = JSON.parse(await readFile(f.reservation, "utf8"));
+  expect(JSON.stringify(saved.binding.packet)).toBe(bytes);
+  expect(JSON.stringify(f.packet)).toBe(bytes);
+  const observations = f.calls.length;
+  expect(await f.compose()).toEqual(queue);
+  expect(f.calls).toHaveLength(observations);
+  const { terminalAttemptAdmission: omitted, ...without } = f.loop;
+  const old = await f.compose({ ...without, integrationContinuation: f.oldPacket });
+  expect(old.items[0]!.implementationAttempt).toBe(2);
+  await expect(queueStep(old, inertAdapter(f, old))).rejects.toMatchObject({
+    reason: "continuation-failed",
+  });
+  expect(JSON.stringify(JSON.parse(await readFile(f.reservation, "utf8")).binding.packet)).toBe(
+    bytes,
+  );
+  expect(() =>
+    validateLoopConfig({
+      ...f.loop,
+      terminalAttemptAdmission: { ...f.packet, terminalKind: "integration" },
+    } as unknown as LoopConfig),
+  ).toThrow("terminal-attempt-admission-mismatch");
+  const v2 = await conflictSuccessorFixture();
+  expect(() =>
+    validateLoopConfig({
+      ...v2.loop,
+      terminalAttemptAdmission: { ...v2.packet, claim: f.packet.claim },
+    } as unknown as LoopConfig),
+  ).toThrow("terminal-attempt-admission-mismatch");
+  await f.unchanged();
+});
+
+it.each([
+  "history",
+  "head",
+  "marker",
+  "receipt-missing-suffix",
+  "receipt-altered-suffix",
+  "authority-author",
+  "authority-hash",
+  "next-not-successive",
+  "next-above-ceiling",
+  "source-fail",
+  "repair-fail",
+  "blocking-findings",
+  "blocking-delta",
+  "not-conflict",
+  "publication-source",
+  "publication-repair",
+  "publication-refresh",
+  "intent-source",
+  "intent-repair",
+  "intent-refresh",
+  "later-work-stop",
+  "missing-pin",
+  "issue-closed",
+  "foreign-declaration",
+  "old-v1-reservation",
+])("ISS-244 named admission guard: %s", async (fault) => {
+  const f = await conflictSuccessorFixture();
+  const source = resolve(f.directory(3), "source");
+  const refresh = resolve(source, `refresh-${f.selected.base}`);
+  const change = async (directory: string, name: string, key: string, value: unknown) => {
+    const record = JSON.parse(await readFile(resolve(directory, `${name}.json`), "utf8"));
+    await f.put(directory, name, { ...record, [key]: value });
+  };
+  let selection = f.selected;
+  switch (fault) {
+    case "history":
+      f.packet.terminalHistoryDigest = "a".repeat(64);
+      break;
+    case "head":
+      f.packet.terminalHead = f.authoredHead;
+      break;
+    case "marker": {
+      // Existing completed stop at the requested ordinal; only its marker disagrees.
+      const stop = JSON.parse(await readFile(resolve(f.runState, "cycle-1-stop-1.json"), "utf8"));
+      await f.put(f.runState, "cycle-1-stop-2", { ...stop, stop: 2 });
+      await f.put(f.runState, "cycle-1-stop-2-complete", {
+        selection: f.terminalSelection,
+        stop: 2,
+        history: f.terminalHistory,
+      });
+      f.packet.terminalMarker = `loop-stop:${RUN}:1:2`;
+      break;
+    }
+    case "receipt-missing-suffix":
+      f.receipt.body = f.terminalBody;
+      break;
+    case "receipt-altered-suffix":
+      f.receipt.body += " ";
+      break;
+    case "authority-author":
+      f.authority.author = "another-host";
+      break;
+    case "authority-hash":
+      f.packet.authorityBodySha256 = "a".repeat(64);
+      break;
+    case "next-not-successive":
+      Object.assign(f.packet, { nextAbsoluteAttempt: 3 });
+      expect(() => validateLoopConfig(f.loop)).toThrow("terminal-attempt-admission-mismatch");
+      break;
+    case "next-above-ceiling":
+      Object.assign(f.packet, { nextAbsoluteAttempt: 5 });
+      expect(() => validateLoopConfig(f.loop)).toThrow("terminal-attempt-admission-mismatch");
+      break;
+    case "source-fail":
+      await change(source, "author-terminal", "status", "failed");
+      break;
+    case "repair-fail":
+      await change(f.directory(3), "attempt", "candidateAttempt", 4);
+      break;
+    case "blocking-findings":
+      await change(f.directory(3), "attempt", "findings", [
+        { file: "docs/loop.md", line: 1, severity: "blocking", text: "Synthetic rejection" },
+      ]);
+      break;
+    case "blocking-delta":
+      await change(refresh, "reviewer-terminal", "status", "failed");
+      break;
+    case "not-conflict":
+      await change(resolve(f.directory(2), "source"), "native-refresh", "resolutionUsed", false);
+      break;
+    case "later-work-stop":
+      await f.put(f.runState, "cycle-3-stop-1", {
+        selection: { ...f.selected, cycle: 3 },
+        reason: "continuation-failed",
+        attempts: 3,
+        history: f.history,
+      });
+      break;
+    case "missing-pin": {
+      const { planningRevision: omitted, ...unpinned } = f.selected;
+      selection = unpinned as typeof selection;
+      break;
+    }
+    case "issue-closed":
+      f.issue.state = "CLOSED";
+      break;
+    case "foreign-declaration":
+    case "old-v1-reservation": {
+      await f.compose();
+      const saved = JSON.parse(await readFile(f.reservation, "utf8"));
+      await rm(f.directory(4), { recursive: true });
+      const v1 =
+        fault === "old-v1-reservation"
+          ? (await terminalAdmissionFixture()).packet
+          : { ...f.packet, authorityUrl: `${ISSUE}#issuecomment-9900` };
+      await writeFile(
+        f.reservation,
+        JSON.stringify({
+          ...saved,
+          binding: { packet: v1, selected: f.selected, configDigest: queueDigest(f.loop) },
+        }),
+      );
+      break;
+    }
+    default: {
+      const [kind, place] = fault.split("-");
+      await f.put(
+        place === "refresh" ? refresh : resolve(f.directory(3), place!),
+        kind === "intent" ? "publication-intent" : "publication",
+        { head: f.terminalHead },
+      );
+    }
+  }
+  const before = await snapshot(f.runState);
+  await expect(f.compose(f.loop, f.observe, f.observeIssue, selection)).rejects.toMatchObject({
+    reason: "terminal-attempt-admission-mismatch",
+  });
+  if (!["foreign-declaration", "old-v1-reservation"].includes(fault))
+    await expect(readFile(f.reservation)).rejects.toMatchObject({ code: "ENOENT" });
+  expect(await snapshot(f.runState)).toEqual(before);
+  expect(await readdir(f.runState)).not.toContain(`${KEY.toLowerCase()}-attempt-4`);
+});
+
+it.each(["comment", "issue"])(
+  "ISS-244 unavailable %s read spends nothing and retries the same admission",
+  async (what) => {
+    const f = await conflictSuccessorFixture();
+    const unavailable = async (): Promise<never> => {
+      throw new Error("synthetic unavailable external read");
+    };
+    await expect(
+      f.compose(
+        f.loop,
+        what === "comment" ? unavailable : f.observe,
+        what === "issue" ? unavailable : f.observeIssue,
+      ),
+    ).rejects.toMatchObject({ reason: "terminal-attempt-admission-authority-unavailable" });
+    await expect(readFile(f.reservation)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(await readdir(f.runState)).not.toContain(`${KEY.toLowerCase()}-attempt-4`);
+    expect((await f.compose()).items[0]!.implementationAttempt).toBe(4);
+  },
+);
+
+it("ISS-244 requires two remaining issue launches before reservation", async () => {
+  const f = await conflictSuccessorFixture();
+  while (f.history.length < 64)
+    f.history.push(participant(f.history.length + 1, `${KEY}:3`, "refresh", "reviewer", "failed"));
+  expect(f.history.filter((p) => p.item.startsWith(`${KEY}:`))).toHaveLength(63);
+  await expect(f.compose()).rejects.toMatchObject({
+    reason: "terminal-attempt-admission-mismatch",
+  });
+  await expect(readFile(f.reservation)).rejects.toMatchObject({ code: "ENOENT" });
+  expect(f.calls).toEqual([]);
+  expect(await readdir(f.runState)).not.toContain(`${KEY.toLowerCase()}-attempt-4`);
+});
+
+it.each(["run", "worktree-root", "removed", "removed-new-run"])(
+  "ISS-244 cannot renew reservation: %s",
+  async (change) => {
+    const f = await conflictSuccessorFixture();
+    await f.compose();
+    const bytes = await readFile(f.reservation, "utf8");
+    const { terminalAttemptAdmission: omitted, ...without } = f.loop;
+    const config =
+      change === "run"
+        ? { ...f.loop, run: "synthetic-new-run" }
+        : change === "worktree-root"
+          ? { ...f.loop, worktreeRoot: resolve(f.root, "different-worktrees") }
+          : change === "removed"
+            ? without
+            : { ...without, run: "synthetic-new-run" };
+    await expect(f.compose(config)).rejects.toMatchObject({
+      reason: "terminal-attempt-admission-mismatch",
+    });
+    expect(await readFile(f.reservation, "utf8")).toBe(bytes);
+    expect(f.calls).toHaveLength(3);
+  },
+);
+
+it("ISS-244 real supervisor reports the complete zero-charge diagnostic, retries admission, and parks attempt 4 once", async () => {
+  const f = await conflictSuccessorFixture();
+  const entry = resolve(f.repository, "scripts/dogfood/supervise.mjs");
+  await mkdir(resolve(entry, ".."), { recursive: true });
+  await writeFile(
+    entry,
+    await readFile(resolve(import.meta.dirname, "../../scripts/dogfood/supervise.mjs")),
+  );
+  await f.git(["add", "."]);
+  await f.git(["commit", "-m", "synthetic canonical supervisor"]);
+  const expectedBase = await f.git(["rev-parse", "HEAD"]);
+  await f.git(["push", "origin", "main"]);
+  const request = resolve(f.root, "loop.json");
+  const controls = resolve(f.root, "controls.json");
+  const { terminalAttemptAdmission: omitted, ...ordinary } = f.loop;
+  await writeFile(request, JSON.stringify(ordinary));
+  await writeFile(
+    controls,
+    JSON.stringify({
+      number: NUMBER,
+      key: KEY,
+      ready: true,
+      comments: [],
+      launches: [],
+      observations: [],
+      unavailable: false,
+      authority: f.authority,
+      receipt: f.receipt,
+      issue: f.issue,
+      expectedBase,
+      fullReview: true,
+    }),
+  );
+  let invocation = 0;
+  const invoke = async () => {
+    const path = resolve(f.root, `supervisor-${++invocation}.log`);
+    const output = await open(path, "wx");
+    let code;
+    try {
+      code = await new Promise<number | null>((done, reject) => {
+        const child = spawn(
+          process.execPath,
+          [
+            "--import",
+            pathToFileURL(resolve(import.meta.dirname, "supervise-fixtures/terminal-admission.mjs"))
+              .href,
+            entry,
+            request,
+          ],
+          {
+            env: { ...process.env, TERMINAL_ADMISSION_FIXTURE: controls },
+            stdio: ["ignore", output.fd, output.fd],
+          },
+        );
+        child.on("error", reject);
+        child.on("close", done);
+      });
+    } finally {
+      await output.close();
+    }
+    return { code, output: await readFile(path, "utf8") };
+  };
+  const readControl = async () => JSON.parse(await readFile(controls, "utf8"));
+  const refused = await invoke();
+  expect(refused.code, refused.output).toBe(0);
+  const stop = JSON.parse(await readFile(resolve(f.runState, "cycle-3-stop-1.json"), "utf8"));
+  const diagnostic = `Conflict successor attempt 3, head ${f.terminalHead}, seed ${f.seed}. Completed stop ${f.packet.terminalMarker}, attempts 3. ready alone re-raises this stop; re-entry requires host-interpreted terminalAttemptAdmission.`;
+  expect(diagnostic.length).toBeLessThanOrEqual(500);
+  expect(stop).toMatchObject({ reason: "continuation-failed", attempts: 0 });
+  expect(stop.body).toContain(`Diagnostic: ${JSON.stringify(diagnostic)}.`);
+  const control = await readControl();
+  expect(control.comments).toHaveLength(1);
+  expect(control.comments[0]).toContain(`Diagnostic: ${JSON.stringify(diagnostic)}.`);
+  expect(control.launches).toEqual([]);
+  expect(control.observations).toEqual([]);
+  await expect(readFile(f.reservation)).rejects.toMatchObject({ code: "ENOENT" });
+  expect(await readdir(f.runState)).not.toContain(`${KEY.toLowerCase()}-attempt-4`);
+  await writeFile(request, JSON.stringify(f.loop));
+  await writeFile(controls, JSON.stringify({ ...control, ready: true, unavailable: true }));
+  const unavailable = await invoke();
+  expect(unavailable.code, unavailable.output).toBe(1);
+  expect(
+    JSON.parse(await readFile(resolve(f.runState, "cycle-4-stop-1.json"), "utf8")),
+  ).toMatchObject({ reason: "terminal-attempt-admission-authority-unavailable", attempts: 3 });
+  await expect(readFile(f.reservation)).rejects.toMatchObject({ code: "ENOENT" });
+  const retry = await readControl();
+  expect(retry.launches).toEqual([]);
+  await writeFile(controls, JSON.stringify({ ...retry, unavailable: false, interrupt: true }));
+  const interrupted = await invoke();
+  expect(interrupted.code, interrupted.output).toBe(1);
+  expect(
+    JSON.parse(await readFile(resolve(f.runState, "cycle-4-stop-2.json"), "utf8")),
+  ).toMatchObject({ reason: "queue-internal-error", attempts: 4 });
+  const reserved = await readFile(f.reservation, "utf8");
+  const interruptedControl = await readControl();
+  expect(interruptedControl.launches).toEqual([]);
+  expect(interruptedControl.observations).toHaveLength(4);
+  await writeFile(controls, JSON.stringify({ ...interruptedControl, interrupt: false }));
+  const admitted = await invoke();
+  expect(admitted.code, admitted.output).toBe(0);
+  const parked = JSON.parse(await readFile(resolve(f.runState, "cycle-4-stop-3.json"), "utf8"));
+  expect(parked).toMatchObject({ reason: "continuation-failed", attempts: 4 });
+  expect(parked.history.slice(0, f.history.length)).toEqual(f.history);
+  expect(parked.history).toHaveLength(f.history.length + 2);
+  const done = await readControl();
+  expect(done.launches).toEqual(["author", "reviewer"]);
+  expect(done.comments).toHaveLength(4);
+  expect(done.observations).toEqual(interruptedControl.observations);
+  const binding = await readFile(f.reservation, "utf8");
+  expect(binding).toBe(reserved);
+  const retained = await snapshot(f.runState);
+  expect((await invoke()).code).toBe(0);
+  expect(await readControl()).toEqual(done);
+  expect(await readFile(f.reservation, "utf8")).toBe(binding);
+  expect(await snapshot(f.runState)).toEqual(retained);
+});
+
 async function terminalAdmissionFixture() {
   const f = await spentFixture(true);
   f.loop.nativeLaunchCeiling = 64;

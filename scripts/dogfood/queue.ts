@@ -538,6 +538,7 @@ export function validateLoopConfig(config: LoopConfig) {
         config.run === packet.run &&
         config.repository === packet.repository &&
         config.attemptCeiling === 4 &&
+        packet.nextAbsoluteAttempt <= config.attemptCeiling &&
         config.nativeLaunchCeiling === 64,
       "terminal-attempt-admission-mismatch",
     );
@@ -833,10 +834,13 @@ async function admitTerminalAttempt(
   priorHistory: QueueParticipant[],
   observeAuthority: typeof observeIntegrationAuthority,
   observePublication: typeof observeTerminalPublication,
+  observeIssue: typeof observeVerificationIssue,
 ) {
   const packet = config.terminalAttemptAdmission!;
   const reason = "terminal-attempt-admission-mismatch";
   const check = (ok: unknown) => demand(ok, reason);
+  const successor = packet.schemaVersion === "dogfood-terminal-attempt-admission/v2";
+  const priorNumber = packet.priorAbsoluteAttempt;
   const runState = resolve(config.stateRoot, config.run);
   const claim = `integration-continuation-${queueDigest({ repository: config.repository, issue: selected.key })}`;
   const name = `terminal-attempt-admission-${queueDigest({ repository: config.repository, issue: selected.key })}`;
@@ -847,7 +851,7 @@ async function admitTerminalAttempt(
     return saved;
   }
   check(
-    packet.claim === claim &&
+    (successor || packet.claim === claim) &&
       packet.issueUrl === `https://github.com/${config.repository}/issues/${selected.number}`,
   );
   check(selected.planningRevision === selected.base);
@@ -863,14 +867,14 @@ async function admitTerminalAttempt(
       terminal.selection?.cycle === Number(cycle) &&
       terminal.reason === "continuation-failed" &&
       typeof terminal.body === "string" &&
-      terminal.attempts === 2 &&
+      terminal.attempts === priorNumber &&
       terminal.selection?.key === selected.key &&
       terminal.selection.number === selected.number &&
       completed.stop === Number(stop) &&
       queueDigest(completed.selection) === queueDigest(terminal.selection) &&
       queueDigest(terminal.history) === packet.terminalHistoryDigest &&
       queueDigest(completed.history) === packet.terminalHistoryDigest &&
-      selected.base !== terminal.selection.base,
+      (successor || selected.base !== terminal.selection.base),
   );
   let history: QueueParticipant[] = completed.history;
   validateHistory(history, config.nativeLaunchCeiling);
@@ -892,10 +896,10 @@ async function admitTerminalAttempt(
   for (const entry of entries) {
     if (entry.isDirectory() && entry.name.startsWith(`${selected.key.toLowerCase()}-attempt-`))
       check(
-        [
-          `${selected.key.toLowerCase()}-attempt-1`,
-          `${selected.key.toLowerCase()}-attempt-2`,
-        ].includes(entry.name),
+        Array.from(
+          { length: priorNumber },
+          (_, i) => `${selected.key.toLowerCase()}-attempt-${i + 1}`,
+        ).includes(entry.name),
       );
     const match = /^cycle-(\d+)-stop-(\d+)\.json$/.exec(entry.name);
     if (match) {
@@ -908,10 +912,12 @@ async function admitTerminalAttempt(
       ) {
         // A refusal before reservation creates no implementation terminal or charge.
         check(
-          [
-            "terminal-attempt-admission-authority-unavailable",
-            "terminal-attempt-admission-mismatch",
-          ].includes(other.reason) && other.attempts === 2,
+          (successor && other.reason === "continuation-failed" && other.attempts === 0) ||
+            ([
+              "terminal-attempt-admission-authority-unavailable",
+              "terminal-attempt-admission-mismatch",
+            ].includes(other.reason) &&
+              other.attempts === priorNumber),
         );
         retainHistory(other.history);
       }
@@ -920,72 +926,139 @@ async function admitTerminalAttempt(
       retainHistory((await optionalRecord(runState, entry.name.slice(0, -5))).history);
     }
   }
-  const claimBytes = await readFile(resolve(config.stateRoot, `${claim}.json`)).catch(
-    (error: NodeJS.ErrnoException) => {
-      if (error.code === "ENOENT") return undefined;
-      throw error;
-    },
-  );
-  check(
-    claimBytes !== undefined &&
-      createHash("sha256").update(claimBytes).digest("hex") === packet.claimSha256,
-  );
-  const retainedClaim = JSON.parse(claimBytes!.toString("utf8"));
-  const priorDirectory = resolve(runState, `${selected.key.toLowerCase()}-attempt-2`);
-  check(
-    retainedClaim.repository === config.repository &&
-      retainedClaim.issueKey === selected.key &&
-      retainedClaim.issueUrl === packet.issueUrl &&
-      retainedClaim.run === config.run &&
-      retainedClaim.absoluteAttempt === 2 &&
-      retainedClaim.attemptDirectory === priorDirectory,
-  );
-  const integration = resolve(priorDirectory, "integration");
-  const spent = await optionalRecord(integration, "spent-resolution");
-  const terminalDirectory = spent === ABSENT ? integration : spent.directory;
-  check(
-    terminalDirectory === integration ||
-      terminalDirectory === resolve(integration, "spent-resolution"),
-  );
-  const failed = await optionalRecord(terminalDirectory, "attempt");
-  check(
-    failed !== ABSENT &&
+  const priorDirectory = resolve(runState, `${selected.key.toLowerCase()}-attempt-${priorNumber}`);
+  let terminalDirectory = priorDirectory;
+  let failed;
+  if (!successor) {
+    const claimBytes = await readFile(resolve(config.stateRoot, `${claim}.json`)).catch(
+      (error: NodeJS.ErrnoException) => {
+        if (error.code === "ENOENT") return undefined;
+        throw error;
+      },
+    );
+    check(
+      claimBytes !== undefined &&
+        createHash("sha256").update(claimBytes).digest("hex") === packet.claimSha256,
+    );
+    const retainedClaim = JSON.parse(claimBytes!.toString("utf8"));
+    check(
+      retainedClaim.repository === config.repository &&
+        retainedClaim.issueKey === selected.key &&
+        retainedClaim.issueUrl === packet.issueUrl &&
+        retainedClaim.run === config.run &&
+        retainedClaim.absoluteAttempt === 2 &&
+        retainedClaim.attemptDirectory === priorDirectory,
+    );
+    const integration = resolve(priorDirectory, "integration");
+    const spent = await optionalRecord(integration, "spent-resolution");
+    terminalDirectory = spent === ABSENT ? integration : spent.directory;
+    check(
+      terminalDirectory === integration ||
+        terminalDirectory === resolve(integration, "spent-resolution"),
+    );
+    failed = await optionalRecord(terminalDirectory, "attempt");
+    check(
+      failed !== ABSENT &&
+        failed.phase === "failed" &&
+        failed.run === config.run &&
+        failed.issue === packet.issueUrl &&
+        failed.item === `${selected.key}:2` &&
+        failed.candidateAttempt === 2 &&
+        failed.head === packet.priorPublication.head &&
+        queueDigest(failed.history) === packet.terminalHistoryDigest,
+    );
+    const first = await optionalRecord(
+      resolve(runState, `${selected.key.toLowerCase()}-attempt-1`),
+      "attempt",
+    );
+    const second = await optionalRecord(priorDirectory, "attempt");
+    check(
+      first !== ABSENT &&
+        second !== ABSENT &&
+        first.candidateAttempt === 1 &&
+        second.candidateAttempt === 2 &&
+        first.run === config.run &&
+        second.run === config.run &&
+        first.issue === packet.issueUrl &&
+        second.issue === packet.issueUrl,
+    );
+    const refresh = await optionalRecord(resolve(terminalDirectory, "source"), "native-refresh");
+    const publication = await optionalRecord(
+      refresh === ABSENT ? resolve(terminalDirectory, "source") : refresh.directory,
+      "publication",
+    );
+    check(
+      publication !== ABSENT &&
+        publication.repository === config.repository &&
+        ["number", "url", "sourceBranch", "head"].every(
+          (key) =>
+            publication[key] ===
+            packet.priorPublication[key as keyof typeof packet.priorPublication],
+        ),
+    );
+  } else {
+    for (let n = 1; n <= priorNumber; n++) {
+      const attempt = await optionalRecord(
+        resolve(runState, `${selected.key.toLowerCase()}-attempt-${n}`),
+        "attempt",
+      );
+      check(
+        attempt !== ABSENT &&
+          attempt.run === config.run &&
+          attempt.issue === packet.issueUrl &&
+          attempt.item === `${selected.key}:${n}` &&
+          attempt.candidateAttempt === n,
+      );
+    }
+    failed = await optionalRecord(priorDirectory, "attempt");
+    check(
       failed.phase === "failed" &&
-      failed.run === config.run &&
-      failed.issue === packet.issueUrl &&
-      failed.item === `${selected.key}:2` &&
-      failed.candidateAttempt === 2 &&
-      failed.head === packet.priorPublication.head &&
-      queueDigest(failed.history) === packet.terminalHistoryDigest,
-  );
-  const first = await optionalRecord(
-    resolve(runState, `${selected.key.toLowerCase()}-attempt-1`),
-    "attempt",
-  );
-  const second = await optionalRecord(priorDirectory, "attempt");
-  check(
-    first !== ABSENT &&
-      second !== ABSENT &&
-      first.candidateAttempt === 1 &&
-      second.candidateAttempt === 2 &&
-      first.run === config.run &&
-      second.run === config.run &&
-      first.issue === packet.issueUrl &&
-      second.issue === packet.issueUrl,
-  );
-  const refresh = await optionalRecord(resolve(terminalDirectory, "source"), "native-refresh");
-  const publication = await optionalRecord(
-    refresh === ABSENT ? resolve(terminalDirectory, "source") : refresh.directory,
-    "publication",
-  );
-  check(
-    publication !== ABSENT &&
-      publication.repository === config.repository &&
-      ["number", "url", "sourceBranch", "head"].every(
-        (key) =>
-          publication[key] === packet.priorPublication[key as keyof typeof packet.priorPublication],
-      ),
-  );
+        failed.head === packet.terminalHead &&
+        Array.isArray(failed.findings) &&
+        failed.findings.length === 0 &&
+        failed.acceptedStage === null &&
+        failed.stateDirectory === null &&
+        queueDigest(failed.history) === packet.terminalHistoryDigest,
+    );
+    const predecessorDirectory = resolve(
+      runState,
+      `${selected.key.toLowerCase()}-attempt-${priorNumber - 1}`,
+    );
+    const predecessor = await optionalRecord(predecessorDirectory, "attempt");
+    const conflict = await failedConflict(predecessorDirectory, predecessor);
+    check(conflict);
+    const source = resolve(priorDirectory, "source");
+    const sourceConfig = await optionalRecord(source, "config");
+    const author = await optionalRecord(source, "author-attempt");
+    const authored = await optionalRecord(source, "author-terminal");
+    const candidate = await optionalRecord(source, "candidate");
+    const reviewer = await optionalRecord(source, "reviewer-attempt");
+    const reviewed = await optionalRecord(source, "reviewer-terminal");
+    // Empty findings alone must not turn an author FAIL into this controller-gap route.
+    // These historical PASS records establish the kind, never successor acceptance.
+    check(
+      sourceConfig.config?.base === conflict!.refresh.conflict.seed &&
+        author !== ABSENT &&
+        authored.id === author.id &&
+        authored.status === "passed" &&
+        authored.head === sourceConfig.config.base &&
+        candidate !== ABSENT &&
+        reviewed.id === reviewer.id &&
+        reviewed.status === "passed" &&
+        reviewed.head === candidate.head,
+    );
+    const refresh = await optionalRecord(source, "native-refresh");
+    if (refresh !== ABSENT && refresh.head) {
+      const delta = await optionalRecord(refresh.directory, "reviewer-terminal");
+      const deltaAttempt = await optionalRecord(refresh.directory, "reviewer-attempt");
+      check(
+        refresh.head === failed.head &&
+          delta.id === deltaAttempt.id &&
+          delta.status === "passed" &&
+          delta.head === failed.head,
+      );
+    } else check(candidate.head === failed.head);
+  }
   let authorFailures = failed.authorFailures ?? { count: 0, ids: [] };
   let inheritedWorkerRetry = false;
   let correctionUsed = false;
@@ -1017,6 +1090,12 @@ async function admitTerminalAttempt(
         if (record.authorFailures?.count > authorFailures.count)
           authorFailures = record.authorFailures;
         if (record.history) retainHistory(record.history);
+      } else if (
+        successor &&
+        directory.startsWith(`${priorDirectory}${sep}`) &&
+        /^(publication|publication-intent)\.json$/.test(entry.name)
+      ) {
+        check(false);
       }
     }
   };
@@ -1030,14 +1109,30 @@ async function admitTerminalAttempt(
         if (attempt !== ABSENT) retainHistory(attempt.history);
       }
     }
-  let authority, receipt, observedPublication;
+  // Reserve only when the retained issue still has room for both independent roles.
+  check(
+    !successor ||
+      issueLaunches(history, `${selected.key}:${priorNumber + 1}`) + 2 <=
+        config.nativeLaunchCeiling,
+  );
+  let authority, receipt, issue;
+  let observedPublication: Awaited<ReturnType<typeof observeTerminalPublication>> | undefined;
   try {
     authority = await observeAuthority(packet.authorityUrl);
     receipt = await observeAuthority(packet.terminalReceiptUrl);
-    observedPublication = await observePublication(packet);
+    if (successor)
+      issue = {
+        ...(await observeIssue(config.repository, selected.number)),
+        capturedAt: new Date().toISOString(),
+      };
+    else observedPublication = await observePublication(packet);
   } catch {
     throw new QueueBlocked("terminal-attempt-admission-authority-unavailable");
   }
+  if (successor)
+    check(
+      issue?.number === selected.number && issue.url === packet.issueUrl && issue.state === "OPEN",
+    );
   check(
     authority.id === packet.authorityUrl.split("issuecomment-")[1] &&
       authority.url === packet.authorityUrl &&
@@ -1054,16 +1149,19 @@ async function admitTerminalAttempt(
       receipt.body === postedStopBody(terminal.body, selfUnparkInstructions) &&
       Number.isFinite(Date.parse(receipt.capturedAt)),
   );
-  check(
-    Object.entries(packet.priorPublication).every(
-      ([key, value]) => observedPublication[key as keyof typeof observedPublication] === value,
-    ),
-  );
+  if (!successor)
+    check(
+      Object.entries(packet.priorPublication!).every(
+        ([key, value]) =>
+          observedPublication![key as keyof NonNullable<typeof observedPublication>] === value,
+      ),
+    );
   const reservation = {
     binding,
     authority,
     receipt,
     publication: observedPublication,
+    ...(successor ? { issue } : {}),
     terminalDirectory,
     initialHistory: history,
     authorFailures,
@@ -1071,7 +1169,8 @@ async function admitTerminalAttempt(
     correctionUsed,
     resolutionUsed,
     reviewerRung:
-      history.findLast((p) => p.item === `${selected.key}:2` && p.role === "reviewer")?.rung ?? 0,
+      history.findLast((p) => p.item === `${selected.key}:${priorNumber}` && p.role === "reviewer")
+        ?.rung ?? 0,
   };
   await writeFile(resolve(config.stateRoot, `${name}.json`), JSON.stringify(reservation), {
     flag: "wx",
@@ -1297,7 +1396,7 @@ async function verificationQueue(
     const suffix = reviewerPrompt
       .slice(bodyStart)
       .search(
-        /\n\n(?:Continue from rejected candidate |Independent DELTA review\. ISS-160 |ISS-215 ordinary attempt 3 )/,
+        /\n\n(?:Continue from rejected candidate |Independent DELTA review\. ISS-160 |ISS-215 ordinary attempt 3 |ISS-244 ordinary attempt [34] )/,
       );
     reviewerPrompt =
       reviewerPrompt.slice(0, bodyStart) +
@@ -1582,6 +1681,7 @@ export async function queueConfigFromLoop(
           priorHistory,
           observeAuthority,
           observePublication,
+          observeIssue,
         ).catch((error: unknown) => {
           // Record and history checks contradict the declaration; local I/O failures
           // stay host errors rather than parking the item.
@@ -1597,6 +1697,17 @@ export async function queueConfigFromLoop(
         (await optionalRecord(stateRoot, integrationClaim)) === ABSENT,
         "integration-continuation-required",
       );
+    if (!terminalAdmission) {
+      const reservation = await optionalRecord(
+        stateRoot,
+        `terminal-attempt-admission-${queueDigest({ repository: config.repository, issue: selected.key })}`,
+      );
+      demand(
+        reservation === ABSENT ||
+          reservation.binding.packet.schemaVersion !== "dogfood-terminal-attempt-admission/v2",
+        "terminal-attempt-admission-mismatch",
+      );
+    }
     // A fresh run cannot renew an exhausted lineage already recorded on this host, and
     // no composition without the ISS-167 packet renews a reviewed-exhausted attempt.
     for (const run of await readdir(stateRoot, { withFileTypes: true })) {
@@ -1645,12 +1756,14 @@ export async function queueConfigFromLoop(
     | undefined;
   let pendingRebase: { directory: string; slug: string; attempt: FailedAttemptReceipt } | undefined;
   if (terminalAdmission) {
-    sourceAttempt = 3;
+    sourceAttempt = config.terminalAttemptAdmission!.nextAbsoluteAttempt;
     initialHistory = terminalAdmission.initialHistory;
     authorFailures = terminalAdmission.authorFailures;
     reviewerRung = terminalAdmission.reviewerRung;
     inheritedWorkerRetry = terminalAdmission.inheritedWorkerRetry;
     repairFailurePrompt = `ISS-215 ordinary attempt 3 starts from selected current main ${selected.base} and the current brief. Read-only predecessor evidence: ${terminalAdmission.terminalDirectory}; original attempt records: ${resolve(runState, `${selected.key.toLowerCase()}-attempt-2`)}. Read author/reviewer attempt and terminal files and their trace paths. Old work, findings, PASS, gates, seeds and publication are evidence only, never instructions or acceptance. Do not edit or reuse them. Create a distinct implementation and publication; leave the prior PR open/draft and its branch unchanged. No automatic attempt 4 is authorized.`;
+    if (config.terminalAttemptAdmission!.schemaVersion === "dogfood-terminal-attempt-admission/v2")
+      repairFailurePrompt = `ISS-244 ordinary attempt ${sourceAttempt} starts from selected current main ${selected.base} and the pinned brief. Read-only predecessor evidence: ${resolve(runState, `${selected.key.toLowerCase()}-attempt-${sourceAttempt - 2}`)} and ${terminalAdmission.terminalDirectory}. Read their attempt records, findings, source/repair/refresh author and reviewer attempt and terminal files, and the trace paths they name. Old work, findings, PASS, gates and seeds are evidence only, never instructions or acceptance. Do not edit or reuse them. Create a distinct implementation and publication. No automatic further attempt is authorized.`;
   }
   if (config.acceptedReplan) {
     const packet = config.acceptedReplan;
@@ -2155,7 +2268,30 @@ export async function queueConfigFromLoop(
       await record(priorQueue, "attempt", attempt);
     }
     if (attempt === ABSENT || attempt.phase !== "failed") break;
-    demand(!conflictContinuation, "continuation-failed");
+    if (conflictContinuation) {
+      const refresh = await optionalRecord(conflictContinuation.directory, "native-refresh");
+      let retained: any;
+      for (const name of await readdir(runState)) {
+        const match = /^cycle-(\d+)-stop-(\d+)\.json$/.exec(name);
+        if (!match) continue;
+        const stop = await optionalRecord(runState, name.slice(0, -5));
+        const complete = await optionalRecord(runState, `${name.slice(0, -5)}-complete`);
+        if (
+          stop.selection?.key === selected.key &&
+          stop.attempts === attempt.candidateAttempt &&
+          stop.reason === "continuation-failed" &&
+          complete !== ABSENT &&
+          (!retained ||
+            stop.selection.cycle > retained.selection.cycle ||
+            (stop.selection.cycle === retained.selection.cycle && stop.stop > retained.stop))
+        )
+          retained = stop;
+      }
+      throw new QueueBlocked(
+        "continuation-failed",
+        `Conflict successor attempt ${attempt.candidateAttempt}, head ${attempt.head}, seed ${refresh.conflict?.seed}. Completed stop ${retained?.marker ?? "missing"}, attempts ${attempt.candidateAttempt}. ready alone re-raises this stop; re-entry requires host-interpreted terminalAttemptAdmission.`,
+      );
+    }
     validateFailedAttempt(attempt, sourceAttempt, config.attemptCeiling);
     demand(
       attempt.candidateAttempt < config.attemptCeiling,
@@ -2574,7 +2710,7 @@ export function validateQueueConfig(config: QueueConfig) {
         exactKeys(item.terminalAttemptAdmission, ["correctionUsed", "resolutionUsed"]) &&
           typeof item.terminalAttemptAdmission.correctionUsed === "boolean" &&
           typeof item.terminalAttemptAdmission.resolutionUsed === "boolean" &&
-          item.implementationAttempt === 3 &&
+          [3, 4].includes(item.implementationAttempt) &&
           item.implementationAttemptCeiling === 4 &&
           !item.integrationContinuation &&
           !item.acceptedReplan &&

@@ -699,6 +699,16 @@ integration requires fresh DELTA and all local and after-mirror gates, publicati
 hosted checks, landing and applicable deployment at the final head. Replay uses
 the same successor and ordinary mutation reconciliation.
 
+ISS-244 addresses SUCC-PARK-1: ordinary `ready` re-entry after a failed
+conflict successor still stops as `continuation-failed` before configuration,
+with zero new attempts or launches. Its diagnostic names the failed absolute
+attempt and head, conflict seed, completed implementation stop marker and count,
+and the host-interpreted `terminalAttemptAdmission` route; the entire diagnostic
+fits the existing 500-character slot. The unpark suffix stays unchanged.
+Only the v2 declaration below can admit the next unused attempt after the
+demonstrated controller/admission gap; author FAIL and blocking DELTA remain
+outside that kind. Shipping this repair grants no ISS-234 re-entry or live start.
+
 ## Planning
 
 ISS-149 implements Todd's routing ruling on #368: model placement comes from
@@ -1726,14 +1736,47 @@ with `integrationContinuation`, `acceptedReplan` or `gateStopAuthorization`.
 The run retains its four implementation attempts and 64 native launches per
 issue (ISS-235).
 
-At production composition, after fresh pinned self selection and before setup,
-admission matches the latest completed implementation/integration stop, its
+ISS-244 adds the separate closed
+`schemaVersion: "dogfood-terminal-attempt-admission/v2"` shape, with required
+`terminalKind: "conflict-successor"` and `terminalHead`. It retains the v1
+fields except `claim` and `claimSha256`, which are absent; `priorPublication`
+is exactly null. `priorAbsoluteAttempt` N is 2 or 3 and
+`nextAbsoluteAttempt` is N+1 within the unchanged four-attempt ceiling.
+V1's exact key list and implicit integration kind remain unchanged: no kind
+is injected into historical packets or reservations.
+
+V2 requires fresh self selection with `planningRevision === base`, only the
+key's attempt-1 through attempt-N directories, and a failed attempt N bound
+to run, issue, item, absolute attempt, `terminalHead` and history digest, with
+empty findings and null accepted stage/directory. Attempt N-1 must match the
+retained failed conflict author at its consumed resolution seed. The successor's
+source base must be that seed, its author and source review must have passed,
+and a refreshed terminal head must retain its matching passed DELTA. These
+records establish the lineage kind, never merit or new acceptance: the host
+must interpret a delegation identifying the controller/admission gap.
+Author FAIL, repair FAIL and blocking DELTA cannot enter this route.
+Any publication or publication intent under attempt N's source, repair or
+refresh directories refuses before reservation.
+
+The declaration binds the completed `continuation-failed` stop with attempts N,
+matching selection and history, and its complete receipt. Later same-key stops
+may only be pre-admission refusals: `continuation-failed` with attempts 0 and
+no new attempt directory, or `terminal-attempt-admission-*` with attempts N.
+Their histories remain charged. V2 freshly reads the open owning issue, terminal
+receipt and authority comment at pre-reservation admission, capturing UTC
+observation instants. Receipt bytes use the same ISS-216 rule below; author and
+body hash bind the authority. Missing external reads remain retryable without
+a reservation. Admission requires room for the author and independent reviewer
+within the issue's same-run native allowance.
+
+For v1, after fresh pinned self selection and before setup, admission matches
+the latest completed implementation/integration stop, its
 receipt, the exact claim bytes, the complete terminal history and the prior
 publication. It freshly reads the authority comment's ID, URL, author and
 complete body, the terminal receipt, and the PR's number, URL, source branch,
 head, OPEN state and draft flag. Comment body and claim bytes use SHA-256;
 terminal history uses `queueDigest`. Captures retain UTC observation instants.
-The ISS-216 candidate repair compares the complete receipt byte for byte with
+Both versions use ISS-216 to compare the complete receipt byte for byte with
 the retained stop body plus exactly ` To unpark, ${unpark}.`, using the self
 adapter's deterministic unpark instructions and the poster's shared body
 derivation. Admission never calls `park`. Only the already eligible self
@@ -1750,10 +1793,11 @@ An unavailable external read stops as
 `terminal-attempt-admission-authority-unavailable`, without parking or spending
 admission. A contradictory or stale binding stops as
 `terminal-attempt-admission-mismatch` and parks; a local record read or write
-failure stays an ordinary host error. A pre-admission refusal
-at attempt 2 adds no charge and does not supersede the implementation
-terminal; a later attempt or admission does, and a stop after the successor
-reservation reports three attempts. No declaration retains the
+failure stays an ordinary host error. A declared pre-admission refusal
+reports the prior absolute attempt (2 for v1, N for v2), adds no charge and does
+not supersede the implementation terminal. A stop after the successor
+reservation reports its successor attempt (3 for v1, N+1 for v2).
+Without a declaration, the integration lineage retains the
 `integration-continuation-required` ordinary-composition exclusion: the
 consumed integration packet or its spent resolution replays attempt 2 as
 terminal, a renewed spent resolution is already consumed, and a `ready`
@@ -1762,20 +1806,23 @@ admits nothing.
 
 One exclusive-create `terminal-attempt-admission-<lineage digest>.json` under
 `stateRoot` binds the declaration, selection, observations and inherited
-accounting. Replay uses this binding without another authority spend. It
+accounting. Both kinds share this one reservation per repository/issue: a v1
+admission cannot receive a second admission through v2. Replay uses the exact
+unchanged declaration without another authority probe or spend. It
 retains the entire run history, including intervening issues, failed-author
 and reviewer routing progress, and consumed worker retry, correction and
 resolution allowances. Changed runs/configurations cannot renew it. Historical
 claims, attempts, reservations, stops, configs, worktrees and receipts remain
 unchanged; the old integration remains terminal.
 
-The successor enters ordinary creation at absolute attempt 3 from
+The successor enters ordinary creation at absolute attempt 3 for v1 or N+1 for v2 from
 `attemptBase = selected.base`, with the newly pinned brief. It never projects
 old failures, rebases the rejected candidate, starts from the marked seed or
 imports prescribed findings. Old author/reviewer records and traces accompany
-it only as read-only evidence. Its new source branch is
-`codex/run-<sha256(run)>/<issue-key>-attempt-3`; delivery creates a distinct PR
-on `codex/<issue-key>-attempt-3`. Prior publications remain open/draft and
+it only as read-only evidence; v2 names both attempts N-1 and N, including their
+findings, author/reviewer terminals and trace paths. Its new source branch is
+`codex/run-<sha256(run)>/<issue-key>-attempt-<successor>`; delivery creates a distinct PR
+on `codex/<issue-key>-attempt-<successor>`. Prior publications remain open/draft and
 unchanged: this mechanism neither moves their branches, reuses their
 workspaces, marks them ready, closes them nor reruns their CI. Any later
 disposition requires separate host authority.
@@ -1783,12 +1830,17 @@ disposition requires separate host authority.
 The successor requires ordinary fresh source review, refresh DELTA when main
 moves, final-head local and after-mirror gates, hosted checks and native
 landing. Work non-PASS parks; host uncertainty remains non-parking. Repeated
-failed or completed entry is terminal, with no automatic attempt 4, second
+failed or completed entry is terminal, with no automatic further attempt, second
 admission, duplicate worker or second publication. ISS-167/200 instead continue
 the same attempt's integration; acceptedReplan is the separate 4-to-5
 instrument; gateStopAuthorization resumes an existing stopped gate and
 publication. None supplies this new source attempt. ISS-215 repairs admission,
 not the preserved issue's Windows gate failure or its planning readiness.
+ISS-244 remains candidate behavior until independent exact-head review,
+final-head three-OS bootstrap green and a separately authorized quiescent host
+installation. Synthetic tests establish no live delegation, readiness, preserved
+run start or observed ISS-234 recovery. ISS-179/181/195 ordinary FAIL projections,
+fault classes, the four/64 ceilings and planning readiness are unchanged.
 
 Accepted replans retain the original main base and participant history;
 published continuations use forward-only refresh from a new local branch to

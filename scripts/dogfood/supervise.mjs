@@ -7,6 +7,7 @@ import {
   DeliveryBlocked,
   hasStartedDelivery,
   queueConfigFromLoop,
+  queueDigest,
   QueueBlocked,
   queueStep,
   repositoryQueueAdapter,
@@ -392,11 +393,23 @@ function blocked(error, lifecycleReason, lifecycleDiagnostics) {
 }
 
 // ISS-215: attempts consumed by the declared lineage when a stop precedes queue
-// configuration. The successor directory exists once admission has reserved attempt 3.
+// configuration. The successor directory exists once admission has reserved its attempt.
 function terminalAdmissionAttempts(loop, key) {
-  return access(resolve(loop.stateRoot, loop.run, `${key.toLowerCase()}-attempt-3`)).then(
-    () => 3,
-    () => 2,
+  const packet = loop.terminalAttemptAdmission;
+  const reservation =
+    packet.schemaVersion === "dogfood-terminal-attempt-admission/v2"
+      ? resolve(
+          loop.stateRoot,
+          `terminal-attempt-admission-${queueDigest({ repository: loop.repository, issue: key })}.json`,
+        )
+      : resolve(
+          loop.stateRoot,
+          loop.run,
+          `${key.toLowerCase()}-attempt-${packet.nextAbsoluteAttempt}`,
+        );
+  return access(reservation).then(
+    () => packet.nextAbsoluteAttempt,
+    () => packet.priorAbsoluteAttempt,
   );
 }
 
@@ -412,7 +425,9 @@ async function stop(error, retainedAttempts) {
         ? JSON.parse(
             await readFile(resolve(loop.verificationOnly.attemptDirectory, "attempt.json"), "utf8"),
           ).candidateAttempt
-        : reason.startsWith("terminal-attempt-admission-") &&
+        : (reason.startsWith("terminal-attempt-admission-") ||
+              loop.terminalAttemptAdmission?.schemaVersion ===
+                "dogfood-terminal-attempt-admission/v2") &&
             loop.terminalAttemptAdmission?.issueKey === active.selection.key
           ? await terminalAdmissionAttempts(loop, active.selection.key)
           : 0);

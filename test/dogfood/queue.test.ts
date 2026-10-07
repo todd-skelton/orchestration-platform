@@ -9307,6 +9307,42 @@ async function stoppedConflictFixture(status = "failed", spent = false, legacy =
   };
 }
 
+it("ISS-244 explains the completed conflict-successor park through composition", async () => {
+  const f = await stoppedConflictFixture("failed");
+  const successor = await f.compose();
+  const failed = {
+    ...f.projection,
+    phase: "failed",
+    item: successor.items[0]!.id,
+    candidateAttempt: 2,
+    head: f.reviewed,
+    findings: [],
+    history: f.history,
+    acceptedStage: null,
+    stateDirectory: null,
+  };
+  await writeFile(resolve(successor.stateDirectory, "attempt.json"), JSON.stringify(failed));
+  const runState = resolve(f.loop.stateRoot, f.loop.run);
+  const selection = { ...f.selected, cycle: 2 };
+  const marker = `loop-stop:${f.loop.run}:2:1`;
+  await writeFile(
+    resolve(runState, "cycle-2-stop-1.json"),
+    JSON.stringify({ selection, stop: 1, reason: "continuation-failed", attempts: 2, marker }),
+  );
+  await writeFile(
+    resolve(runState, "cycle-2-stop-1-complete.json"),
+    JSON.stringify({ selection, stop: 1, history: f.history }),
+  );
+  const error = await f.compose().catch((error) => error);
+  expect(error).toBeInstanceOf(QueueBlocked);
+  expect(error.reason).toBe("continuation-failed");
+  expect(error.diagnostics).toBe(
+    `Conflict successor attempt 2, head ${f.reviewed}, seed ${f.seed}. Completed stop ${marker}, attempts 2. ready alone re-raises this stop; re-entry requires host-interpreted terminalAttemptAdmission.`,
+  );
+  expect(error.diagnostics.length).toBeLessThanOrEqual(500);
+  expect(await readdir(runState)).not.toContain("iss-104-attempt-3");
+});
+
 it.each(["running", "passed", "dead"])("does not advance a %s conflict author", async (status) => {
   const f = await stoppedConflictFixture(status);
   const before = await readFile(resolve(f.original.stateDirectory, "attempt.json"), "utf8");
