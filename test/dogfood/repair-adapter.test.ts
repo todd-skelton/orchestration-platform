@@ -21,10 +21,16 @@ afterEach(async () => {
   );
 });
 
-it("keeps the source review location contract in the reviewer prompt", () => {
+it("ISS-243 keeps the source review location contract in the reviewer prompt", () => {
   const paths = ["scripts/dogfood/queue.ts"];
   expect(sourceReviewerReportPrompt(paths)).toContain(JSON.stringify(paths));
   expect(sourceReviewerReportPrompt(paths)).toContain(g0Question);
+  expect(sourceReviewerReportPrompt(paths)).toContain(
+    "Blocking findings must use changed candidate files",
+  );
+  expect(sourceReviewerReportPrompt(paths)).toContain(
+    "Advisory notes may cite existing unchanged files at the exact reviewed head",
+  );
   expect(sourceReviewerReportPrompt(paths)).toContain(
     "Each path must exist at the reviewed Git head",
   );
@@ -33,7 +39,7 @@ it("keeps the source review location contract in the reviewer prompt", () => {
   );
 });
 
-it("checks the repository pilot worktree instead of the controller during repair", async () => {
+it("ISS-243 keeps repair notes as context and checks the repository pilot worktree", async () => {
   const root = await mkdtemp(resolve(tmpdir(), "repair-pilot-root-"));
   roots.push(root);
   const [pilotRoot, worktree, reviewWorktree, stateDirectory] = [
@@ -67,6 +73,8 @@ it("checks the repository pilot worktree instead of the controller during repair
   const checked: string[] = [];
   let probes = 0;
   let authorDone = false;
+  const blocker = { file: "repair.ts", line: 1, severity: "blocking" as const, text: "fix it" };
+  const note = { file: "main-owned.md", line: 1, severity: "note" as const, text: "context only" };
   const native: Adapter = {
     async preflight() {},
     async waitForProvider() {
@@ -88,6 +96,13 @@ it("checks the repository pilot worktree instead of the controller during repair
       if (role === "reviewer") {
         expect(probes).toBe(2);
         expect(prompt).toContain("This is a DELTA review");
+        expect(prompt).toContain(
+          `Inspect only the prescribed remedies ${JSON.stringify([blocker])} and their direct callers`,
+        );
+        expect(prompt).toContain(
+          "Advisory notes may cite existing unchanged files at the exact reviewed head",
+        );
+        expect(prompt).toContain(JSON.stringify([note]));
         // Both workerPrompt and the launch-only corrective report suffix ask G0.
         expect(prompt.split(g0Question)).toHaveLength(3);
         // ISS-198: both halves state the one shared bound.
@@ -103,6 +118,13 @@ it("checks the repository pilot worktree instead of the controller during repair
         };
       }
       expect(probes).toBe(1);
+      expect(prompt).toContain(
+        `Correct only these validated blocking source findings: ${JSON.stringify([blocker])}.`,
+      );
+      expect(prompt).toContain(
+        `Advisory context only (not correction targets or edit permission): ${JSON.stringify([note])}.`,
+      );
+      expect(prompt).toContain('Authorized exact review paths are ["repair.ts"]');
       expect(prompt).toContain(
         `Predecessor source records: ${JSON.stringify(resolve(root, "source"))}`,
       );
@@ -124,7 +146,7 @@ it("checks the repository pilot worktree instead of the controller during repair
       mainBase: pilotRevision,
       correctiveBase: base,
       failedReview: {
-        findings: [{ file: "repair.ts", line: 1, severity: "blocking", text: "fix it" }],
+        findings: [blocker, note],
       },
       predecessorCompleteSweep: "source-reviewer",
       sourceRecords: resolve(root, "source"),

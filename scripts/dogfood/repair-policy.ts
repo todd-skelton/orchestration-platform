@@ -99,7 +99,7 @@ export function validateLocations(
   const changed = new Set(candidate.changed);
   for (const finding of review.findings)
     demand(
-      changed.has(finding.file) &&
+      (finding.severity === "note" || changed.has(finding.file)) &&
         Number.isSafeInteger(lineCounts[finding.file]) &&
         finding.line <= lineCounts[finding.file]!,
       "source-finding-location-outside-candidate",
