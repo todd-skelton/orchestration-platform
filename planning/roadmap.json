@@ -115,7 +115,8 @@
       "blockedBy": [
         "ISS-110",
         "ISS-137",
-        "ISS-138"
+        "ISS-138",
+        "ISS-242"
       ]
     },
     {
@@ -941,7 +942,7 @@
       "title": "Record one defect class for every unsuccessful loop outcome",
       "summary": "Add causal classification beside ISS-225 fault ownership without changing recovery behavior or retained records.",
       "milestone": "M1",
-      "blockedBy": ["ISS-234"]
+      "blockedBy": ["ISS-234", "ISS-235"]
     },
     {
       "key": "ISS-237",
