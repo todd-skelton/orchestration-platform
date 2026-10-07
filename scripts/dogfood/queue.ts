@@ -2013,12 +2013,12 @@ export async function queueConfigFromLoop(
         reservation === ABSENT
           ? Math.min(
               inheritedWorkerRetry ? 2 : 3,
-              config.nativeLaunchCeiling - initialHistory.length,
+              config.nativeLaunchCeiling - issueLaunches(initialHistory, attempt.item),
             )
           : reservation.launchLimit;
       if (reservation === ABSENT) {
         demand(
-          initialHistory.length + 2 <= config.nativeLaunchCeiling,
+          issueLaunches(initialHistory, attempt.item) + 2 <= config.nativeLaunchCeiling,
           "native-launch-ceiling-exhausted",
         );
         let authority;
@@ -2443,8 +2443,9 @@ function validUsage(value: unknown): value is QueueUsage {
   );
 }
 export function validateHistory(history: QueueParticipant[], ceiling: number) {
-  demand(Array.isArray(history) && history.length <= ceiling, "native-launch-ceiling-exhausted");
+  demand(Array.isArray(history), "malformed-participant-history");
   const identities = new Set<string>();
+  const charges = new Map<string, number>();
   for (const [index, participant] of history.entries()) {
     demand(
       object(participant) &&
@@ -2459,7 +2460,25 @@ export function validateHistory(history: QueueParticipant[], ceiling: number) {
     );
     demand(!identities.has(participant.id), "reused-participant-identity");
     identities.add(participant.id);
+    const issue = participantIssue(participant.item);
+    const count = (charges.get(issue) ?? 0) + 1;
+    demand(count <= ceiling, "native-launch-ceiling-exhausted");
+    charges.set(issue, count);
   }
+}
+
+// Composition owns one repository per run and names items <issue-key>:<attempt>.
+// Direct bounded queues retain their opaque item identities. Strip only the
+// canonical attempt suffix, never a key prefix, stage or directory name.
+function participantIssue(item: string) {
+  return item.replace(/:[1-9]\d*$/, "");
+}
+
+function issueLaunches(history: QueueParticipant[], item: string, key = item) {
+  // Accepted replans alone can name a custom attempt slug; the existing packet
+  // also supplies its canonical issue key. Neither name renews that allowance.
+  const issues = new Set([participantIssue(item), participantIssue(key)]);
+  return history.filter((participant) => issues.has(participantIssue(participant.item))).length;
 }
 
 export function validateQueueConfig(config: QueueConfig) {
@@ -3310,17 +3329,25 @@ export async function readQueueHistory(
   config: Pick<QueueConfig, "stateDirectory" | "nativeLaunchCeiling" | "initialHistory">,
 ) {
   const history: QueueParticipant[] = [];
-  let gap = false;
-  for (let ordinal = 1; ordinal <= config.nativeLaunchCeiling; ordinal += 1) {
+  let names: string[];
+  try {
+    names = await readdir(config.stateDirectory);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    names = [];
+  }
+  const ordinals = names
+    .map((name) => /^participant-([1-9]\d*)-terminal\.json$/.exec(name))
+    .filter((match) => match !== null)
+    .map((match) => Number(match[1]))
+    .sort((a, b) => a - b);
+  for (const ordinal of ordinals) {
+    demand(ordinal === history.length + 1, "participant-history-gap");
     const participant = await optionalRecord(
       config.stateDirectory,
       `participant-${ordinal}-terminal`,
     );
-    if (participant === ABSENT) {
-      gap = true;
-      continue;
-    }
-    demand(!gap, "participant-history-gap");
+    demand(participant !== ABSENT, "participant-history-gap");
     const normalized = {
       ...(participant as QueueParticipant),
       usage: queueUsage((participant as QueueParticipant).usage),
@@ -4583,6 +4610,56 @@ export function repositoryQueueAdapter(
 
   const boundedNative = (item: QueueItem, stage: QueueParticipant["stage"]): Adapter => ({
     ...native,
+    async resumeUnlaunchedReview(current) {
+      // ISS-235's legacy run-total refusal happened after flow saved its intent,
+      // but before native.launch. Native dispatch writes reviewer artifacts before
+      // starting a child; any such artifact retains ordinary uncertain-launch refusal.
+      if (
+        stage !== "source" ||
+        current.stateDirectory !== item.source.stateDirectory ||
+        item.acceptedReplan ||
+        item.integrationContinuation ||
+        item.verificationOnly ||
+        item.terminalAttemptAdmission ||
+        item.conflictContinuation
+      )
+        return false;
+      if (
+        (await readdir(current.stateDirectory)).some(
+          (name) => name.startsWith("reviewer-") && name !== "reviewer-intent.json",
+        )
+      )
+        return false;
+      const history = await readHistory();
+      if (
+        history.length !== config.nativeLaunchCeiling ||
+        issueLaunches(history, item.id) >= config.nativeLaunchCeiling
+      )
+        return false;
+      const runState = dirname(state);
+      const stops = (await readdir(runState))
+        .map((name) => /^cycle-(\d+)-stop-(\d+)\.json$/.exec(name))
+        .filter((match) => match !== null)
+        .sort((a, b) => Number(b[1]) - Number(a[1]) || Number(b[2]) - Number(a[2]));
+      for (const match of stops) {
+        const name = match[0].slice(0, -5);
+        const stop = await json(runState, name);
+        if (stop.selection?.key !== participantIssue(item.id)) continue;
+        const completed = await optionalRecord(runState, `${name}-complete`);
+        return (
+          stop.reason === "native-launch-ceiling-exhausted" &&
+          stop.attempts === item.implementationAttempt &&
+          item.issue ===
+            `https://github.com/${current.repository}/issues/${stop.selection.number}` &&
+          completed !== ABSENT &&
+          completed.stop === stop.stop &&
+          queueDigest(completed.selection) === queueDigest(stop.selection) &&
+          queueDigest(completed.history) === queueDigest(stop.history) &&
+          queueDigest(stop.history) === queueDigest(history)
+        );
+      }
+      return false;
+    },
     ...(item.source.repository === "chase-sets/chase-sets"
       ? {
           async beforeReview(current: SourceConfig, head: string) {
@@ -4833,7 +4910,11 @@ export function repositoryQueueAdapter(
         "continuation-repair-not-authorized",
       );
       const priorHistory = await readHistory();
-      demand(priorHistory.length < config.nativeLaunchCeiling, "native-launch-ceiling-exhausted");
+      demand(
+        issueLaunches(priorHistory, item.id, item.acceptedReplan?.issueKey) <
+          config.nativeLaunchCeiling,
+        "native-launch-ceiling-exhausted",
+      );
       if (item.verificationOnly)
         demand(
           role === "reviewer" && priorHistory.length === config.initialHistory.length,
@@ -4916,7 +4997,10 @@ export function repositoryQueueAdapter(
         "participant-terminal-drift",
       );
     else {
-      demand(history.length < config.nativeLaunchCeiling, "native-launch-ceiling-exhausted");
+      demand(
+        issueLaunches(history, item.id, item.acceptedReplan?.issueKey) < config.nativeLaunchCeiling,
+        "native-launch-ceiling-exhausted",
+      );
       await record(state, `participant-${participant.ordinal}-terminal`, participant);
     }
     if (item.source.author.ladder && role === "author" && outcome !== "passed")
@@ -5096,7 +5180,11 @@ export function repositoryQueueAdapter(
     const baseline = history.filter(
       (participant) => !(participant.item === item.id && participant.stage === "repair"),
     );
-    demand(baseline.length + 2 <= config.nativeLaunchCeiling, "native-launch-ceiling-exhausted");
+    demand(
+      issueLaunches(baseline, item.id, item.acceptedReplan?.issueKey) + 2 <=
+        config.nativeLaunchCeiling,
+      "native-launch-ceiling-exhausted",
+    );
     const repair: RepairConfig = {
       ...item.source,
       base: candidate.head,

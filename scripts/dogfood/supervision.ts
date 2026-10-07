@@ -805,7 +805,7 @@ const stopRecoveryActions: Record<ActionableStopReason, RecoveryAction> = {
   "provider-unavailable": () =>
     "restore the subscription pool and its authentication helper, then restart the supervisor; the issue remains ready",
   "native-launch-ceiling-exhausted": ({ evidence }) =>
-    `inspect ${evidence} and the nativeLaunchCeiling field, then start an authorized run with enough launch budget`,
+    `inspect ${evidence} for this issue's charged launches across all attempts in the same run against nativeLaunchCeiling; unrelated issues remain in full-run history but spend none of this allowance; preserve the candidate and records and seek host disposition for actual issue-local exhaustion, never reset the budget with a fresh run`,
   "implementation-attempt-ceiling-exhausted": ({ evidence }) =>
     `inspect ${evidence} and apply the final blocking findings before unparking the issue`,
 };
