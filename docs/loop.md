@@ -76,6 +76,16 @@ automatic recovery and change no saved records or posted bodies.
 
 ### Review and corrective authors
 
+ISS-243 makes review locations severity-sensitive after LOC-NOTE-1 stopped
+ISS-234's refreshed PASS. Blocking findings must name changed candidate files;
+advisory notes may cite unchanged committed files. Both require a file (not a
+tree) and a valid one-based line at the exact reviewed head. Notes remain in
+reports and handoffs as explanatory context, outside the repair author's
+blocking correction list; they expand neither authorized author paths nor
+repair source paths. They supply no review identity, gate evidence or repair,
+publication or landing authority. Invalid locations still refuse; recovery,
+fault classification and all existing allowances are unchanged.
+
 Reviewer prompts require the JSON object alone, with
 `JSON.stringify(verdict).length` at most
 `MAX_TERMINAL_SUMMARY_LENGTH` (4000) characters, including findings and G0.

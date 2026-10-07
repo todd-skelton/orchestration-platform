@@ -659,6 +659,23 @@ afterEach(async () => {
   for (const path of cleanup.splice(0))
     await rm(path, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 });
 });
+it("ISS-243 native worker prompt preserves severity and exact-head location boundaries", async () => {
+  const f = await fixture();
+  await f.run();
+  f.authorDone();
+  await f.run();
+  const prompt = f.launchPrompts.at(-1)!;
+  expect(prompt).toContain("Blocking findings must use changed candidate files");
+  expect(prompt).toContain(
+    "Advisory notes may cite existing unchanged files at the exact reviewed head",
+  );
+  expect(prompt).toContain(
+    "Both require a file, not a directory, and a valid one-based line at that head",
+  );
+  expect(prompt).toContain("notes never block and grant no edit, repair or landing authority");
+  expect(prompt).not.toContain("<changed path>");
+});
+
 async function fixture() {
   const root = await realpath(await mkdtemp(resolve(tmpdir(), "dogfood-test-")));
   cleanup.push(root);
@@ -1731,7 +1748,7 @@ describe("supervised sequential pilot (fake attempts, never live acceptance)", (
     expect(workerPrompt(f.config, "reviewer", head, "Improve the selected issue.")).toBe(
       `Improve the selected issue.\n\nPilot run one-trial; role reviewer; exact review head: ${head}.\n` +
         'Allowed author paths: ["scripts/repair.mjs"]. Author may edit source only: do not stage, commit, or change Git metadata; leave HEAD at the exact base. Reviewer must leave its worktree unchanged. Never push, publish, merge, or change credentials.\n' +
-        `Explain substantive findings in progress messages before the final response; these remain in the captured trace. Final response must be ONLY JSON: {"run":"one-trial","role":"reviewer","head":"${head}","verdict":"PASS","findings":[],"g0":"<answer>"} (or verdict FAIL). Answer G0 with a string: "Is there a simpler shape that still satisfies every acceptance criterion and every stated not-built reason? Answer No with one reason, or name the shape and the constraint you checked it against." Return the JSON object alone; its serialized length (JSON.stringify) must be at most ${MAX_TERMINAL_SUMMARY_LENGTH} characters. Write findings and G0 to fit within that total. Each finding is exactly {"file":"<changed path>","line":1,"severity":"blocking"|"note","text":"<finding>"}. A blocking finding requires FAIL; notes never block. Review every changed assertion independently.\n`,
+        `Explain substantive findings in progress messages before the final response; these remain in the captured trace. Final response must be ONLY JSON: {"run":"one-trial","role":"reviewer","head":"${head}","verdict":"PASS","findings":[],"g0":"<answer>"} (or verdict FAIL). Answer G0 with a string: "Is there a simpler shape that still satisfies every acceptance criterion and every stated not-built reason? Answer No with one reason, or name the shape and the constraint you checked it against." Return the JSON object alone; its serialized length (JSON.stringify) must be at most ${MAX_TERMINAL_SUMMARY_LENGTH} characters. Write findings and G0 to fit within that total. Each finding is exactly {"file":"<repository path>","line":1,"severity":"blocking"|"note","text":"<finding>"}. Blocking findings must use changed candidate files. Advisory notes may cite existing unchanged files at the exact reviewed head. Both require a file, not a directory, and a valid one-based line at that head. A blocking finding requires FAIL; notes never block and grant no edit, repair or landing authority. Review every changed assertion independently.\n`,
     );
   });
   it("leaves configured commit-bound gates to the executor while requiring honest source readiness", async () => {

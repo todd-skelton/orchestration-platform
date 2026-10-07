@@ -2283,7 +2283,7 @@ export async function queueConfigFromLoop(
         : repairFailurePrompt
           ? `${baseSourcePrompt}\n\n${repairFailurePrompt}`
           : prescribedFindings?.length
-            ? `${baseSourcePrompt}\n\nStart from rejected candidate ${rejectedHead}. Apply these reviewer-prescribed fixes verbatim: ${JSON.stringify(prescribedFindings)}`
+            ? `${baseSourcePrompt}\n\nStart from rejected candidate ${rejectedHead}. Apply these reviewer-prescribed fixes verbatim: ${JSON.stringify(prescribedFindings.filter((finding) => finding.severity === "blocking"))}\n\nAdvisory context only (not correction targets or edit permission): ${JSON.stringify(prescribedFindings.filter((finding) => finding.severity === "note"))}.`
             : baseSourcePrompt;
   if (repairFailurePrompt) reviewerPrompt += `\n\n${repairFailurePrompt}`;
   const setup: SetupConfig = {
@@ -5088,15 +5088,22 @@ export function repositoryQueueAdapter(
     try {
       const files = [...new Set(review.findings.map((finding) => finding.file))];
       const counts = await Promise.all(
-        files.map(
-          async (file) =>
-            [
-              file,
-              lineCount(
-                await native.git(item.source.worktree, ["show", "-z", `${candidate.head}:${file}`]),
-              ),
-            ] as const,
-        ),
+        files.map(async (file) => {
+          demand(
+            (await native.git(item.source.worktree, [
+              "cat-file",
+              "-t",
+              `${candidate.head}:${file}`,
+            ])) === "blob",
+            "source-finding-location-outside-candidate",
+          );
+          return [
+            file,
+            lineCount(
+              await native.git(item.source.worktree, ["show", "-z", `${candidate.head}:${file}`]),
+            ),
+          ] as const;
+        }),
       );
       validateLocations(review, candidate as { changed: string[] }, Object.fromEntries(counts));
     } catch (error) {

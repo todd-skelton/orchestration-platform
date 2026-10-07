@@ -851,6 +851,7 @@ it("retains the composed native profile method through the bounded source and re
           return args.includes("--cached") || (args.at(-1) === "HEAD" && sourceHead === candidate)
             ? ""
             : "scripts/dogfood/queue.ts\0";
+        if (args[0] === "cat-file" && args[1] === "-t") return "blob";
         if (args[0] === "show") return args.includes("-z") ? "\none\n\n" : "one";
         if (args[0] === "commit") sourceHead = candidate;
         return "";
@@ -1994,6 +1995,7 @@ it.each([false, true])("delivers and resumes (unchanged: %s)", async (unchanged)
           ? ""
           : "scripts/dogfood/queue.ts\0";
       if (args[0] === "ls-files") return "";
+      if (args[0] === "cat-file" && args[1] === "-t") return "blob";
       if (args[0] === "show") return args.includes("-z") ? "\none\n\n" : "one";
       if (args[0] === "commit") {
         sourceHead = candidate;
@@ -2534,7 +2536,10 @@ it("accepts and restarts a repair whose malformed review passes on its one retry
     },
   };
   const adapter = repositoryQueueAdapter(current.config, current.paths.controller, {
-    native: { git: async () => "line\n" } as never,
+    native: {
+      git: async (_tree: string, args: string[]) =>
+        args[0] === "cat-file" && args[1] === "-t" ? "blob" : "line\n",
+    } as never,
     repair: repairAdapter,
   });
 
@@ -2721,7 +2726,10 @@ it("advances once when a malformed repair review retry returns a valid FAIL", as
     },
   };
   const repository = repositoryQueueAdapter(current.config, current.paths.controller, {
-    native: { git: async () => "line one\nline two\n" } as never,
+    native: {
+      git: async (_tree: string, args: string[]) =>
+        args[0] === "cat-file" && args[1] === "-t" ? "blob" : "line one\nline two\n",
+    } as never,
     repair: repairAdapter,
   });
   const adapter: QueueAdapter = {

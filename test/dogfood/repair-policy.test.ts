@@ -59,3 +59,47 @@ it("accepts findings only on existing lines in changed candidate files", () => {
     validateLocations(review, { changed: [finding.file] }, { [finding.file]: 1 }),
   ).toThrow("source-finding-location-outside-candidate");
 });
+
+it("ISS-243 accepts unchanged-file notes without admitting unchanged-file blockers", () => {
+  const note = { ...finding, severity: "note" };
+  const review = parseReview(summary({ verdict: "PASS", findings: [note] }), run, head);
+  expect(() => validateLocations(review, { changed: [] }, { [note.file]: 2 })).not.toThrow();
+  const blocker = parseReview(summary(), run, head);
+  expect(() => validateLocations(blocker, { changed: [] }, { [note.file]: 2 })).toThrow(
+    "source-finding-location-outside-candidate",
+  );
+});
+
+it.each([{}, { [finding.file]: 1 }])("ISS-243 validates note existence and EOF: %j", (counts) => {
+  const review = parseReview(
+    summary({ verdict: "PASS", findings: [{ ...finding, severity: "note" }] }),
+    run,
+    head,
+  );
+  expect(() => validateLocations(review, { changed: [] }, counts)).toThrow(
+    "source-finding-location-outside-candidate",
+  );
+});
+
+it.each([{ file: "../escape" }, { line: 0 }, { line: 1.5 }, { line: "1" }])(
+  "ISS-243 keeps malformed note parsing: %j",
+  (override) => {
+    expect(() =>
+      parseReview(
+        summary({ verdict: "PASS", findings: [{ ...finding, severity: "note", ...override }] }),
+        run,
+        head,
+      ),
+    ).toThrow("malformed-source-finding");
+  },
+);
+
+it("ISS-243 notes cannot excuse PASS with a blocker", () => {
+  expect(() =>
+    parseReview(
+      summary({ verdict: "PASS", findings: [finding, { ...finding, severity: "note" }] }),
+      run,
+      head,
+    ),
+  ).toThrow("inconsistent-source-review-verdict");
+});
