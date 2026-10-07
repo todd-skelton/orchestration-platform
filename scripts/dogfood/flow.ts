@@ -123,6 +123,7 @@ export interface NativeDbReply {
   diagnostic: string | null;
 }
 export interface Adapter {
+  resumeUnlaunchedReview?(config: Config): Promise<boolean>;
   beforeReview?(config: Config, head: string): Promise<{ prompt: string } | { result: FlowResult }>;
   authorRung?(config: Config): Promise<number>;
   authorRefused?(config: Config, identity: string, diagnostics?: string): Promise<void>;
@@ -445,16 +446,27 @@ async function runStep(
         }
         let reviewerHead: string | undefined;
         let authorEvidence = hostEvidence + nativeEvidence.prompt;
+        let retainedIntent = false;
         if (!relaunch) {
-          requireThat(!(await get(`${role}-intent`)), `${role}-launch-identity-unknown-reconcile`);
+          const intent = await get(`${role}-intent`);
+          requireThat(
+            !intent ||
+              (role === "reviewer" &&
+                intent.fingerprint === fingerprint &&
+                intent.head === reviewed?.head &&
+                (await adapter.resumeUnlaunchedReview?.(config))),
+            `${role}-launch-identity-unknown-reconcile`,
+          );
+          retainedIntent = !!intent;
           // Reserve before the first launch. A retry replaces this attempt once launched.
           const intentHead = role === "author" ? config.base : reviewed?.head;
-          await put(`${role}-intent`, {
-            at: new Date().toISOString(),
-            fingerprint,
-            role,
-            head: intentHead,
-          });
+          if (!intent)
+            await put(`${role}-intent`, {
+              at: new Date().toISOString(),
+              fingerprint,
+              role,
+              head: intentHead,
+            });
         }
         if (role === "author") {
           const previousTerminal: Terminal | undefined = relaunch
@@ -544,13 +556,15 @@ async function runStep(
         let launched: Attempt;
         for (;;) {
           // Persist selection before dispatch; a running attempt carries this same rung.
-          await replace(directory, `${role}-intent`, {
-            at: new Date().toISOString(),
-            fingerprint,
-            role,
-            head: reviewHead,
-            ...(ladder ? { rung, placement } : {}),
-          });
+          if (!retainedIntent)
+            await replace(directory, `${role}-intent`, {
+              at: new Date().toISOString(),
+              fingerprint,
+              role,
+              head: reviewHead,
+              ...(ladder ? { rung, placement } : {}),
+            });
+          retainedIntent = false;
           try {
             launched = await adapter.launch(role, launchConfig(), prompt);
             break;
