@@ -410,6 +410,236 @@ function participantWithoutUsage(participant: QueueParticipant) {
     outcome: participant.outcome,
   };
 }
+
+// A retained history is normally a prefix, never a set. The sole exception is
+// the ISS-245 hosted-continuation singleton, proved from native records below.
+export function retainHistory(left: QueueParticipant[], right: QueueParticipant[]) {
+  const [shorter, longer] = left.length > right.length ? [right, left] : [left, right];
+  demand(historyPrefix(shorter, longer), "participant-history-drift");
+  return longer;
+}
+
+function historyPrefix(left: QueueParticipant[], right: QueueParticipant[]) {
+  return (
+    left.length <= right.length &&
+    left.every(
+      (p, i) =>
+        queueDigest(participantWithoutUsage(p)) === queueDigest(participantWithoutUsage(right[i]!)),
+    )
+  );
+}
+
+export async function retainedRunHistory(
+  config: Pick<LoopConfig, "stateRoot" | "run" | "repository" | "nativeLaunchCeiling">,
+  seeds: QueueParticipant[][] = [],
+  evidence: { path: string; sha256: string }[] = [],
+) {
+  const root = resolve(config.stateRoot, config.run);
+  const records = new Map<string, any>();
+  const histories = [...seeds];
+  const read = async (path: string) => {
+    if (records.has(path)) return records.get(path);
+    try {
+      const bytes = await readFile(path);
+      const value = JSON.parse(bytes.toString("utf8"));
+      records.set(path, value);
+      evidence.push({ path, sha256: createHash("sha256").update(bytes).digest("hex") });
+      return value;
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    }
+  };
+  const names = async (directory: string) =>
+    readdir(directory, { withFileTypes: true }).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return [];
+      throw error;
+    });
+  const nativeDirectory =
+    /^(source|repair|integration|spent-resolution|verification|gate-correction|gate-stop-continuation|refresh-[a-f0-9]{40})$/;
+  const scan = async (directory: string, top = false) => {
+    const entries = await names(directory);
+    for (const entry of entries) {
+      const path = resolve(directory, entry.name);
+      if (entry.isDirectory()) {
+        if (top ? /-attempt-[1-9]\d*$/.test(entry.name) : nativeDirectory.test(entry.name))
+          await scan(path);
+      } else if (
+        top
+          ? /^cycle-\d+-(?:complete|stop-\d+(?:-complete)?)\.json$/.test(entry.name)
+          : /^(?:attempt|config|gate-stop-continuation)\.json$/.test(entry.name)
+      ) {
+        const value = await read(path);
+        if (value?.history) histories.push(value.history);
+        if (value?.config?.initialHistory) histories.push(value.config.initialHistory);
+      }
+    }
+    if (!top && entries.some((entry) => /^participant-\d+-terminal\.json$/.test(entry.name))) {
+      // Use the shared ordinal reader (including its gaps/duplicate checks).
+      const history = await readQueueHistory(
+        {
+          stateDirectory: directory,
+          initialHistory: [],
+          nativeLaunchCeiling: config.nativeLaunchCeiling,
+        },
+        async (directory, name) => (await read(resolve(directory, `${name}.json`))) ?? ABSENT,
+      );
+      histories.push(history);
+    }
+  };
+  await scan(root, true);
+  for (const history of histories) validateHistory(history, config.nativeLaunchCeiling);
+  const spine = histories.reduce(
+    (longest, history) => (history.length > longest.length ? history : longest),
+    [] as QueueParticipant[],
+  );
+  const divergent = histories.filter((history) => !historyPrefix(history, spine));
+  const restored: {
+    participant: QueueParticipant;
+    sourcePath: string;
+    originalOrdinal: number;
+    effectiveOrdinal: number;
+    reservationPath: string;
+  }[] = [];
+  let effective = spine;
+  let branch: QueueParticipant[] | undefined;
+  if (divergent.length) {
+    branch = divergent.reduce((longest, history) =>
+      history.length > longest.length ? history : longest,
+    );
+    const x = branch.at(-1)!;
+    const prefix = branch.slice(0, -1);
+    demand(
+      x.role === "author" &&
+        x.stage === "source" &&
+        x.outcome === "failed" &&
+        spine.length > branch.length &&
+        historyPrefix(prefix, spine) &&
+        divergent.every((history) => historyPrefix(history, branch!)),
+      "participant-history-drift",
+    );
+    const existing = spine.find((p) => p.id === x.id);
+    demand(
+      !existing ||
+        (existing.ordinal > x.ordinal &&
+          queueDigest({ ...existing, ordinal: x.ordinal }) === queueDigest(x)),
+      "participant-history-drift",
+    );
+    const match = /^(.*):([1-9]\d*)$/.exec(x.item);
+    demand(match && Number(match[2]) > 1, "participant-history-drift");
+    const key = match![1]!;
+    const attemptNumber = Number(match![2]);
+    const successorDirectory = resolve(root, `${key.toLowerCase()}-attempt-${attemptNumber}`);
+    const predecessorDirectory = resolve(root, `${key.toLowerCase()}-attempt-${attemptNumber - 1}`);
+    const sourcePath = resolve(successorDirectory, `participant-${x.ordinal}-terminal.json`);
+    const successor = await read(resolve(successorDirectory, "attempt.json"));
+    const predecessor = await read(resolve(predecessorDirectory, "attempt.json"));
+    const source = resolve(successorDirectory, "source");
+    const author = await read(resolve(source, "author-attempt.json"));
+    const terminal = await read(resolve(source, "author-terminal.json"));
+    const sourceConfig = await read(resolve(source, "config.json"));
+    const witness = await read(sourcePath);
+    demand(
+      successor?.run === config.run &&
+        successor.item === x.item &&
+        successor.candidateAttempt === attemptNumber &&
+        successor.phase === "source" &&
+        queueDigest(successor.history) === queueDigest(branch) &&
+        successor.authorFailures?.ids?.includes(x.id) &&
+        successor.authorFailures.count >= 1 &&
+        predecessor?.run === config.run &&
+        predecessor.item === `${key}:${attemptNumber - 1}` &&
+        predecessor.candidateAttempt === attemptNumber - 1 &&
+        predecessor.issue === successor.issue &&
+        predecessor.phase === "failed" &&
+        Array.isArray(predecessor.history) &&
+        historyPrefix(prefix, predecessor.history) &&
+        sourceConfig?.config?.run === config.run &&
+        sourceConfig.config.issue === successor.issue &&
+        sourceConfig.config.base === successor.base &&
+        author?.id === x.id &&
+        terminal?.id === x.id &&
+        terminal.status === "failed" &&
+        terminal.head === successor.base &&
+        (["routing", "models", "placement", "rung"] as const).every(
+          (key) => queueDigest(author[key] ?? null) === queueDigest(x[key] ?? null),
+        ) &&
+        queueDigest(queueUsage(terminal.usage)) === queueDigest(x.usage) &&
+        queueDigest(witness) === queueDigest(x),
+      "participant-history-drift",
+    );
+    // The reservation owns the earlier stop and publication. Its name or grant
+    // alone is insufficient: match the actual stop, receipt and native lineage.
+    const reservationPath = resolve(predecessorDirectory, "source/gate-stop-continuation.json");
+    const reservation = await read(reservationPath);
+    const grant = reservation?.authorization;
+    const hosted = grant?.hostedNonExecution;
+    demand(
+      hosted &&
+        typeof grant.authorityUrl === "string" &&
+        grant.stateDirectory === resolve(predecessorDirectory, "source"),
+      "participant-history-drift",
+    );
+    const stopName = `cycle-${hosted.cycle}-stop-${hosted.stop}`;
+    const stop = await read(resolve(root, `${stopName}.json`));
+    const receipt = await read(resolve(root, `${stopName}-complete.json`));
+    const completed = await read(resolve(root, `cycle-${hosted.cycle}-complete.json`));
+    demand(
+      receipt &&
+        completed &&
+        stop?.marker === `loop-stop:${config.run}:${hosted.cycle}:${hosted.stop}` &&
+        stop.selection?.key === key &&
+        stop.selection.cycle === hosted.cycle &&
+        stop.stop === hosted.stop &&
+        successor.issue ===
+          `https://github.com/${config.repository}/issues/${stop.selection.number}` &&
+        stop.attempts === attemptNumber - 1 &&
+        stop.reason?.startsWith("hosted-check-log-unavailable:") &&
+        queueDigest(stop.history) === queueDigest(prefix) &&
+        queueDigest(reservation.stop) === queueDigest(stop) &&
+        queueDigest(reservation.receipt) === queueDigest(receipt) &&
+        receipt.stop === hosted.stop &&
+        queueDigest(receipt.selection) === queueDigest(stop.selection) &&
+        queueDigest(receipt.history) === queueDigest(prefix) &&
+        queueDigest(completed?.selection) === queueDigest(stop.selection) &&
+        queueDigest(completed?.history) === queueDigest(branch) &&
+        reservation.publication?.head === grant.candidateHead &&
+        reservation.authority?.url === grant.authorityUrl &&
+        reservation.authority.id === grant.authorityUrl.split("issuecomment-")[1] &&
+        reservation.authority.author === "todd-skelton" &&
+        typeof reservation.authority.body === "string" &&
+        Number.isFinite(Date.parse(reservation.authority.capturedAt)) &&
+        reservation.job?.actions?.run === hosted.actionsRun &&
+        reservation.job.actions.attempt === hosted.runAttempt &&
+        reservation.job.actions.job === hosted.job &&
+        provesNonExecution(reservation.job, grant.candidateHead),
+      "participant-history-drift",
+    );
+    const effectiveOrdinal = existing?.ordinal ?? spine.length + 1;
+    restored.push({
+      participant: x,
+      sourcePath,
+      originalOrdinal: x.ordinal,
+      effectiveOrdinal,
+      reservationPath,
+    });
+    effective = existing ? spine : [...spine, { ...x, ordinal: effectiveOrdinal }];
+  }
+  validateHistory(effective, config.nativeLaunchCeiling);
+  const retain = (next: QueueParticipant[]) => {
+    validateHistory(next, config.nativeLaunchCeiling);
+    if (branch && historyPrefix(next, branch)) return effective;
+    effective = retainHistory(effective, next);
+    return effective;
+  };
+  return {
+    history: effective,
+    restored,
+    evidence,
+    rawHistories: histories.map(queueDigest),
+    retain,
+  };
+}
 export function validateLoopConfig(config: LoopConfig) {
   demand(
     exactKeys(config, [
@@ -741,16 +971,21 @@ function validateFailedAttempt(
   );
 }
 
-export async function validateLoopExecutor(config: LoopConfig, executingRoot: string) {
+export async function validateLoopExecutor(
+  config: LoopConfig,
+  executingRoot: string,
+  readOnly = false,
+) {
   validateLoopConfig(config);
   const [controllerRoot, repositoryRoot] = await Promise.all([
     realpath(executingRoot),
     realpath(config.stableExecutorRoot),
   ]);
-  await Promise.all([
-    mkdir(config.stateRoot, { recursive: true }),
-    mkdir(config.worktreeRoot, { recursive: true }),
-  ]);
+  if (!readOnly)
+    await Promise.all([
+      mkdir(config.stateRoot, { recursive: true }),
+      mkdir(config.worktreeRoot, { recursive: true }),
+    ]);
   const [stateRoot, worktreeRoot] = await Promise.all([
     realpath(config.stateRoot),
     realpath(config.worktreeRoot),
@@ -771,7 +1006,7 @@ export async function validateLoopExecutor(config: LoopConfig, executingRoot: st
   );
   const git = async (root: string, args: string[]) =>
     (
-      await exec(config.gitExecutable, ["-C", root, ...args], {
+      await exec(config.gitExecutable, ["--no-optional-locks", "-C", root, ...args], {
         windowsHide: true,
         maxBuffer: 8 * 1024 * 1024,
       })
@@ -827,19 +1062,56 @@ export async function validateLoopExecutor(config: LoopConfig, executingRoot: st
   };
 }
 
-// One write-once binding precedes ordinary attempt creation. All old state is read-only.
-async function admitTerminalAttempt(
+// Shared observation boundary. Only admitTerminalAttempt below can reserve it.
+export async function evaluateTerminalAttempt(
+  ...args: Parameters<typeof terminalAttemptEvaluation>
+) {
+  try {
+    return await terminalAttemptEvaluation(...args);
+  } catch (error) {
+    if (!(error instanceof QueueBlocked) || error.reason.startsWith("terminal-attempt-admission-"))
+      throw error;
+    throw new QueueBlocked("terminal-attempt-admission-mismatch", error.reason);
+  }
+}
+
+async function terminalAttemptEvaluation(
   config: LoopConfig,
   selected: SelectedLoopIssue,
   priorHistory: QueueParticipant[],
-  observeAuthority: typeof observeIntegrationAuthority,
-  observePublication: typeof observeTerminalPublication,
-  observeIssue: typeof observeVerificationIssue,
+  observeAuthority = observeIntegrationAuthority,
+  observePublication = observeTerminalPublication,
+  observeIssue = observeVerificationIssue,
+  audit: {
+    evidence?: { path: string; sha256: string }[];
+    accounting?: unknown;
+    probes?: unknown[];
+  } = {},
 ) {
+  validateLoopConfig(config);
+  const evidence = (audit.evidence ??= []);
+  const probes = (audit.probes ??= []);
+  const optionalRecord = async (directory: string, name: string) => {
+    const path = resolve(directory, `${name}.json`);
+    try {
+      const bytes = await readFile(path);
+      evidence.push({ path, sha256: createHash("sha256").update(bytes).digest("hex") });
+      return JSON.parse(bytes.toString("utf8"));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return ABSENT;
+      throw error;
+    }
+  };
   const packet = config.terminalAttemptAdmission!;
   const reason = "terminal-attempt-admission-mismatch";
   const check = (ok: unknown) => demand(ok, reason);
   const successor = packet.schemaVersion === "dogfood-terminal-attempt-admission/v2";
+  check(
+    selected.key === packet.issueKey &&
+      Number.isSafeInteger(selected.number) &&
+      selected.number > 0 &&
+      SHA.test(selected.base),
+  );
   const priorNumber = packet.priorAbsoluteAttempt;
   const runState = resolve(config.stateRoot, config.run);
   const claim = `integration-continuation-${queueDigest({ repository: config.repository, issue: selected.key })}`;
@@ -848,7 +1120,7 @@ async function admitTerminalAttempt(
   const saved = await optionalRecord(config.stateRoot, name);
   if (saved !== ABSENT) {
     check(queueDigest(saved.binding) === queueDigest(binding));
-    return saved;
+    return { reservation: saved, name, replay: true };
   }
   check(
     (successor || packet.claim === claim) &&
@@ -876,20 +1148,16 @@ async function admitTerminalAttempt(
       queueDigest(completed.history) === packet.terminalHistoryDigest &&
       (successor || selected.base !== terminal.selection.base),
   );
-  let history: QueueParticipant[] = completed.history;
-  validateHistory(history, config.nativeLaunchCeiling);
+  const accountingView = await retainedRunHistory(
+    config,
+    [completed.history, priorHistory],
+    evidence,
+  );
+  audit.accounting = accountingView;
+  let history = accountingView.history;
   const retainHistory = (next: QueueParticipant[]) => {
     validateHistory(next, config.nativeLaunchCeiling);
-    const shorter = next.length < history.length ? next : history;
-    const longer = next.length < history.length ? history : next;
-    check(
-      shorter.every(
-        (p, i) =>
-          queueDigest(participantWithoutUsage(p)) ===
-          queueDigest(participantWithoutUsage(longer[i]!)),
-      ),
-    );
-    history = longer;
+    history = accountingView.retain(next);
   };
   retainHistory(priorHistory);
   const entries = await readdir(runState, { withFileTypes: true });
@@ -1119,13 +1387,17 @@ async function admitTerminalAttempt(
   let observedPublication: Awaited<ReturnType<typeof observeTerminalPublication>> | undefined;
   try {
     authority = await observeAuthority(packet.authorityUrl);
+    probes.push({ kind: "authority", ...authority });
     receipt = await observeAuthority(packet.terminalReceiptUrl);
+    probes.push({ kind: "receipt", ...receipt });
     if (successor)
       issue = {
         ...(await observeIssue(config.repository, selected.number)),
         capturedAt: new Date().toISOString(),
       };
     else observedPublication = await observePublication(packet);
+    if (issue) probes.push({ kind: "issue", ...issue });
+    if (observedPublication) probes.push({ kind: "publication", ...observedPublication });
   } catch {
     throw new QueueBlocked("terminal-attempt-admission-authority-unavailable");
   }
@@ -1164,6 +1436,7 @@ async function admitTerminalAttempt(
     ...(successor ? { issue } : {}),
     terminalDirectory,
     initialHistory: history,
+    ...(accountingView.restored.length ? { historyAccounting: accountingView.restored } : {}),
     authorFailures,
     inheritedWorkerRetry,
     correctionUsed,
@@ -1172,10 +1445,16 @@ async function admitTerminalAttempt(
       history.findLast((p) => p.item === `${selected.key}:${priorNumber}` && p.role === "reviewer")
         ?.rung ?? 0,
   };
-  await writeFile(resolve(config.stateRoot, `${name}.json`), JSON.stringify(reservation), {
-    flag: "wx",
-    flush: true,
-  });
+  return { reservation, name, replay: false };
+}
+
+async function admitTerminalAttempt(...args: Parameters<typeof evaluateTerminalAttempt>) {
+  const { reservation, name, replay } = await evaluateTerminalAttempt(...args);
+  if (!replay)
+    await writeFile(resolve(args[0].stateRoot, `${name}.json`), JSON.stringify(reservation), {
+      flag: "wx",
+      flush: true,
+    });
   return reservation;
 }
 
@@ -1403,22 +1682,7 @@ async function verificationQueue(
       brief.body +
       (suffix < 0 ? "" : reviewerPrompt.slice(bodyStart + suffix));
   }
-  let history = priorHistory.length > prior.history.length ? priorHistory : prior.history;
-  for (const name of await readdir(resolve(config.stateRoot, config.run))) {
-    if (!/^cycle-\d+(?:-stop-\d+)?-complete\.json$/.test(name)) continue;
-    const completed = await json(resolve(config.stateRoot, config.run), name.slice(0, -5));
-    validateHistory(completed.history, config.nativeLaunchCeiling);
-    if (completed.history.length > history.length) history = completed.history;
-  }
-  demand(
-    prior.history.every(
-      (p: QueueParticipant, index: number) =>
-        JSON.stringify(participantWithoutUsage(p)) ===
-        JSON.stringify(participantWithoutUsage(history[index])),
-    ),
-    reason,
-  );
-  validateHistory(history, config.nativeLaunchCeiling);
+  const history = (await retainedRunHistory(config, [priorHistory, prior.history])).history;
   const root = resolve(executor.worktreeRoot, `${basename(grant.attemptDirectory)}-verification`);
   const priorReviewer = await json(sourceDirectory, "reviewer-attempt");
   const nextSource: SourceConfig = {
@@ -1682,14 +1946,7 @@ export async function queueConfigFromLoop(
           observeAuthority,
           observePublication,
           observeIssue,
-        ).catch((error: unknown) => {
-          // Record and history checks contradict the declaration; local I/O failures
-          // stay host errors rather than parking the item.
-          if (!(error instanceof QueueBlocked)) throw error;
-          throw error.reason.startsWith("terminal-attempt-admission-")
-            ? error
-            : new QueueBlocked("terminal-attempt-admission-mismatch");
-        })
+        )
       : undefined;
   if (!config.acceptedReplan) {
     if (!integrationPacket && !terminalAdmission)
@@ -1739,7 +1996,11 @@ export async function queueConfigFromLoop(
   let sourceAttempt = 1;
   let attemptBase = selected.base;
   let mainBase = selected.base;
-  let initialHistory: QueueParticipant[] = [...priorHistory];
+  const runAccounting = await retainedRunHistory(config, [priorHistory]);
+  // Special continuations retain their pinned configuration seed. The adapter's
+  // readHistory still charges the complete run before any new native launch.
+  let initialHistory: QueueParticipant[] =
+    config.acceptedReplan || integrationPacket ? [...priorHistory] : runAccounting.history;
   let authorFailures: NonNullable<SourceConfig["authorFailures"]> = { count: 0, ids: [] };
   let reviewerRung = 0;
   let prescribedFindings: ReviewFinding[] | undefined;
@@ -2267,7 +2528,23 @@ export async function queueConfigFromLoop(
       };
       await record(priorQueue, "attempt", attempt);
     }
-    if (attempt === ABSENT || attempt.phase !== "failed") break;
+    if (attempt === ABSENT || attempt.phase !== "failed") {
+      if (attempt !== ABSENT) {
+        // An existing queue keeps its original source/repair boundary. Later
+        // run history is read at charging time, not made into its old seed.
+        const local = retainHistory(
+          attempt.history,
+          await readQueueHistory({
+            stateDirectory: priorQueue,
+            nativeLaunchCeiling: config.nativeLaunchCeiling,
+            initialHistory: [],
+          }),
+        );
+        const first = local.findIndex((p: QueueParticipant) => p.item === attempt.item);
+        if (first >= 0) initialHistory = local.slice(0, first);
+      }
+      break;
+    }
     if (conflictContinuation) {
       const refresh = await optionalRecord(conflictContinuation.directory, "native-refresh");
       let retained: any;
@@ -2306,7 +2583,7 @@ export async function queueConfigFromLoop(
       conflict || attempt.rebasedBase
         ? undefined
         : { directory: priorQueue, slug: priorSlug, attempt };
-    if (attempt.history.length > initialHistory.length) initialHistory = attempt.history;
+    initialHistory = runAccounting.retain(attempt.history);
     authorFailures = attempt.authorFailures ?? authorFailures;
     reviewerRung =
       attempt.history.findLast((p) => p.item === attempt.item && p.role === "reviewer")?.rung ?? 0;
@@ -3125,7 +3402,7 @@ export async function retainedPostMergeDelivery(config: LoopConfig, selected: Se
       initialHistory: [],
     });
     validateHistory(attempt.history, config.nativeLaunchCeiling);
-    if (attempt.history.length > history.length) history = attempt.history;
+    history = (await retainedRunHistory(config, [history, attempt.history])).history;
     return { config: delivery, delivery: result, history, attempts: attempt.candidateAttempt };
   }
   return undefined;
@@ -3463,6 +3740,7 @@ async function pinnedRefreshFailure(
 
 export async function readQueueHistory(
   config: Pick<QueueConfig, "stateDirectory" | "nativeLaunchCeiling" | "initialHistory">,
+  read = optionalRecord,
 ) {
   const history: QueueParticipant[] = [];
   let names: string[];
@@ -3479,10 +3757,7 @@ export async function readQueueHistory(
     .sort((a, b) => a - b);
   for (const ordinal of ordinals) {
     demand(ordinal === history.length + 1, "participant-history-gap");
-    const participant = await optionalRecord(
-      config.stateDirectory,
-      `participant-${ordinal}-terminal`,
-    );
+    const participant = await read(config.stateDirectory, `participant-${ordinal}-terminal`);
     demand(participant !== ABSENT, "participant-history-gap");
     const normalized = {
       ...(participant as QueueParticipant),
@@ -4495,7 +4770,29 @@ export function repositoryQueueAdapter(
     requiredChecks: current.requiredChecks,
   });
 
-  const readHistory = () => readQueueHistory(config);
+  const readHistory = async () => {
+    const local = await readQueueHistory(config);
+    if (config.controller !== `loop:${config.run}`) return local;
+    let attemptDirectory = config.stateDirectory;
+    while (
+      !/-attempt-[1-9]\d*$/.test(basename(attemptDirectory)) &&
+      dirname(attemptDirectory) !== attemptDirectory
+    )
+      attemptDirectory = dirname(attemptDirectory);
+    const runDirectory = dirname(attemptDirectory);
+    demand(basename(runDirectory) === config.run, "participant-history-drift");
+    return (
+      await retainedRunHistory(
+        {
+          stateRoot: dirname(runDirectory),
+          run: config.run,
+          repository: config.items[0]!.source.repository,
+          nativeLaunchCeiling: config.nativeLaunchCeiling,
+        },
+        [local, config.initialHistory],
+      )
+    ).history;
+  };
 
   const refreshReviewAllowance =
     options.refreshReviewAllowance === undefined
@@ -5137,6 +5434,12 @@ export function repositoryQueueAdapter(
         issueLaunches(history, item.id, item.acceptedReplan?.issueKey) < config.nativeLaunchCeiling,
         "native-launch-ceiling-exhausted",
       );
+      // Copy only newly inherited ordinal rows before appending this launch.
+      // Existing rows, including historical fork evidence, are never rewritten.
+      const local = await readQueueHistory(config);
+      retainHistory(local, history);
+      for (const inherited of history.slice(local.length))
+        await record(state, `participant-${inherited.ordinal}-terminal`, inherited);
       await record(state, `participant-${participant.ordinal}-terminal`, participant);
     }
     if (item.source.author.ladder && role === "author" && outcome !== "passed")

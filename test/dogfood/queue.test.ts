@@ -3284,6 +3284,13 @@ it.each(["source", "refresh"])(
   "ISS-231 delivers a pre-review %s correction and resumes its retained post-merge records",
   async (mode) => {
     const f = await verificationOnlyFixture();
+    // This test runs the fixture's original, ordinary attempt 1. Its synthetic
+    // verification-only attempt 4 belongs to the other tests, not this run's
+    // chronology. A complete history census must not silently ignore it.
+    const runState = resolve(f.loop.stateRoot, f.loop.run);
+    for (const name of await readdir(runState))
+      if (name === "cs-361-attempt-4" || name.startsWith("cycle-"))
+        await rm(resolve(runState, name), { recursive: true });
     const q = f.original;
     const item = q.items[0]!;
     await writeFile(
@@ -4127,6 +4134,12 @@ it.each([
     const other = { ...history[63]!, item: "ISS-2340:1" };
     await writeFile(path, JSON.stringify(other));
     q.initialHistory[63] = other;
+    // ISS-245 also reads the retained attempt snapshot. Vary the owning key
+    // there too; an inconsistent copy would test drift instead of isolation.
+    const attemptPath = resolve(q.stateDirectory, "attempt.json");
+    const retainedAttempt = JSON.parse(await readFile(attemptPath, "utf8"));
+    retainedAttempt.history[63] = other;
+    await writeFile(attemptPath, JSON.stringify(retainedAttempt));
     // A separate disposable dispatch with the changed identity, not re-entry past
     // the retained uncertain-intent boundary of the preceding refusal.
     await rm(resolve(item.source.stateDirectory, "author-intent.json"));
@@ -4427,7 +4440,9 @@ it("ISS-235 resumes the baseline-exhausted attempt-2 candidate with only reviewe
   const participantPath = resolve(q.stateDirectory, "participant-65-terminal.json");
   const participantBytes = await readFile(participantPath);
   await writeFile(participantPath, JSON.stringify({ ...charged[64], outcome: "failed" }));
-  await expect(adapter().source(q.items[0]!)).rejects.toThrow("participant-terminal-drift");
+  // The complete census now sees the contradictory attempt history before the
+  // worker-terminal comparison. The changed outcome still refuses, before work.
+  await expect(adapter().source(q.items[0]!)).rejects.toThrow("participant-history-drift");
   await writeFile(participantPath, participantBytes);
   expect(await adapter().history()).toEqual(charged);
   expect(deliveries).toBe(1);
@@ -6366,27 +6381,35 @@ it("recomposes a saved selection after its pending gate-stop note and admits one
   expect(await readFile(resolve(item.source.stateDirectory, "gate-stop.json"))).toEqual(oldStop);
 });
 
-it.each([
-  "completed",
-  "pending",
-  "replay",
-  "interrupted",
-  "unresolvable witness",
-  "refreshed source",
-  "corrected source",
-  "retained count",
-  "all non-execution",
-  "no grant",
-  "wrong receipt",
-  "missing witness",
-  "older witness",
-  "divergent witness",
-  "included repair",
-  "absent repair",
-  "missing setup",
-  "malformed setup",
-  "moved head",
-])("ISS-230 SYNTHETIC hosted completed-stop continuation: %s", async (mode) => {
+it.each(
+  [
+    "completed",
+    "pending",
+    "replay",
+    "interrupted",
+    "unresolvable witness",
+    "refreshed source",
+    "corrected source",
+    "retained count",
+    "ISS-245 history continuity",
+    "all non-execution",
+    "no grant",
+    "wrong receipt",
+    "missing witness",
+    "older witness",
+    "divergent witness",
+    "included repair",
+    "absent repair",
+    "missing setup",
+    "malformed setup",
+    "moved head",
+  ].map((mode) => ({
+    mode,
+    title: mode.startsWith("ISS-245")
+      ? mode
+      : `ISS-230 SYNTHETIC hosted completed-stop continuation: ${mode}`,
+  })),
+)("$title", async ({ mode }) => {
   const f = await loopFixture();
   const git = async (tree: string, args: string[]) =>
     (
@@ -6437,7 +6460,10 @@ it.each([
         role === "author" ? current.base : await git(current.worktree, ["rev-parse", "HEAD"]);
       return {
         id: attempt.id,
-        status: "passed",
+        status:
+          mode === "ISS-245 history continuity" && launches.length > 2 && role === "author"
+            ? "failed"
+            : "passed",
         head,
         ...(role === "reviewer"
           ? {
@@ -6722,6 +6748,20 @@ it.each([
     await writeFile(path, JSON.stringify(setup));
   }
   const before = await snapshot(item.source.stateDirectory);
+  let intervening: QueueParticipant | undefined;
+  if (mode === "ISS-245 history continuity") {
+    intervening = {
+      ...participant(cycle.initialHistory.length + 1, "ISS-902:1", "source", "author", "passed"),
+      id: "synthetic-intervening-author",
+    };
+    const selection = { ...cycle.selection, cycle: 2, key: "ISS-902", number: 902 };
+    const directory = resolve(loop.stateRoot, loop.run);
+    await writeFile(resolve(directory, "cycle-2-selected.json"), JSON.stringify(selection));
+    await writeFile(
+      resolve(directory, "cycle-2-complete.json"),
+      JSON.stringify({ selection, history: [...cycle.initialHistory, intervening] }),
+    );
+  }
   stopped = false;
   const resumed = await nextCycle(loop, f.repository, supervisor, {
     ...repositoryPolicy,
@@ -6735,6 +6775,7 @@ it.each([
     return;
   }
   expect(resumed?.selection).toEqual(cycle.selection);
+  if (intervening) expect(resumed!.initialHistory).toEqual([...cycle.initialHistory, intervening]);
   await reconcilePendingStop(loop, resumed!, supervisor, {
     ...repositoryPolicy,
     async park() {
@@ -6751,6 +6792,7 @@ it.each([
       "refreshed source",
       "corrected source",
       "retained count",
+      "ISS-245 history continuity",
     ].includes(mode)
   ) {
     const result = queueStep(q, adapter());
@@ -6793,7 +6835,7 @@ it.each([
       ]),
     );
     const after = JSON.parse(await readFile(resolve(q.stateDirectory, "attempt.json"), "utf8"));
-    expect(after.history).toEqual(cycle.initialHistory);
+    expect(after.history).toEqual([...cycle.initialHistory, ...(intervening ? [intervening] : [])]);
     expect(after.candidateAttempt).toBe(mode === "retained count" ? 2 : 1);
     expect(await readFile(stopPath)).toEqual(oldStop);
     for (const [path, bytes] of before) expect(await readFile(path, "utf8")).toBe(bytes);
@@ -6811,6 +6853,58 @@ it.each([
         : []),
   ]);
   expect(publications).toBe(1);
+  if (intervening) {
+    await git(f.repository, ["remote", "set-url", "origin", f.repository]);
+    q = await queueConfigFromLoop(
+      loop,
+      f.repository,
+      f.selected,
+      repositoryPolicy,
+      resumed!.initialHistory,
+    );
+    expect(q.initialHistory).toEqual([...cycle.initialHistory, intervening]);
+    await expect(queueStep(q, adapter())).rejects.toMatchObject({ reason: "author-failed" });
+    const charged = await adapter().history();
+    expect(charged.map((p) => p.id).slice(0, -1)).toEqual(
+      [...cycle.initialHistory, intervening].map((p) => p.id),
+    );
+    expect(charged.at(-1)).toMatchObject({
+      ordinal: charged.length,
+      item: `${f.selected.key}:2`,
+      role: "author",
+      outcome: "failed",
+    });
+    await stopCycle(loop, { ...cycle, initialHistory: charged }, "author-failed", 2, supervisor, {
+      ...repositoryPolicy,
+      async park() {
+        return selfAdapter.unparkInstructions;
+      },
+    });
+    const retained = await snapshot(resolve(loop.stateRoot, loop.run));
+    for (const current of [loop, f.loop]) {
+      const observed = await nextCycle(
+        current,
+        f.repository,
+        {
+          ...supervisor,
+          async currentMain() {
+            return repairSha;
+          },
+        },
+        {
+          ...repositoryPolicy,
+          async selectCandidates() {
+            return [{ key: "ISS-903", number: 903 }];
+          },
+        },
+      );
+      expect(observed!.initialHistory).toEqual(charged);
+    }
+    expect(await snapshot(resolve(loop.stateRoot, loop.run))).toEqual(retained);
+    expect(launches).toEqual(["author", "reviewer", "author"]);
+    expect(publications).toBe(1);
+    expect(comments).toHaveLength(2);
+  }
 });
 
 async function acceptedReplanFixture() {

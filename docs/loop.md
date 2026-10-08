@@ -1556,6 +1556,28 @@ persistence and cycle completion/stop/resume use that same complete history and
 validator. No record field, migration, backfill, renumbering or fingerprint waiver
 is introduced. Unrelated launches remain visible but spend no selected allowance.
 
+ISS-245 addresses HIST-PREFIX-1 recorded on #750: cycle number is selection
+order, not execution order. Before returning an earlier admitted hosted
+continuation, supervision reads the complete retained run history, including
+later cycles. Completion, stop reconciliation, composition and native charging
+use the same prefix accounting. Existing source/repair boundaries and special
+continuation configuration seeds remain pinned; new launches append after the
+complete accounting view, without rewriting old configuration or receipts.
+
+The only admitted non-prefix history is the demonstrated singleton: a common
+prefix P, one branch P plus a failed source author X, and a longer consistent
+spine omitting X. Native hosted-non-execution reservation, original stop and
+receipt, predecessor and successor attempts, source author attempt/terminal,
+participant terminal and resumed-cycle completion must bind that same run,
+issue and charge. Every retained history must fit those branches or their
+prefixes. Accounting retains the spine and appends X once; its effective
+ordinal is accounting order, not revised chronology. A later spine containing
+that projection keeps X and subsequent launches in place. Fresh terminal
+admission records retain X's complete original participant, source path and
+original/effective ordinals. Original histories, digests, participant terminals,
+author failures, usage, routing and spent allowances remain unchanged. Unknown
+forks refuse; restoration grants neither author-FAIL re-entry nor a new attempt.
+
 The recorded blocker is `m1-iss219-20260930T1030`, cycle 19 stop 1: 61 unrelated
 launches left ISS-234's attempt-2 candidate without its reviewer. A completed
 ordinary source budget stop at the old run-total boundary can resume its retained
@@ -1814,6 +1836,44 @@ and reviewer routing progress, and consumed worker retry, correction and
 resolution allowances. Changed runs/configurations cannot renew it. Historical
 claims, attempts, reservations, stops, configs, worktrees and receipts remain
 unchanged; the old integration remains terminal.
+
+ISS-245 provides a read-only preflight for a proposed v2 configuration:
+
+```sh
+node scripts/dogfood/admission-preflight.mjs /absolute/proposed-loop.json
+```
+
+The host redirects stdout to an evidence path outside runtime. The command
+observes remote main without fetching, reads its immutable local planning
+objects, and resolves the declared registered issue without requiring `ready`
+or selecting another issue. Missing local objects refuse. It validates the
+executor and invokes the same complete admission evaluator used immediately
+before the sole reservation write; it never composes a queue. No runtime,
+Git metadata, worker, supervisor, readiness or GitHub mutation is performed.
+
+Stdout contains one `dogfood-terminal-admission-preflight/v1` JSON receipt:
+UTC observation bounds, executor commit, repository/run/issue, exact config and
+packet digests, prospective selection/base/planning revision, retained evidence
+paths and digests, raw and effective history digests, restored-ordinal
+provenance, counts, inherited allowances and complete captured comment bodies.
+`eligible` and matching-reservation `replay` exit zero; `refused` exits nonzero
+with the refusal reason, including unavailable reads. Replay retains the saved
+binding and observations without another authority probe or reservation. A
+receipt is an observation, never an admission capability: actual admission
+repeats fresh checks and rejects changed inputs. It certifies neither scheduler
+readiness nor landing.
+
+This is candidate behavior until independent exact-head implementation PASS,
+local gates and executed final-head Ubuntu/Windows/macOS bootstrap green precede
+a separately authorized quiescent installation. After installation the host
+performs route B's separate check against that installed head and proposed v2
+config, capturing preflight while #750 remains unready. Only later host
+authority can restore readiness and resume the same run. A refusal leaves
+readiness and runtime alone; retain the receipt rather than resetting records,
+changing the run/key or blindly retrying. Rollback means withholding readiness
+and start, then separately authorized quiescent executor rollback, never
+reversing charges. ISS-245 supplies no authority comment, installation or live
+start permission; M2 still waits for ISS-234 to land and be installed.
 
 The successor enters ordinary creation at absolute attempt 3 for v1 or N+1 for v2 from
 `attemptBase = selected.base`, with the newly pinned brief. It never projects

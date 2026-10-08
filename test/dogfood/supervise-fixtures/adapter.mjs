@@ -170,6 +170,11 @@ export async function queueConfigFromLoop(
     },
     delivery: { requiredChecks, policy: { kind: "fixture" } },
   };
+  // ISS-245 supervision returns complete run accounting on resume. Like native
+  // composition, this synthetic queue must keep its original source boundary;
+  // its own already-recorded pair is not inherited history for a new source.
+  const ownParticipant = initialHistory.findIndex((participant) => participant.item === item.id);
+  if (ownParticipant >= 0) initialHistory = initialHistory.slice(0, ownParticipant);
   const config = {
     schemaVersion: "dogfood-bounded-queue-config/v1",
     controller,

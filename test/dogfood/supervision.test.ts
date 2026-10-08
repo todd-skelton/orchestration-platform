@@ -1044,7 +1044,10 @@ it.each(["park", "note", "completion"])(
       status: "complete",
       participants: 10,
     });
-    expect((await f.advance())!.initialHistory).toEqual(later.initialHistory);
+    // ISS-245 includes the just-completed queue even before its cycle receipt.
+    const charged = await independent.adapter.history();
+    expect(charged).toHaveLength(10);
+    expect((await f.advance())!.initialHistory).toEqual(charged);
     expect(
       f.calls.filter((call) => call.startsWith("launch:") && call.endsWith("/110")),
     ).toHaveLength(1);
@@ -1742,7 +1745,7 @@ it.each(["open", "closed", "completed", "item-stopped"])(
     const select = vi.spyOn(f.policy, "selectCandidates");
     for (let repeat = 0; repeat < 2; repeat++) {
       const resumed = (await nativeNextCycle(f.loop, f.executor, f.host, f.policy))!;
-      if (state === "open") expect(resumed).toEqual(cycle);
+      if (state === "open") expect(resumed).toEqual({ ...cycle, initialHistory: history });
       else {
         expect(resumed.selection).toMatchObject({
           cycle: 2,
