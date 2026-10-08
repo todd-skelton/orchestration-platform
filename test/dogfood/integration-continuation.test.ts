@@ -45,6 +45,7 @@ import { SELF_ROUTING } from "../../scripts/dogfood/routing.mjs";
 import { gitSetupAdapter } from "../../scripts/dogfood/setup-adapter.js";
 import type { SetupAdapter } from "../../scripts/dogfood/setup.js";
 import {
+  completeCycle,
   nextCycle,
   persistCycle,
   reconcilePendingStop,
@@ -866,20 +867,269 @@ it("ISS-245 restores only the evidenced charge, reserves once, and retains it th
   expect((await f.compose()).initialHistory).toEqual(view.history);
   expect(f.calls).toHaveLength(calls);
   expect(await readFile(f.reservation)).toEqual(bytes);
-  // The old short branch stays unchanged while a later cycle owns the projection.
-  const later = [
-    ...view.history,
-    participant(view.history.length + 1, "ISS-903:1", "source", "author", "passed"),
-  ];
-  const selected = { cycle: 5, key: "ISS-903", number: 903, base: f.base };
-  await f.put(f.runState, "cycle-5-selected", selected);
-  await f.put(f.runState, "cycle-5-complete", { selection: selected, history: later });
-  const restarted = await retainedRunHistory(f.loop);
-  expect(restarted.history).toEqual(later);
-  expect(restarted.history.filter((p) => p.id === f.x.id)).toHaveLength(1);
-  expect(restarted.restored[0]!.effectiveOrdinal).toBe(f.history.length + 1);
+  const reservation = JSON.parse(bytes.toString("utf8"));
+  expect(reservation).toMatchObject({
+    initialHistory: view.history,
+    inheritedWorkerRetry: true,
+    correctionUsed: true,
+    resolutionUsed: true,
+  });
+  const item = queue.items[0]!;
+  expect(item.id).toBe(`${KEY}:4`);
+  const launches: { role: string; id: string }[] = [];
+  const effects: string[] = [];
+  const waiting = new Set(["author", "reviewer"]);
+  const setup = gitSetupAdapter({
+    gitExecutable: f.gitExecutable,
+    resolveLauncher: async () => ({ executable: process.execPath, prefixArgs: [] }),
+    async install(_launcher, _args, cwd) {
+      await mkdir(resolve(cwd, "node_modules"), { recursive: true });
+      await writeFile(resolve(cwd, "node_modules/.modules.yaml"), "synthetic: true\n");
+      return "succeeded";
+    },
+  });
+  const native: Adapter = {
+    async preflight() {},
+    git: (cwd, args) => f.git(args, cwd),
+    async launch(role, config) {
+      const id = randomUUID();
+      launches.push({ role, id });
+      if (role === "author") {
+        expect(await f.git(["rev-parse", "HEAD"], config.worktree)).toBe(f.selected.base);
+        await appendFile(resolve(config.worktree, "docs/loop.md"), "\nSynthetic fresh attempt.\n");
+      }
+      const trace = resolve(config.stateDirectory, `${role}.jsonl`);
+      await writeFile(trace, "synthetic execution evidence\n");
+      return { id, pid: launches.length, trace, launchedAt: 1 };
+    },
+    async observe(role, config, attempt) {
+      if (waiting.has(role)) return { id: attempt.id, status: "running" };
+      const head =
+        role === "author" ? config.base : await f.git(["rev-parse", "HEAD"], config.worktree);
+      return {
+        id: attempt.id,
+        status: "passed",
+        head,
+        summary:
+          role === "author"
+            ? ""
+            : JSON.stringify({
+                run: RUN,
+                role,
+                head,
+                verdict: "PASS",
+                findings: [],
+                g0: "No; synthetic smallest implementation.",
+              }),
+      };
+    },
+    async checks() {
+      throw new Error("source must not publish");
+    },
+  };
+  const delivery = githubDeliveryAdapter();
+  delivery.verifyWorkspace = async (config, head) =>
+    (await f.git(["rev-parse", "HEAD"], config.worktree)) === head;
+  delivery.runGate = async (_config, name) => {
+    effects.push(`gate:${name}`);
+    return "passed";
+  };
+  let publishedHead = "";
+  let merged = false;
+  let cleaned = false;
+  delivery.observePublication = async (config, plan, planDigest) =>
+    publishedHead
+      ? {
+          state: "confirmed",
+          value: {
+            number: 9006,
+            url: "https://github.com/fixture/repository/pull/9006",
+            head: publishedHead,
+            repository: config.repository,
+            sourceBranch: plan.sourceBranch,
+            baseBranch: plan.baseBranch,
+            title: plan.title,
+            body: plan.body,
+            planDigest,
+          },
+        }
+      : { state: "needs-mutation", target: "absent" };
+  delivery.publish = async (config, plan) => {
+    expect(config.refresh).toBeUndefined();
+    expect(plan.sourceBranch).toBe(`codex/${KEY.toLowerCase()}-attempt-4`);
+    effects.push("publish");
+    publishedHead = config.candidateHead;
+    throw new Error("synthetic lost publication response");
+  };
+  delivery.checks = async (config) => ({
+    head: publishedHead,
+    checks: config.requiredChecks.map((name) => ({
+      name,
+      bucket: "pass",
+      link: "https://example.test/synthetic-check",
+    })),
+  });
+  delivery.observeMerge = async () =>
+    merged
+      ? {
+          state: "confirmed",
+          value: { number: 9006, head: publishedHead, mergeCommit: "e".repeat(40) },
+        }
+      : { state: "needs-mutation" };
+  delivery.merge = async () => {
+    effects.push("merge");
+    merged = true;
+  };
+  delivery.observeCleanup = async (_config, plan) =>
+    cleaned ? { state: "confirmed", value: plan } : { state: "needs-mutation" };
+  delivery.cleanup = async () => {
+    effects.push("cleanup");
+    cleaned = true;
+  };
+  const adapter = (config: typeof queue) =>
+    repositoryQueueAdapter(config, f.repository, {
+      native,
+      setup,
+      delivery,
+      gitExecutable: f.gitExecutable,
+      repository: f.policy,
+      deliveryPolicy: {
+        async plan(config) {
+          return {
+            gates: { beforeMirror: ["typecheck", "format:check", "test"], afterMirror: [] },
+            drafts: [],
+            publication: {
+              sourceBranch: `codex/${KEY.toLowerCase()}-attempt-4`,
+              baseBranch: "main",
+              title: "Synthetic fresh successor",
+              body: "Synthetic acceptance",
+              draft: true,
+            },
+            mergePolicy: {},
+            cleanup: {
+              worktrees: [config.worktree, config.reviewWorktree],
+              branch: config.localBranch!,
+            },
+          };
+        },
+      },
+    });
+  let closed = false;
+  const supervisor: SupervisionAdapter = {
+    currentMain: async () => f.selected.base,
+    issue: async () => ({ key: KEY, state: closed ? "CLOSED" : "OPEN", labels: [], comments: [] }),
+    async close() {
+      effects.push("close");
+      closed = true;
+    },
+    async removeReady() {
+      throw new Error("successor replay must not change readiness");
+    },
+    async comment() {
+      throw new Error("successful successor must not post a stop");
+    },
+  };
+  const policy = {
+    ...f.policy,
+    selectCandidates: () => (closed ? [] : [{ key: KEY, number: NUMBER }]),
+  };
+  const cycle = (await nextCycle(f.loop, f.repository, supervisor, policy))!;
+  expect(cycle).toEqual({ selection: { cycle: 5, ...f.selected }, initialHistory: view.history });
+  await persistCycle(f.loop, cycle);
+  const read = async (directory: string, name: string) =>
+    JSON.parse(await readFile(resolve(directory, `${name}.json`), "utf8"));
+  const assertAccounting = async (newCharges: number) => {
+    const history = (await retainedRunHistory(f.loop)).history;
+    expect(history.slice(0, view.history.length)).toEqual(view.history);
+    expect(history.map((p) => p.id)).toEqual([
+      ...view.history.map((p) => p.id),
+      ...launches.slice(0, newCharges).map((p) => p.id),
+    ]);
+    expect(history.map((p) => p.ordinal)).toEqual(history.map((_p, i) => i + 1));
+    expect(history.filter((p) => p.item.startsWith("ISS-901:"))).toHaveLength(4);
+    expect(history.filter((p) => p.item.startsWith(`${KEY}:`))).toHaveLength(8 + newCharges);
+    expect(await read(queue.stateDirectory, `participant-${view.history.length}-terminal`)).toEqual(
+      { ...f.x, ordinal: view.history.length },
+    );
+    const attempt = await read(queue.stateDirectory, "attempt");
+    expect(attempt.authorFailures).toEqual(reservation.authorFailures);
+    expect(attempt.retries).toBe(1);
+    return history;
+  };
+  // Real source dispatch seeds the restored row in a new queue. Each subsequent
+  // step reconstructs composition and its adapter from the retained lifecycle.
+  await expect(queueStep(queue, adapter(queue))).resolves.toMatchObject({
+    status: "observing-author",
+  });
+  const pinned = await readFile(resolve(item.source.stateDirectory, "config.json"));
+  await assertAccounting(0);
+  const restart = async () => {
+    const saved = await nextCycle(f.loop, f.repository, supervisor, policy);
+    expect(saved?.selection).toEqual(cycle.selection);
+    const config = await f.compose();
+    expect(config).toEqual(queue);
+    return queueStep(config, adapter(config));
+  };
+  await expect(restart()).resolves.toMatchObject({ status: "observing-author" });
+  expect(launches.map((p) => p.role)).toEqual(["author"]);
+  waiting.delete("author");
+  await expect(restart()).resolves.toMatchObject({ status: "observing-reviewer" });
+  await assertAccounting(1);
+  await expect(restart()).resolves.toMatchObject({ status: "observing-reviewer" });
+  expect(launches.map((p) => p.role)).toEqual(["author", "reviewer"]);
+  expect(effects).toEqual([]);
+  waiting.delete("reviewer");
+  await expect(restart()).resolves.toMatchObject({
+    status: "complete",
+    participants: view.history.length + 2,
+  });
+  const history = await assertAccounting(2);
+  expect((await read(queue.stateDirectory, "attempt")).phase).toBe("complete");
+  await completeCycle(f.loop, cycle, history, supervisor);
+  expect(await read(f.runState, "cycle-5-complete")).toEqual({
+    selection: cycle.selection,
+    history,
+  });
+  expect(effects).toEqual([
+    "gate:typecheck",
+    "gate:format:check",
+    "gate:test",
+    "publish",
+    "merge",
+    "cleanup",
+    "close",
+  ]);
+  const completed = await snapshot(f.loop.stateRoot);
+  // Both direct queue replay and ordinary supervision replay use native output;
+  // the unchanged P+X branch remains admissible after new launches and completion.
+  const { terminalAttemptAdmission: omitted, ...ordinary } = f.loop;
+  for (const loop of [f.loop, ordinary, f.loop]) {
+    expect(await nextCycle(loop, f.repository, supervisor, policy)).toBeUndefined();
+    const config = await f.compose();
+    await expect(queueStep(config, adapter(config))).resolves.toMatchObject({
+      status: "complete",
+      participants: history.length,
+    });
+    const restarted = await retainedRunHistory(loop);
+    expect(restarted.history).toEqual(history);
+    expect(restarted.restored).toEqual(view.restored);
+    expect(await snapshot(f.loop.stateRoot)).toEqual(completed);
+  }
+  expect(launches.map((p) => p.role)).toEqual(["author", "reviewer"]);
+  expect(effects).toHaveLength(7);
+  expect(f.calls).toHaveLength(calls);
+  expect(await readFile(f.reservation)).toEqual(bytes);
+  expect(await readFile(resolve(item.source.stateDirectory, "config.json"))).toEqual(pinned);
   const after = await snapshot(f.runState);
   for (const [path, bytes] of before) expect(after.get(path)).toEqual(bytes);
+  for (const path of after.keys())
+    if (!before.has(path))
+      expect(
+        path.startsWith(`${queue.stateDirectory}${sep}`) ||
+          path === resolve(f.runState, "cycle-5-selected.json") ||
+          path === resolve(f.runState, "cycle-5-complete.json"),
+        path,
+      ).toBe(true);
 });
 
 it("ISS-245 historical fork reaches fresh v2 admission with every proved charge", async () => {
