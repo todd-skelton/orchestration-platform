@@ -391,6 +391,7 @@ export async function nextCycle(
   validateExecutor: () => Promise<unknown> = () => validateLoopExecutor(config, executingRoot),
 ): Promise<SupervisedCycle | undefined> {
   const directory = stateDirectory(config);
+  const accounting = await queue.retainedRunHistory(config);
   const detourDirectory = resolve(directory, "prerequisite");
   const detour = (await optionalRecord(detourDirectory, "admission")) as
     SupervisedCycle | typeof ABSENT;
@@ -428,7 +429,7 @@ export async function nextCycle(
         }
         await stopCycle(
           config,
-          { ...detour, initialHistory: failed.history },
+          { ...detour, initialHistory: accounting.retain(failed.history) },
           "author-failed",
           failed.attempts,
           adapter,
@@ -446,7 +447,7 @@ export async function nextCycle(
       const observed = await adapter.issue(config, detour.selection.number);
       assertIssue(detour.selection, observed);
       if (stoppedHistory || observed.state === "CLOSED") {
-        let history = stoppedHistory ?? detour.initialHistory;
+        let history = accounting.retain(stoppedHistory ?? detour.initialHistory);
         if (!stoppedHistory)
           for (let attempt = 2; attempt <= config.attemptCeiling; attempt++) {
             const current = await readQueueHistory({
@@ -457,7 +458,7 @@ export async function nextCycle(
               nativeLaunchCeiling: config.nativeLaunchCeiling,
               initialHistory: [],
             });
-            if (current.length > history.length) history = current;
+            history = accounting.retain(current);
           }
         await record(detourDirectory, `cycle-${detour.selection.cycle}-complete`, {
           selection: detour.selection,
@@ -479,7 +480,9 @@ export async function nextCycle(
   } else if (config.blockedCycleResume) throw new QueueBlocked("prerequisite-not-admitted");
   let cycle = 1;
   let declaration = config.prerequisite;
-  let initialHistory: QueueParticipant[] = [];
+  // Cycle numbers are selection order, not execution order. Read later saved
+  // completions before an admitted earlier cycle can return to dispatch.
+  let initialHistory = accounting.history;
   for (;;) {
     const selected = await optionalRecord(directory, `cycle-${cycle}-selected`);
     const completed = await optionalRecord(directory, `cycle-${cycle}-complete`);
@@ -501,7 +504,7 @@ export async function nextCycle(
         declaration = undefined;
       // ISS-231 can resume an earlier cycle after later cycles have stopped.
       // Their older receipts must not refund that continuation's launches.
-      if (completed.history.length >= initialHistory.length) initialHistory = completed.history;
+      initialHistory = accounting.retain(completed.history);
       cycle += 1;
       continue;
     }
@@ -509,7 +512,7 @@ export async function nextCycle(
       if (!validSelection(selected, cycle))
         throw new QueueBlocked(`malformed-supervision-record:cycle-${cycle}-selected`);
       if (releasedHistory && cycle === detourPrerequisiteCycle(detour))
-        initialHistory = releasedHistory;
+        initialHistory = accounting.retain(releasedHistory);
       const ordinaryFailure = declaration && (await retainedSourceFailure(config, selected));
       if (ordinaryFailure) declaration = undefined;
       if (declaration && !(await completedItemStop(directory, cycle, selected)))
@@ -551,7 +554,7 @@ export async function nextCycle(
       if (stoppedHistory) {
         declaration = undefined;
         validateHistory(stoppedHistory, config.nativeLaunchCeiling);
-        if (stoppedHistory.length >= initialHistory.length) initialHistory = stoppedHistory;
+        initialHistory = accounting.retain(stoppedHistory);
         cycle += 1;
         continue;
       }
@@ -574,7 +577,7 @@ export async function nextCycle(
           );
           if (prior !== ABSENT) {
             validateHistory(prior.history, config.nativeLaunchCeiling);
-            if (prior.history.length > initialHistory.length) initialHistory = prior.history;
+            initialHistory = accounting.retain(prior.history);
           }
           slugs.push(continuationSlug(config.acceptedReplan));
         }
@@ -598,7 +601,7 @@ export async function nextCycle(
             nativeLaunchCeiling: config.nativeLaunchCeiling,
             initialHistory,
           });
-          if (history.length >= initialHistory.length) initialHistory = history;
+          initialHistory = accounting.retain(history);
         }
         await record(directory, `cycle-${cycle}-complete`, {
           selection: selected,
@@ -610,7 +613,7 @@ export async function nextCycle(
       if (observed.state !== "OPEN") throw new QueueBlocked("issue-observation-unavailable");
       const failed = await retainedSourceFailure(config, selected);
       if (failed) {
-        const current = { selection: selected, initialHistory: failed.history };
+        const current = { selection: selected, initialHistory: accounting.retain(failed.history) };
         let authorStop: number | undefined;
         // Finish pending notes, including an upgrade's later pilot stop. Replay the
         // original author marker even if its old run-scoped completion exists.
@@ -643,7 +646,7 @@ export async function nextCycle(
           failed.diagnostics,
           authorStop,
         );
-        initialHistory = failed.history;
+        initialHistory = current.initialHistory;
         cycle += 1;
         continue;
       }
@@ -758,6 +761,7 @@ export async function completeCycle(
   adapter: SupervisionAdapter,
 ) {
   validateHistory(history, config.nativeLaunchCeiling);
+  history = (await queue.retainedRunHistory(config, [history])).history;
   let observed = await adapter.issue(config, cycle.selection.number);
   assertIssue(cycle.selection, observed);
   if (observed.state === "OPEN") {
@@ -946,6 +950,10 @@ export async function stopCycle(
       `cycle-${cycle.selection.cycle}-stop-${stop}-complete`,
     );
     if (current === ABSENT) {
+      cycle = {
+        ...cycle,
+        initialHistory: (await queue.retainedRunHistory(config, [cycle.initialHistory])).history,
+      };
       intent = {
         selection: cycle.selection,
         stop,
@@ -1074,7 +1082,12 @@ export async function reconcilePendingStop(
     if (completed !== ABSENT) continue;
     const scope = await stopCycle(
       config,
-      { ...cycle, initialHistory: intent.history },
+      {
+        ...cycle,
+        initialHistory: (
+          await queue.retainedRunHistory(config, [cycle.initialHistory, intent.history])
+        ).history,
+      },
       intent.reason,
       intent.attempts,
       adapter,

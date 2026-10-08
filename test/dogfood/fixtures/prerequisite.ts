@@ -36,6 +36,17 @@ export async function prerequisiteFixture(timing?: PhaseTiming) {
     participant.stage = index === 2 ? "refresh" : "source";
     participant.outcome = "passed";
   }
+  // ISS-245 inventories every retained copy. Finish constructing this synthetic
+  // prefix consistently before executing the failed source, rather than leaving
+  // the source-failure fixture's original identities in its earlier completion.
+  const priorCompletion = resolve(f.runState, "cycle-1-complete.json");
+  await writeFile(
+    priorCompletion,
+    JSON.stringify({
+      ...JSON.parse(await readFile(priorCompletion, "utf8")),
+      history: f.current.config.initialHistory,
+    }),
+  );
   f.loop.nativeLaunchCeiling = 64;
   await f.fail();
   const history = [

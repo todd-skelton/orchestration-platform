@@ -386,7 +386,7 @@ it("ISS-220 queued confirmation leaves a pending deployment hook before cycle co
   const hook = f.repository.afterMerge(f.retained);
   await entered.promise;
   expect(f.effects.hook).toBe(1);
-  expect(await f.next()).toEqual(f.cycle);
+  expect(await f.next()).toEqual({ ...f.cycle, initialHistory: f.history });
   await expect(
     readFile(resolve(f.loop.stateRoot, f.loop.run, "cycle-1-complete.json")),
   ).rejects.toMatchObject({ code: "ENOENT" });
@@ -403,19 +403,19 @@ it.each([false, true])(
   async (localBranch) => {
     const f = await fixture(localBranch);
     const preserved = await bytes(f.directory);
-    expect(await f.next()).toEqual(f.cycle);
+    expect(await f.next()).toEqual({ ...f.cycle, initialHistory: f.history });
     const hook = vi
       .spyOn(f.repository, "afterMerge")
       .mockRejectedValueOnce(new Error("synthetic interruption in hook"));
     const retained = await retainedPostMergeDelivery(f.loop, f.cycle.selection);
     expect(retained).toBeDefined();
     await expect(f.repository.afterMerge(retained!)).rejects.toThrow("synthetic interruption");
-    expect(await f.next()).toEqual(f.cycle);
+    expect(await f.next()).toEqual({ ...f.cycle, initialHistory: f.history });
     hook.mockRestore();
     const replay = await retainedPostMergeDelivery(f.loop, f.cycle.selection);
     await f.repository.afterMerge(replay!);
     // Interruption after hook, before cycle receipt, repeats only that hook (rule 9).
-    expect(await f.next()).toEqual(f.cycle);
+    expect(await f.next()).toEqual({ ...f.cycle, initialHistory: f.history });
     await f.repository.afterMerge((await retainedPostMergeDelivery(f.loop, f.cycle.selection))!);
     await completeCycle(f.loop, f.cycle, replay!.history, f.supervisor);
     expect(await f.next()).toBeUndefined();
@@ -440,7 +440,7 @@ it.each(["refresh", "recovery"] as const)(
   async (mode) => {
     const f = await fixture(true, mode);
     const preserved = await bytes(f.directory);
-    expect(await f.next()).toEqual(f.cycle);
+    expect(await f.next()).toEqual({ ...f.cycle, initialHistory: f.history });
     const retained = await retainedPostMergeDelivery(f.loop, f.cycle.selection);
     expect(retained!.config.stateDirectory).toBe(f.source);
     await f.repository.afterMerge(retained!);
