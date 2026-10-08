@@ -2293,6 +2293,37 @@ it("stops unavailable or moving main before gates and retains the reviewed inter
   ).toHaveLength(2);
 });
 
+it.each(["summary", "candidate", "reviewer", "run"])(
+  "ISS-234 native refresh cannot advance main on an unbound passed %s",
+  async (control) => {
+    const f = await fixture();
+    await f.advanceMain();
+    f.setMoving();
+    await expect(f.deliver()).rejects.toThrow("current-main-moved");
+    const active = JSON.parse(
+      await readFile(resolve(f.sourceState, "native-refresh.json"), "utf8"),
+    );
+    const name =
+      control === "candidate"
+        ? "candidate"
+        : control === "reviewer"
+          ? "reviewer-attempt"
+          : "reviewer-terminal";
+    const path = resolve(active.directory, `${name}.json`);
+    const value = JSON.parse(await readFile(path, "utf8"));
+    if (control === "summary") value.summary = "{}";
+    if (control === "candidate") value.head = f.head;
+    if (control === "reviewer") value.id = "foreign-reviewer";
+    if (control === "run")
+      value.summary = JSON.stringify({ ...JSON.parse(value.summary), run: "foreign-run" });
+    await writeFile(path, JSON.stringify(value));
+    await expect(f.deliver()).rejects.toThrow("refresh-review-failed");
+    expect(f.gateHeads).toEqual([]);
+    expect(f.prompts).toHaveLength(1);
+    expect(f.commands.filter((args) => args[0] === "rebase")).toHaveLength(1);
+  },
+);
+
 it("retains a failed delta review and stops without starting another implementation", async () => {
   const f = await fixture();
   await f.advanceMain();

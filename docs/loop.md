@@ -1733,11 +1733,19 @@ Conflict-free native refresh precedes the configured gates and pinned brief's
 focused test, whose package and paths are resolved in the exact candidate tree.
 One independent DELTA challenges the retained FAIL, which remains unchanged.
 There is no author, correction, attempt increment or ceiling increase. Only the
-new PASS proceeds through ordinary delivery and hosted checks. Later main
-movement or conflict requires another independent host decision, not a second
-reviewer. Candidate failures park; host, environment and unknown failures do
-not. Post-reservation stops stay in `verification-stop.json`; replay cannot
-renew the continuation even after a host stop. Old records remain unchanged.
+new PASS proceeds through ordinary delivery and hosted checks. ISS-234 addresses
+VO-MAIN-1: after that bound PASS, compatible main movement before publication
+uses native refresh again, including a retained `current-main-moved` stop before
+queue acceptance. Each new head receives fresh native gates, the pinned focused
+test and an independent integration DELTA within the same reservation and issue
+launch allowance. In-flight review resumes; another movement follows native
+refresh's post-review main recheck. The accepted source and earlier verdicts stay
+historical, and publication, publication intent and cleanup keep their ordinary
+reconciliation. Conflicts and all non-movement stops remain spent: candidate
+failures park; host, environment and unknown failures do not. The original
+`verification-stop.json` remains unchanged; a subsequent terminal stop is retained
+in the source lifecycle's `verification-stop.json` and takes precedence. No author,
+new verification grant, reservation or recovery allowance is admitted.
 This supplies no live grant, installation, issue mutation, preserved-run start
 or product ownership authority.
 
