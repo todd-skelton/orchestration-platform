@@ -171,7 +171,7 @@ export function continuationSlug(packet: AcceptedReplan) {
 
 // ISS-215: a host-interpreted delegation for one ordinary 2-to-3 successor.
 // These pins are observations to match, not authority inferred from URL syntax.
-export interface TerminalAttemptAdmission {
+interface IntegrationTerminalAdmission {
   schemaVersion: "dogfood-terminal-attempt-admission/v1";
   repository: string;
   issueKey: string;
@@ -197,14 +197,35 @@ export interface TerminalAttemptAdmission {
   authorityBodySha256: string;
 }
 
+export type TerminalAttemptAdmission =
+  | IntegrationTerminalAdmission
+  | (Omit<
+      IntegrationTerminalAdmission,
+      | "schemaVersion"
+      | "claim"
+      | "claimSha256"
+      | "priorAbsoluteAttempt"
+      | "nextAbsoluteAttempt"
+      | "priorPublication"
+    > & {
+      schemaVersion: "dogfood-terminal-attempt-admission/v2";
+      terminalKind: "conflict-successor";
+      terminalHead: string;
+      priorAbsoluteAttempt: 2 | 3;
+      nextAbsoluteAttempt: 3 | 4;
+      priorPublication: null;
+    });
+
 export function validateTerminalAttemptAdmission(
   value: unknown,
 ): asserts value is TerminalAttemptAdmission {
   const reason = "terminal-attempt-admission-mismatch";
+  const successor =
+    (value as TerminalAttemptAdmission)?.schemaVersion === "dogfood-terminal-attempt-admission/v2";
   requireThat(
     exact(
       value,
-      "schemaVersion repository issueKey issueUrl run priorAbsoluteAttempt nextAbsoluteAttempt terminalMarker terminalReceiptUrl claim claimSha256 terminalHistoryDigest priorPublication authorityUrl authorityAuthor authorityBodySha256",
+      `schemaVersion repository issueKey issueUrl run priorAbsoluteAttempt nextAbsoluteAttempt terminalMarker terminalReceiptUrl terminalHistoryDigest priorPublication authorityUrl authorityAuthor authorityBodySha256 ${successor ? "terminalKind terminalHead" : "claim claimSha256"}`,
     ),
     reason,
   );
@@ -212,7 +233,7 @@ export function validateTerminalAttemptAdmission(
     typeof url === "string" &&
     /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/issues\/[1-9]\d*#issuecomment-[1-9]\d*$/.test(url);
   requireThat(
-    value.schemaVersion === "dogfood-terminal-attempt-admission/v1" &&
+    (successor || value.schemaVersion === "dogfood-terminal-attempt-admission/v1") &&
       typeof value.repository === "string" &&
       /^[\w.-]+\/[\w.-]+$/.test(value.repository) &&
       name(value.issueKey) &&
@@ -220,22 +241,29 @@ export function validateTerminalAttemptAdmission(
       typeof value.issueUrl === "string" &&
       value.issueUrl.startsWith(`https://github.com/${value.repository}/issues/`) &&
       /^[1-9]\d*$/.test(value.issueUrl.split("/").at(-1)!) &&
-      value.priorAbsoluteAttempt === 2 &&
-      value.nextAbsoluteAttempt === 3 &&
+      (successor
+        ? [2, 3].includes(value.priorAbsoluteAttempt) &&
+          value.nextAbsoluteAttempt === value.priorAbsoluteAttempt + 1 &&
+          value.terminalKind === "conflict-successor" &&
+          sha(value.terminalHead) &&
+          value.priorPublication === null
+        : value.priorAbsoluteAttempt === 2 && value.nextAbsoluteAttempt === 3) &&
       typeof value.terminalMarker === "string" &&
       value.terminalMarker.startsWith(`loop-stop:${value.run}:`) &&
       /^[1-9]\d*:[1-9]\d*$/.test(value.terminalMarker.slice(`loop-stop:${value.run}:`.length)) &&
       comment(value.terminalReceiptUrl) &&
       value.terminalReceiptUrl.startsWith(`${value.issueUrl}#`) &&
-      typeof value.claim === "string" &&
-      /^integration-continuation-[a-f0-9]{64}$/.test(value.claim) &&
-      digest(value.claimSha256) &&
+      (successor ||
+        (typeof value.claim === "string" &&
+          /^integration-continuation-[a-f0-9]{64}$/.test(value.claim) &&
+          digest(value.claimSha256))) &&
       digest(value.terminalHistoryDigest) &&
       comment(value.authorityUrl) &&
       text(value.authorityAuthor) &&
       digest(value.authorityBodySha256),
     reason,
   );
+  if (successor) return;
   const p = value.priorPublication;
   requireThat(
     exact(p, "number url sourceBranch head state isDraft") &&
@@ -250,7 +278,7 @@ export function validateTerminalAttemptAdmission(
   );
 }
 
-export async function observeTerminalPublication(packet: TerminalAttemptAdmission) {
+export async function observeTerminalPublication(packet: IntegrationTerminalAdmission) {
   const { stdout } = await promisify(execFile)("gh", [
     "pr",
     "view",

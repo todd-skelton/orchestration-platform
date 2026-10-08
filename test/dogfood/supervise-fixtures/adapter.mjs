@@ -15,6 +15,7 @@ export {
   currentCandidateAttempt,
   hasStartedDelivery,
   retainedPostMergeDelivery,
+  queueDigest,
   queueStep,
   validateLoopConfig,
 } from "../../../scripts/dogfood/queue.ts";

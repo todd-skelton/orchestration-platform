@@ -37,6 +37,11 @@ export async function queueConfigFromLoop(...args) {
       return url === value.authority.url ? value.authority : value.receipt;
     },
     async () => (await read()).publication,
+    async () => {
+      const value = await update((v) => v.observations.push("issue"));
+      if (value.unavailable) throw new Error("synthetic unavailable issue");
+      return value.issue;
+    },
   );
   // A host interruption between the written reservation and the first setup step.
   if ((await read()).interrupt) throw new Error("synthetic host interruption after reservation");
@@ -116,17 +121,58 @@ export function repositoryQueueAdapter(config, root, options) {
       preflight: async () => {},
       waitForProvider: async () => {},
       async launch(role, source) {
-        await update((v) => v.launches.push(role));
-        const trace = resolve(source.stateDirectory, "synthetic-author.jsonl");
+        const value = await update((v) => v.launches.push(role));
+        if (value.fullReview && role === "author") {
+          if (
+            (await git(options.gitExecutable, source.worktree, ["rev-parse", "HEAD"])) !==
+            value.expectedBase
+          )
+            throw new Error("successor did not start from current main");
+          await writeFile(
+            resolve(source.worktree, "feature.txt"),
+            "Synthetic fresh implementation\n",
+          );
+        }
+        const trace = resolve(source.stateDirectory, `synthetic-${role}.jsonl`);
         await writeFile(trace, "synthetic execution evidence\n");
         return { id: randomUUID(), pid: 111, launchedAt: 1, trace };
       },
-      observe: async (_role, source, attempt) => ({
-        id: attempt.id,
-        head: source.base,
-        status: "failed",
-        summary: "Synthetic author FAIL",
-      }),
+      observe: async (role, source, attempt) => {
+        if (!(await read()).fullReview)
+          return {
+            id: attempt.id,
+            head: source.base,
+            status: "failed",
+            summary: "Synthetic author FAIL",
+          };
+        const head =
+          role === "author"
+            ? source.base
+            : await git(options.gitExecutable, source.worktree, ["rev-parse", "HEAD"]);
+        return {
+          id: attempt.id,
+          head,
+          status: role === "author" ? "passed" : "failed",
+          summary:
+            role === "author"
+              ? ""
+              : JSON.stringify({
+                  run: source.run,
+                  role,
+                  head,
+                  verdict: "FAIL",
+                  findings: [
+                    {
+                      file: "feature.txt",
+                      line: 1,
+                      severity: "blocking",
+                      text: "Synthetic independent rejection",
+                    },
+                  ],
+                  g0: "No; synthetic bounded example.",
+                }),
+        };
+      },
       checks: () => {
         throw new Error("failed author cannot run hosted checks");
       },
