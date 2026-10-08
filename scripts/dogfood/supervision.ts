@@ -190,16 +190,18 @@ async function completedItemStop(
     if (config?.verificationOnly?.issueKey === selection.key) {
       const binding = await queue.verificationStop(config, selection);
       if (binding?.stop.marker === intent.marker) continue;
+      if (intent.reason === "current-main-moved") {
+        // A later stop owns disposition, including ordinary candidate parking.
+        // Visit it before deciding whether this historical movement can resume.
+        if ((await optionalRecord(directory, `cycle-${cycle}-stop-${stop + 1}`)) !== ABSENT)
+          continue;
+        if (await queue.verificationMovementContinuation(config, selection)) continue;
+      }
     }
     if (intent.reason !== "author-failed" && isItemStopReason(intent.reason))
       return completed.history as QueueParticipant[];
     if (config?.verificationOnly?.issueKey === selection.key) {
-      const terminal = await optionalRecord(
-        resolve(config.verificationOnly.attemptDirectory, "verification"),
-        "verification-stop",
-      );
-      if (terminal !== ABSENT && terminal.reason === intent.reason)
-        throw new QueueBlocked(terminal.reason, terminal.diagnostics);
+      await queue.verificationMovementContinuation(config, selection);
     }
   }
 }
@@ -999,13 +1001,8 @@ export async function stopCycle(
     const reserved = verification;
     if (reserved !== ABSENT && reserved.stop.marker !== intent.marker) {
       const continuation = resolve(config.verificationOnly.attemptDirectory, "verification");
-      if ((await optionalRecord(continuation, "verification-stop")) === ABSENT) {
-        await mkdir(continuation, { recursive: true });
-        await record(continuation, "verification-stop", {
-          reason: intent.reason,
-          ...(diagnostics ? { diagnostics } : {}),
-        });
-      }
+      await mkdir(continuation, { recursive: true });
+      await queue.retainVerificationStop(reserved.queue, intent.reason, diagnostics);
     }
   }
   const scope =
@@ -1101,6 +1098,11 @@ export async function reconcilePendingStop(
     if (config.verificationOnly?.issueKey === cycle.selection.key) {
       const binding = await queue.verificationStop(config, cycle.selection);
       if (binding?.stop.marker === intent.marker) return undefined;
+      if (
+        intent.reason === "current-main-moved" &&
+        (await queue.verificationMovementContinuation(config, cycle.selection))
+      )
+        return undefined;
     }
     if (
       scope === "item" &&

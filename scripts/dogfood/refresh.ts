@@ -67,6 +67,43 @@ interface Refresh {
   publicationRefresh?: PublicationRefresh;
 }
 
+// ISS-234: movement consumes a completed, bound PASS, not terminal-file presence.
+export async function refreshReview(
+  source: Config,
+  directory: string,
+  head: string,
+  id?: string,
+  verdict: "PASS" | "FAIL" = "PASS",
+) {
+  const [pinned, candidate, reviewer, terminal] = await Promise.all(
+    ["config", "candidate", "reviewer-attempt", "reviewer-terminal"].map((name) =>
+      readOptional(resolve(directory, `${name}.json`)),
+    ),
+  );
+  if (
+    !/^[a-f0-9]{40}$/.test(head) ||
+    pinned?.config?.run !== source.run ||
+    pinned.config.issue !== source.issue ||
+    pinned.config.repository !== source.repository ||
+    pinned.config.stateDirectory !== directory ||
+    pinned.config.worktree !== source.worktree ||
+    pinned.config.reviewWorktree !== source.reviewWorktree ||
+    candidate?.head !== head ||
+    typeof reviewer?.id !== "string" ||
+    terminal?.id !== reviewer.id ||
+    (id !== undefined && terminal.id !== id) ||
+    terminal.status !== (verdict === "PASS" ? "passed" : "failed") ||
+    terminal.head !== head
+  )
+    return undefined;
+  try {
+    const review = parseReview(terminal.summary, source.run, head);
+    return review.verdict === verdict ? terminal : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 // ISS-148: one saved integration at a time. Prior source and delivery records remain evidence.
 export async function refreshDelivery(
   delivery: DeliveryConfig,
@@ -134,7 +171,11 @@ export async function refreshDelivery(
   }
   if ((!published && !publishing && !complete) || dirty) {
     const main = await currentMain(git);
-    if (continuation && (await git(["merge-base", continuation.main, main])) !== continuation.main)
+    if (
+      continuation &&
+      (await git(["merge-base", continuation.main, main]).catch(() => undefined)) !==
+        continuation.main
+    )
       throw new QueueBlocked("current-main-incompatible");
     if (dirty && (await git(["merge-base", main, published.head])) === main)
       throw new QueueBlocked(
@@ -150,6 +191,8 @@ export async function refreshDelivery(
       await save(origin, "native-refresh", active);
     }
     if (!active || (active.head && reviewed?.status === "passed" && main !== active.main)) {
+      if (active && !(await refreshReview(source, directory, active.head!, reviewed.id)))
+        throw new QueueBlocked("refresh-review-failed");
       const previousHead = active?.head ?? delivery.candidateHead;
       let ancestor;
       try {
