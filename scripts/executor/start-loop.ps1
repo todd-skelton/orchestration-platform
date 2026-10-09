@@ -219,7 +219,7 @@ function Start-AttachedSupervisor {
   $lastObservedStatus = $null
   $lastObservedRun = $null
   $terminalObserved = $false
-  $terminalStatuses = @("idle", "paused", "blocked")
+  $terminalStatuses = @("idle", "paused", "blocked", "executor-busy", "executor-install-failed", "upgrade-requires-restart")
   try {
     while ($null -ne ($line = $process.StandardOutput.ReadLine())) {
       $message = $null

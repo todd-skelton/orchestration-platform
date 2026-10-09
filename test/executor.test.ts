@@ -39,6 +39,337 @@ const exited = (child: ChildProcess) =>
     child.stderr?.on("data", (chunk) => (stderr += chunk));
     child.once("exit", (code) => done({ code, stderr }));
   });
+
+async function until(check: () => Promise<boolean>) {
+  const deadline = Date.now() + 8000;
+  while (!(await check())) {
+    if (Date.now() > deadline) throw new Error("fixture did not reach rendezvous");
+    await new Promise((done) => setTimeout(done, 20));
+  }
+}
+
+async function installFixture(path = "source.txt", mutant?: "exclusive" | "descriptor") {
+  const root = await mkdtemp(resolve(tmpdir(), "executor-install-"));
+  cleanup.push(() => rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }));
+  const task = resolve(root, "task");
+  const repo = resolve(task, "repo");
+  const bin = resolve(task, "tools/node-v24.15.0-linux-x64/bin");
+  const fakes = resolve(root, "fakes");
+  for (const directory of [
+    repo,
+    bin,
+    fakes,
+    resolve(task, "codex-home"),
+    resolve(root, "cgroups"),
+    resolve(root, "launcher/scripts/executor"),
+    resolve(root, "launcher/scripts/dogfood"),
+  ])
+    await mkdir(directory, { recursive: true });
+  await symlink(process.execPath, resolve(bin, "node"));
+  await writeFile(
+    resolve(task, "codex-home/config.toml"),
+    'base_url = "http://10.0.0.1:8317/v1"\n',
+  );
+  await writeFile(resolve(fakes, "ip"), "#!/bin/sh\necho 'default via 10.0.0.1 dev eth0'\n", {
+    mode: 0o700,
+  });
+  const git = async (...args: string[]) => (await exec("git", ["-C", repo, ...args])).stdout.trim();
+  await git("init", "-b", "main");
+  await git("config", "user.name", "Fixture");
+  await git("config", "user.email", "fixture@example.test");
+  await writeFile(resolve(repo, "base.txt"), "base\n");
+  await git("add", ".");
+  await git("commit", "-m", "base");
+  const from = await git("rev-parse", "HEAD");
+  await mkdir(resolve(repo, path, ".."), { recursive: true });
+  await writeFile(resolve(repo, path), "candidate\n");
+  await git("add", ".");
+  await git("commit", "-m", "candidate");
+  const sha = await git("rev-parse", "HEAD");
+  await git("reset", "--hard", from);
+  const launcher = resolve(root, "launcher/scripts/executor/run-loop.sh");
+  let body = await readFile(resolve(executor, "run-loop.sh"), "utf8");
+  if (mutant === "exclusive") body = body.replace("if ! flock -xn 9; then", "if false; then");
+  if (mutant === "descriptor") body = body.replaceAll(" 9>&-", "");
+  await writeFile(launcher, body);
+  await writeFile(
+    resolve(root, "launcher/scripts/dogfood/process-ownership.mjs"),
+    await readFile(resolve(executor, "../dogfood/process-ownership.mjs")),
+  );
+  await writeFile(
+    resolve(bin, "pnpm"),
+    `#!/usr/bin/env bash
+set -eu
+if [[ "$1" == install ]]; then
+  touch '${root}/install-entered'
+  if [[ -e '${root}/hold-install' ]]; then
+    while [[ ! -e '${root}/release-install' ]]; do sleep 0.02; done
+  fi
+  [[ ! -e '${root}/fail-install' ]]
+  exit $?
+fi
+run=$(node -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(process.argv[1])).run)' "$3")
+printf '%s %s\\n' "$run" "$(git rev-parse HEAD)" >> '${root}/starts'
+if [[ -e '${root}/child' ]]; then
+  sleep 60 </dev/null >/dev/null 2>&1 &
+  echo $! > '${root}/child-pid'
+fi
+if [[ "$run" == self && ! -e '${root}/offered' ]]; then
+  touch '${root}/offered'
+  echo '{"status":"upgrade-ready","sha":"${sha}","run":"self"}'
+else
+  echo "{\\"status\\":\\"idle\\",\\"run\\":\\"$run\\"}"
+fi
+`,
+    { mode: 0o700 },
+  );
+  const config = async (run: string) => {
+    const file = resolve(root, `${run}.json`);
+    await writeFile(
+      file,
+      JSON.stringify({
+        schemaVersion: "dogfood-loop/v1",
+        run,
+        adapter: run === "self" ? "self" : "chase-sets",
+        stateRoot: resolve(root, "state"),
+      }),
+    );
+    return file;
+  };
+  const exists = async (path: string) =>
+    stat(resolve(root, path)).then(
+      () => true,
+      () => false,
+    );
+  const launch = async (run = "self") => {
+    const child = spawn("bash", [launcher, await config(run)], {
+      env: {
+        ...process.env,
+        TASK_ROOT: task,
+        PATH: `${fakes}:${process.env.PATH}`,
+        ORCHESTRATION_CGROUP_ROOT: resolve(root, "cgroups"),
+      },
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    cleanup.push(() => {
+      child.kill();
+    });
+    let stdout = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += String(chunk);
+    });
+    const done = exited(child).then((result) => ({ ...result, stdout }));
+    return { child, done };
+  };
+  return { root, task, from, sha, git, launch, exists };
+}
+
+it.skipIf(process.platform !== "linux")(
+  "ISS-250 installs green S and re-enters inside one ownership binding",
+  async () => {
+    const f = await installFixture();
+    await f.git("reset", "--hard", f.sha);
+    await writeFile(resolve(f.task, "repo/later.txt"), "main moved after admission\n");
+    await f.git("add", "later.txt");
+    await f.git("commit", "-m", "later main");
+    const later = await f.git("rev-parse", "HEAD");
+    await f.git("update-ref", "refs/remotes/origin/main", later);
+    await f.git("reset", "--hard", f.from);
+    const { code, stdout, stderr } = await (await f.launch()).done;
+    expect(
+      code,
+      stderr + stdout + (await readFile(resolve(f.root, "supervisor.log"), "utf8").catch(() => "")),
+    ).toBe(0);
+    expect(stdout).toContain('"status":"executor-upgraded"');
+    expect(stdout).toContain(`"from":"${f.from}","to":"${f.sha}"`);
+    expect(await readFile(resolve(f.root, "starts"), "utf8")).toBe(
+      `self ${f.from}\nself ${f.sha}\n`,
+    );
+    expect(await f.exists("task/executor-install.json")).toBe(false);
+    expect(await readdir(resolve(f.root, "state/self/process-ownership"))).toHaveLength(1);
+    // A later origin/main neither substitutes for S nor defers its installation.
+    expect(await f.git("rev-parse", "HEAD")).toBe(f.sha);
+    expect(await f.git("rev-parse", "refs/remotes/origin/main")).toBe(later);
+  },
+);
+
+it.skipIf(process.platform !== "linux")(
+  "ISS-250 a peer's shared lock defers installation and restarts current head",
+  async () => {
+    const f = await installFixture();
+    const holder = spawn(
+      "bash",
+      [
+        "-c",
+        'exec 8>"$1"; flock -s 8; echo ready; read -r release',
+        "fixture",
+        resolve(f.task, "executor.lock"),
+      ],
+      { stdio: ["pipe", "pipe", "pipe"] },
+    );
+    const held = exited(holder);
+    cleanup.push(() => {
+      holder.kill();
+    });
+    await new Promise((done) => holder.stdout.once("data", done));
+    const result = await (await f.launch()).done;
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain(`upgrade-deferred:${f.sha}:executor-busy`);
+    expect(await f.git("rev-parse", "HEAD")).toBe(f.from);
+    expect(await readFile(resolve(f.root, "starts"), "utf8")).toBe(
+      `self ${f.from}\nself ${f.from}\n`,
+    );
+    holder.stdin.end("release\n");
+    await held;
+  },
+);
+
+it.skipIf(process.platform !== "linux").each([false, true])(
+  "ISS-250 racing M2 start waits for exclusive installation (lock mutant=%s)",
+  async (mutant) => {
+    const f = await installFixture("source.txt", mutant ? "exclusive" : undefined);
+    await writeFile(resolve(f.root, "hold-install"), "");
+    const self = await f.launch();
+    await until(() => f.exists("install-entered"));
+    const m2 = await f.launch("m2");
+    // Wait for its binding: enrollment precedes the shared-lock acquisition.
+    await until(
+      async () =>
+        (await readdir(resolve(f.root, "state/m2/process-ownership")).catch(() => [])).length > 0,
+    );
+    let m2Exited = false;
+    void m2.done.then(() => {
+      m2Exited = true;
+    });
+    if (mutant) await until(async () => m2Exited);
+    else await new Promise((done) => setTimeout(done, 300));
+    expect(m2Exited).toBe(mutant);
+    expect(await readFile(resolve(f.root, "starts"), "utf8")).toBe(`self ${f.from}\n`);
+    await writeFile(resolve(f.root, "release-install"), "");
+    expect((await self.done).code).toBe(0);
+    const outcome = await m2.done;
+    if (mutant) {
+      expect(outcome.stdout).toContain('"status":"executor-install-failed"');
+    } else {
+      expect(outcome.code).toBe(0);
+      expect(await readFile(resolve(f.root, "starts"), "utf8")).toContain(`m2 ${f.sha}\n`);
+    }
+  },
+);
+
+it
+  .skipIf(process.platform !== "linux")
+  .each([
+    "scripts/executor/a.sh",
+    "scripts/dogfood/process-ownership.mjs",
+    "package.json",
+    "pnpm-lock.yaml",
+  ])("ISS-250 restart-only %s refuses before mutation", async (path) => {
+  const f = await installFixture(path);
+  const result = await (await f.launch()).done;
+  expect(result.code).toBe(1);
+  expect(result.stdout).toContain('"status":"upgrade-requires-restart"');
+  expect(await f.git("rev-parse", "HEAD")).toBe(f.from);
+  expect(await f.exists("task/executor-install.json")).toBe(false);
+  expect(await f.exists("install-entered")).toBe(false);
+});
+
+it.skipIf(process.platform !== "linux").each(["failed", "installing"])(
+  "ISS-250 durable %s blocks the next wrapper start",
+  async (state) => {
+    const f = await installFixture();
+    if (state === "failed") {
+      await writeFile(resolve(f.root, "fail-install"), "");
+      expect((await (await f.launch()).done).code).toBe(1);
+      expect(await f.git("rev-parse", "HEAD")).toBe(f.sha);
+    } else {
+      await writeFile(
+        resolve(f.task, "executor-install.json"),
+        JSON.stringify({ state, from: f.from, to: f.sha, at: new Date().toISOString() }),
+      );
+    }
+    const saved = await readFile(resolve(f.task, "executor-install.json"), "utf8");
+    expect(JSON.parse(saved)).toMatchObject({
+      state,
+      from: f.from,
+      to: f.sha,
+      ...(state === "failed" ? { step: "install" } : {}),
+    });
+    const result = await (await f.launch("m2")).done;
+    expect(result.code).toBe(1);
+    expect(result.stdout).toContain('"status":"executor-install-failed"');
+    expect(await readFile(resolve(f.task, "executor-install.json"), "utf8")).toBe(saved);
+    expect(await readFile(resolve(f.root, "starts"), "utf8").catch(() => "")).not.toContain("m2");
+  },
+);
+
+it.skipIf(process.platform !== "linux").each([false, true])(
+  "ISS-250 a surviving child cannot retain fd 9 (closure mutant=%s)",
+  async (mutant) => {
+    const f = await installFixture("source.txt", mutant ? "descriptor" : undefined);
+    await writeFile(resolve(f.root, "child"), "");
+    await writeFile(resolve(f.root, "offered"), "");
+    expect((await (await f.launch()).done).code).toBe(0);
+    const pid = Number(await readFile(resolve(f.root, "child-pid"), "utf8"));
+    cleanup.push(() => {
+      try {
+        process.kill(pid);
+      } catch {}
+    });
+    process.kill(pid, 0);
+    const locked = await exec("flock", ["-xn", resolve(f.task, "executor.lock"), "true"]).then(
+      () => true,
+      () => false,
+    );
+    expect(locked).toBe(!mutant);
+  },
+);
+
+it.skipIf(process.platform !== "linux")(
+  "ISS-250 a shared-lock timeout reports executor-busy before supervisor start",
+  async () => {
+    const f = await installFixture();
+    // Replace elapsed waiting only; the body supplies the real ten-minute bound.
+    await writeFile(
+      resolve(f.root, "fakes/flock"),
+      `#!/bin/sh
+printf '%s\\n' "$*" > '${f.root}/lock-args'
+exit 1
+`,
+      { mode: 0o700 },
+    );
+    const result = await (await f.launch()).done;
+    expect(result.code).toBe(1);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      status: "executor-busy",
+      run: "self",
+      observedAt: expect.any(String),
+    });
+    expect(await readFile(resolve(f.root, "lock-args"), "utf8")).toBe("-s -w 600 9\n");
+    expect(await f.exists("starts")).toBe(false);
+  },
+);
+
+it.for(["executor-busy", "executor-install-failed", "upgrade-requires-restart"])(
+  "ISS-250 attached Windows parent accepts terminal %s",
+  async (status, context) => {
+    const root = await mkdtemp(resolve(tmpdir(), "wrapper-status-"));
+    cleanup.push(() => rm(root, { recursive: true, force: true }));
+    const child = resolve(root, "child.mjs");
+    await writeFile(
+      child,
+      `console.log(JSON.stringify({status:${JSON.stringify(status)},run:"self",observedAt:new Date().toISOString()})); process.exitCode=1;`,
+    );
+    const loss = resolve(root, "loss");
+    const harness = await startLoopHarness([
+      `$code = Start-AttachedSupervisor -Executable '${process.execPath}' -ArgumentList @('${child}') -LossNoteDirectory '${loss}' -Config '/fixture/loop.json'`,
+      'Write-Host "exit=$code"',
+    ]);
+    if (!harness) return context.skip();
+    expect((await harness.run()).stdout).toContain("exit=1");
+    expect(await readdir(loss).catch(() => [])).toEqual([]);
+  },
+);
 async function ipv6Loopback() {
   const probe = createServer();
   try {

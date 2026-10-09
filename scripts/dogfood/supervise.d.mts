@@ -1,6 +1,21 @@
 // ISS-164: the private request stream exported by the supervisor entry.
 import type { Readable, Writable } from "node:stream";
 import type { Adapter, NativeDbIdentity, NativeDbOwner, NativeDbReply } from "./flow.js";
+import type { LoopConfig } from "./queue.js";
+import type { RepositoryAdapter } from "./repository-adapter.js";
+
+type UpgradeCommand = (executable: string, args: string[]) => Promise<{ stdout: string }>;
+export function executorUpgrade(
+  config: LoopConfig,
+  repository: Pick<RepositoryAdapter, "requiredChecks">,
+  command?: UpgradeCommand,
+): Promise<{ sha?: string; reason?: string } | undefined>;
+export function upgradeBoundary(
+  config: LoopConfig,
+  repository: Pick<RepositoryAdapter, "requiredChecks">,
+  command?: UpgradeCommand,
+  emit?: (row: object) => void,
+): () => Promise<void>;
 
 export const NATIVE_DB_REQUEST_SCHEMA: "dogfood-native-db-request/v1";
 export const NATIVE_DB_REPLY_SCHEMA: "dogfood-native-db-reply/v1";
