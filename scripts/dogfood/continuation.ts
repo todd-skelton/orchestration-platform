@@ -314,6 +314,41 @@ export interface IntegrationContinuation {
   reviewId: string;
   authorityUrl: string;
   allowedPaths: string[];
+  publishedConflict?: {
+    kind: "published-conflict";
+    sourceDirectory: string;
+    authorId: string;
+    originalBase: string;
+    main: string;
+    originalConfig: string;
+    originalConfigSha256: string;
+    terminalReservationSha256: string;
+    terminalBindingDigest: string;
+    terminalHistoryDigest: string;
+    selected: {
+      cycle: number;
+      key: string;
+      number: number;
+      base: string;
+      planningRevision: string;
+    };
+    receiptUrl: string;
+    authority: { id: string; author: string; body: string; sha256: string };
+    hosted: {
+      actionsRun: number;
+      runAttempt: number;
+      job: number;
+      greenRunAttempt: number;
+      controlRun: number;
+      controlRunAttempt: number;
+      controlJob: number;
+      evidenceSha256: string;
+      failedTests: string[];
+      publication: { number: number; url: string; head: string; sourceBranch: string };
+    };
+    resolutions: { path: string; semantics: string }[];
+    preservation: { path: string; semantics: string }[];
+  };
   spentResolution?: {
     claim: string;
     stopMarker: string;
@@ -353,7 +388,7 @@ export function validateIntegrationContinuation(
   requireThat(
     exact(
       value,
-      `schemaVersion repository issueKey issueUrl run attemptDirectory absoluteAttempt stopMarker candidateHead reviewId authorityUrl allowedPaths${value && typeof value === "object" && Object.hasOwn(value, "spentResolution") ? " spentResolution" : ""}`,
+      `schemaVersion repository issueKey issueUrl run attemptDirectory absoluteAttempt stopMarker candidateHead reviewId authorityUrl allowedPaths${value && typeof value === "object" && Object.hasOwn(value, "spentResolution") ? " spentResolution" : ""}${value && typeof value === "object" && Object.hasOwn(value, "publishedConflict") ? " publishedConflict" : ""}`,
     ),
     reason,
   );
@@ -383,6 +418,102 @@ export function validateIntegrationContinuation(
   );
   try {
     validateCorrectionPaths(value.allowedPaths);
+    if (value.publishedConflict !== undefined) {
+      const p = value.publishedConflict;
+      requireThat(
+        value.spentResolution === undefined &&
+          exact(
+            p,
+            "kind sourceDirectory authorId originalBase main originalConfig originalConfigSha256 terminalReservationSha256 terminalBindingDigest terminalHistoryDigest selected receiptUrl authority hosted resolutions preservation",
+          ) &&
+          p.kind === "published-conflict" &&
+          absolute(p.sourceDirectory) &&
+          typeof p.authorId === "string" &&
+          /^[A-Za-z0-9._:-]{1,128}$/.test(p.authorId) &&
+          sha(p.originalBase) &&
+          sha(p.main) &&
+          text(p.originalConfig) &&
+          [
+            p.originalConfigSha256,
+            p.terminalReservationSha256,
+            p.terminalBindingDigest,
+            p.terminalHistoryDigest,
+          ].every(digest) &&
+          hash(p.originalConfig) === p.originalConfigSha256 &&
+          exact(p.selected, "cycle key number base planningRevision") &&
+          count(p.selected.cycle) &&
+          p.selected.cycle > 0 &&
+          count(p.selected.number) &&
+          p.selected.number > 0 &&
+          p.selected.key === value.issueKey &&
+          sha(p.selected.base) &&
+          p.selected.base === p.selected.planningRevision &&
+          value.issueUrl === `https://github.com/${value.repository}/issues/${p.selected.number}` &&
+          value.stopMarker.split(":")[2] === String(p.selected.cycle) &&
+          typeof p.receiptUrl === "string" &&
+          p.receiptUrl.startsWith(`${value.issueUrl}#issuecomment-`) &&
+          /^[1-9]\d*$/.test(p.receiptUrl.split("#issuecomment-")[1]!) &&
+          exact(p.authority, "id author body sha256") &&
+          typeof p.authority.id === "string" &&
+          /^[1-9]\d*$/.test(p.authority.id) &&
+          p.authority.id === value.authorityUrl.split("#issuecomment-")[1] &&
+          p.authority.author === "todd-skelton" &&
+          text(p.authority.body) &&
+          digest(p.authority.sha256) &&
+          hash(p.authority.body) === p.authority.sha256,
+        reason,
+      );
+      const h = p.hosted;
+      const original = JSON.parse(p.originalConfig);
+      requireThat(
+        original !== null &&
+          typeof original === "object" &&
+          !Array.isArray(original) &&
+          JSON.stringify(original) === p.originalConfig,
+        reason,
+      );
+      requireThat(
+        exact(
+          h,
+          "actionsRun runAttempt job greenRunAttempt controlRun controlRunAttempt controlJob evidenceSha256 failedTests publication",
+        ) &&
+          [
+            h.actionsRun,
+            h.runAttempt,
+            h.job,
+            h.greenRunAttempt,
+            h.controlRun,
+            h.controlRunAttempt,
+            h.controlJob,
+          ].every((n) => count(n) && n > 0) &&
+          h.greenRunAttempt > h.runAttempt &&
+          digest(h.evidenceSha256) &&
+          exact(h.publication, "number url head sourceBranch") &&
+          count(h.publication.number) &&
+          h.publication.number > 0 &&
+          h.publication.head === value.candidateHead &&
+          h.publication.url ===
+            `https://github.com/${value.repository}/pull/${h.publication.number}` &&
+          text(h.publication.sourceBranch),
+        reason,
+      );
+      validateCorrectionPaths(h.failedTests);
+      for (const rules of [p.resolutions, p.preservation]) {
+        requireThat(
+          Array.isArray(rules) &&
+            rules.every((rule) => exact(rule, "path semantics") && text(rule.semantics)),
+          reason,
+        );
+        if (rules.length) validateCorrectionPaths(rules.map((rule) => rule.path));
+      }
+      requireThat(
+        p.resolutions.length > 0 &&
+          JSON.stringify(p.resolutions.map((rule: { path: string }) => rule.path).sort()) ===
+            JSON.stringify([...value.allowedPaths].sort()) &&
+          !p.preservation.some((rule: { path: string }) => value.allowedPaths.includes(rule.path)),
+        reason,
+      );
+    }
     if (value.spentResolution !== undefined) {
       const spent = value.spentResolution;
       requireThat(

@@ -84,15 +84,13 @@ export function withinConflictHunks(before: string, after: string): boolean {
   return true;
 }
 
-export async function resolveConflict(
+export async function captureConflict(
   config: Config,
   native: Adapter,
-  pilot: string,
   main: string,
   previousHead: string,
   conflict: Conflict,
   save: () => Promise<void>,
-  ruledPreservation?: { path: string; semantics: string }[],
 ) {
   const git = (args: string[]) => native.git(config.worktree, args);
   if (!conflict.files) {
@@ -148,16 +146,37 @@ export async function resolveConflict(
     conflict.census = await census(git, previousHead, main, conflict.seed, conflict.files);
     await save();
   }
+}
+
+export async function resolveConflict(
+  config: Config,
+  native: Adapter,
+  pilot: string,
+  main: string,
+  previousHead: string,
+  conflict: Conflict,
+  save: () => Promise<void>,
+  ruledPreservation?: { path: string; semantics: string }[],
+  ruledResolutions?: { path: string; semantics: string }[],
+) {
+  const git = (args: string[]) => native.git(config.worktree, args);
+  await captureConflict(config, native, main, previousHead, conflict, save);
+  if (
+    ruledResolutions &&
+    JSON.stringify(Object.keys(conflict.files!).sort()) !==
+      JSON.stringify(ruledResolutions.map((rule) => rule.path).sort())
+  )
+    throw new QueueBlocked("conflict-resolution-scope-escape");
   if (ruledPreservation && !(await readOptional(resolve(config.stateDirectory, "config.json")))) {
     // Setup checks out S with autocrlf disabled; the original native capture may
     // contain CRLF. Restore that representation before pinning the first worker,
     // never on an in-flight author's replay. Its fixed bytes are the K contract.
-    for (const [file, contents] of Object.entries(conflict.files)) {
+    for (const [file, contents] of Object.entries(conflict.files!)) {
       if (contents.includes("\0") || !withinConflictHunks(contents, contents.replace(hunks, "")))
         throw new QueueBlocked("conflict-resolution-unsupported", file);
       await writeFile(resolve(config.worktree, file), contents);
     }
-    await git(["--literal-pathspecs", "add", "--", ...Object.keys(conflict.files)]);
+    await git(["--literal-pathspecs", "add", "--", ...Object.keys(conflict.files!)]);
   }
   if (ruledPreservation?.some((rule) => !conflict.census?.u.includes(rule.path)))
     throw new QueueBlocked("conflict-resolution-scope-escape");
@@ -176,7 +195,7 @@ export async function resolveConflict(
     : "";
   const bounded: Config = {
     ...config,
-    base: conflict.seed,
+    base: conflict.seed!,
     mainBase: main,
     author: { ...config.author, prompt: `${authorRule} ${config.author.prompt}${context}` },
     reviewer: { ...config.reviewer, prompt: `${reviewRule} ${config.reviewer.prompt}${context}` },

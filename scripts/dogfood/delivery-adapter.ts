@@ -490,9 +490,13 @@ async function workflowJobs(
 export async function observeExecutedHostedFailure(
   config: DeliveryConfig,
   publication: PublicationEvidence,
-  packet: import("./queue.js").GateStopAuthorization["hostedExecutedFailure"],
+  packet: Pick<
+    NonNullable<import("./queue.js").GateStopAuthorization["hostedExecutedFailure"]>,
+    "actionsRun" | "runAttempt" | "greenRunAttempt" | "controlRun" | "job"
+  >,
   base: string,
   commands: GithubDeliveryCommands = { gh, ghJson },
+  includeMergeability = false,
 ) {
   const check = (ok: unknown, detail: string) => {
     if (!ok) throw new DeliveryBlocked("gate-stop-authorization-mismatch", detail);
@@ -507,7 +511,7 @@ export async function observeExecutedHostedFailure(
       "--repo",
       config.repository,
       "--json",
-      "number,url,state,isDraft,headRefOid,headRefName,baseRefName",
+      `number,url,state,isDraft,headRefOid,headRefName,baseRefName${includeMergeability ? ",mergeable,mergeStateStatus" : ""}`,
     ]);
     check(
       pr.number === publication.number &&
@@ -617,12 +621,23 @@ export async function observeExecutedHostedFailure(
       controls.length === 1 && success(controls[0]) && executed(controls[0]),
       "base shard control",
     );
-    return { pr, failed, green, control, failedJobs, greenJobs, controlJobs };
+    const { mergeable, mergeStateStatus, ...identity } = pr;
+    return {
+      pr: includeMergeability ? identity : pr,
+      failed,
+      green,
+      control,
+      failedJobs,
+      greenJobs,
+      controlJobs,
+      ...(includeMergeability ? { mergeability: { mergeable, mergeStateStatus } } : {}),
+    };
   };
   const observationStart = new Date().toISOString();
   const observed = await readAll();
   check(
-    JSON.stringify(observed) === JSON.stringify(await readAll()),
+    JSON.stringify({ ...observed, mergeability: undefined }) ===
+      JSON.stringify({ ...(await readAll()), mergeability: undefined }),
     "hosted evidence changed during acquisition",
   );
   return { observationStart, ...observed, observationEnd: new Date().toISOString() };
