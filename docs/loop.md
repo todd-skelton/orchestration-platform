@@ -32,7 +32,9 @@ capability is added only when a real cycle records a blocker.
    then stop.
 6. Authority does not move. Workers never push, publish, merge, or edit the
    running loop. The executor is the checked-out stable `main`. The author
-   never reviews its own work.
+   never reviews its own work. Between completed self cycles, the attached
+   wrapper may install the reviewed, green main admitted by ISS-250 below;
+   workers have no installation authority.
 7. A stop caused by the work parks the issue with one paragraph: what stopped
    it, how many attempts, what a person should change, and how to unpark it;
    the loop then continues with the next runnable issue. A stop caused by the
@@ -44,6 +46,9 @@ capability is added only when a real cycle records a blocker.
    second process: there is one operator, one host, and one writer. A check
    that guards against a hostile state directory, a hand-edited receipt, or
    the loop disagreeing with itself is a finding, not a safeguard.
+   ISS-250 may re-execute a self supervisor inside the same attached wrapper
+   binding after installation; saved cycles, reservations and allowances stay
+   unchanged. This is distinct from a host restart or automatic worker retry.
 
 ### Failure classes
 
@@ -1035,7 +1040,57 @@ recovery as a documentation test.
 ## Running
 
 Host installation requires independent exact-head PASS and three-OS bootstrap
-green with supervisors absent. Landing a repair alone authorizes no executor
+green with supervisors absent. ISS-250 replaces the per-landing host scripts
+recorded in #787 only at the completed self-cycle boundary. Before the next
+selection, the supervisor fetches `origin/main` as S and requires S to descend
+from the executor head. It walks only `git rev-list --first-parent head..S`:
+each step must have a native `merge.json` witness from this executor's self
+runs under `stateRoot`, or its complete first-parent diff must be confined to
+`planning/`. Squash landings qualify by receipt; branch-side commits of a merge
+are not separately evaluated. The latest push-event `bootstrap` run on S must
+be complete with success for every self `REQUIRED_CHECKS` context, including
+the Windows aggregate. Missing, unavailable or non-green evidence continues
+the current executor and records `upgrade-deferred:<step>:<reason>` once per S;
+non-fast-forward main records `upgrade-deferred:not-fast-forward`.
+
+An admitted S exits the supervisor with `{status:"upgrade-ready", sha:S}`.
+Every attached body, including Chase Sets, holds a shared `flock` on
+`$TASK_ROOT/executor.lock`; fd 9 is closed for the supervisor pipeline and its
+descendants. After its supervisor exits, the self installer releases that lock
+and attempts a nonblocking exclusive lock. A peer defers the install and the
+wrapper restarts the current executor, skipping that S at the resumed boundary
+once; a later completed cycle may try it again.
+A racing start waits up to ten minutes for its shared lock, then exits
+`executor-busy`. Only self supervisors request installation: re-executing a
+Chase Sets supervisor would reset its native-DB correlation counter within
+the still-attached Windows parent.
+
+With exclusive ownership, any diff touching `scripts/executor/`,
+`scripts/dogfood/process-ownership.mjs`, `package.json` or `pnpm-lock.yaml`
+stops as `upgrade-requires-restart` before mutation. The host's existing
+installation procedure remains the fallback for these paths, including
+Windows-side files. Otherwise the wrapper writes
+`$TASK_ROOT/executor-install.json` with `{state:"installing", from, to, at}`,
+fast-forwards to exactly S, runs `pnpm install --frozen-lockfile`, and checks
+porcelain. Later movement of origin does not replace S. Failure retains the
+state file with `state:"failed"` and its failed step. Every new body takes the
+shared lock and checks that file before starting a supervisor: either state
+blocks with `executor-install-failed` until the host repairs and removes it.
+There is no rollback automation. The three wrapper stops are JSON protocol
+lines with `status`, `run` and `observedAt`; busy and restart-required are
+non-parking `wait`, installation failure is non-parking `halt`.
+
+Success removes the state file and emits `executor-upgraded` with `from` and
+`to` SHAs before re-executing the supervisor on the same config. The Windows
+parent remains attached and the ISS-219 invocation binding and cgroup do not
+change. ISS-133 resumes the saved run without rewriting receipts, reservations
+or budgets. Reports list each such re-exec separately from retries and host
+restarts. This capability itself needs the ordinary quiescent reviewed-green
+host installation; the Windows terminal-status update takes effect on the
+host's next start. It grants no installation during an issue, Windows-side
+install, preserved-run start or new recovery allowance.
+
+Outside this boundary, landing a repair alone authorizes no executor
 installation, restart, unpark or milestone exit. Preserved runs require separate
 host authorization to resume; workers leave their runtime, worktrees, partial
 work, candidate commits, stops and historical verdicts unchanged. Landing a
@@ -2154,7 +2209,7 @@ or ISS-234 feature change is part of this repair.
 
 | Key | Title                       | Exit evidence                                                                                                                                                                                                                             |
 | --- | --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| M1  | Unattended self-improvement | Three consecutive useful issues on this repo land through one `supervise` invocation with no per-item host script or manual step. The report states whether an automatic retry or restart occurred; planned restart recovery is separate. |
+| M1  | Unattended self-improvement | Three consecutive useful issues on this repo land through one attached `start-loop.ps1` invocation (one ISS-219 wrapper binding) with no per-item host script or manual step. The report lists each self-install supervisor re-exec with `from`/`to` SHAs separately from automatic retries and host restarts; planned restart recovery is separate. |
 | M2  | Chase Sets delivery adapter | One low-risk Chase Sets milestone is delivered end to end through the loop with a `chase-sets` adapter.                                                                                                                                   |
 | M3  | Chase Sets adoption         | Routine Chase Sets delivery runs on the platform; the `milestone-orchestrator` host loop is retired for routine work with a rollback.                                                                                                     |
 

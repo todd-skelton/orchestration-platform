@@ -15,6 +15,17 @@ import { isItemStopReason } from "../../scripts/dogfood/supervision.js";
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const fixture = resolve(root, "test/dogfood/fault-class.fixture.mjs");
 
+it("ISS-250 wrapper stops have explicit non-parking classes", () => {
+  for (const [reason, faultClass] of [
+    ["executor-busy", "wait"],
+    ["upgrade-requires-restart", "wait"],
+    ["executor-install-failed", "halt"],
+  ]) {
+    expect(classifyStop(reason!)).toEqual({ faultClass, legacyParking: false, rule: "exact" });
+    expect(parksItem(reason!)).toBe(false);
+  }
+});
+
 it("ISS-230 narrows only proved non-execution without clearing the missing-log backlog", () => {
   expect(classifyStop("hosted-check-never-executed")).toEqual({
     faultClass: "retry",
@@ -124,6 +135,9 @@ function unclassified(reasons: Iterable<string>) {
 }
 
 const builtElsewhere = [
+  "executor-busy",
+  "executor-install-failed",
+  "upgrade-requires-restart",
   "author-failed",
   "author-malformed",
   "reviewer-malformed",

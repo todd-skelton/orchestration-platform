@@ -1,4 +1,5 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
+import { promisify } from "node:util";
 import { createHash } from "node:crypto";
 import {
   copyFile,
@@ -15,6 +16,11 @@ import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, expect, it } from "vitest";
+import { executorUpgrade, upgradeBoundary } from "../../scripts/dogfood/supervise.mjs";
+import { nextCycle, persistCycle, completeCycle } from "../../scripts/dogfood/supervision.js";
+import type { LoopConfig } from "../../scripts/dogfood/queue.js";
+import type { RepositoryAdapter } from "../../scripts/dogfood/repository-adapter.js";
+import { requiredChecks } from "../../adapters/self.mjs";
 import { controlLoop } from "../../scripts/dogfood/control.mjs";
 import { observePause, requestPause } from "../../scripts/dogfood/pause.mjs";
 import { prerequisiteFixture, prerequisiteProof } from "./fixtures/prerequisite.js";
@@ -26,6 +32,227 @@ import {
 } from "./fixtures/source-failure.js";
 
 const roots: string[] = [];
+
+async function upgradeFixture() {
+  const root = await realpath(await mkdtemp(resolve(tmpdir(), "upgrade-admission-")));
+  roots.push(root);
+  const gitExec = promisify(execFile);
+  const repository = resolve(root, "repo");
+  const origin = resolve(root, "origin");
+  await mkdir(repository);
+  await gitExec("git", ["init", "--bare", origin]);
+  const git = async (...args: string[]) =>
+    (await gitExec("git", ["-C", repository, ...args])).stdout.trim();
+  await git("init", "-b", "main");
+  await git("config", "user.name", "Fixture");
+  await git("config", "user.email", "fixture@example.test");
+  await writeFile(resolve(repository, "source.txt"), "base\n");
+  await git("add", ".");
+  await git("commit", "-m", "base");
+  const from = await git("rev-parse", "HEAD");
+  await git("remote", "add", "origin", origin);
+  const config: LoopConfig = {
+    schemaVersion: "dogfood-loop/v1",
+    run: "upgrade",
+    adapter: "self",
+    repository: "todd-skelton/orchestration-platform",
+    stableExecutorRoot: repository,
+    stateRoot: resolve(root, "state"),
+    worktreeRoot: resolve(root, "worktrees"),
+    author: { model: "author", effort: "high" },
+    reviewer: { model: "reviewer", effort: "high" },
+    codexExecutable: process.execPath,
+    gitExecutable: "git",
+    attemptCeiling: 4,
+    nativeLaunchCeiling: 64,
+  };
+  await mkdir(resolve(config.stateRoot, config.run), { recursive: true });
+  const commit = async (path: string, body: string) => {
+    await mkdir(dirname(resolve(repository, path)), { recursive: true });
+    await writeFile(resolve(repository, path), body);
+    await git("add", ".");
+    await git("commit", "-m", path);
+    return git("rev-parse", "HEAD");
+  };
+  const witness = async (sha: string, own = true) => {
+    const attempt = resolve(config.stateRoot, "old-run/iss-774-attempt-1");
+    await mkdir(resolve(attempt, "setup"), { recursive: true });
+    await mkdir(resolve(attempt, "source/refresh-main"), { recursive: true });
+    await writeFile(
+      resolve(attempt, "setup/setup-plan.json"),
+      JSON.stringify({
+        repository: config.repository,
+        controllerRoot: own ? repository : root,
+        repositoryRoot: repository,
+      }),
+    );
+    await writeFile(
+      resolve(attempt, "source/refresh-main/merge.json"),
+      JSON.stringify({ head: "b".repeat(40), number: 774, mergeCommit: sha }),
+    );
+  };
+  let sha = from;
+  const publish = async () => {
+    sha = await git("rev-parse", "HEAD");
+    await git("push", "origin", "main");
+    await git("reset", "--hard", from);
+    return sha;
+  };
+  const contexts = await requiredChecks({ repository: config.repository });
+  const jobs = contexts.map((name) => ({ name, status: "completed", conclusion: "success" }));
+  const run = { id: 1, head_sha: "", event: "push", head_branch: "main", status: "completed" };
+  const command = async (executable: string, args: string[]) => {
+    if (executable !== "gh") return gitExec(executable, args);
+    return {
+      stdout: JSON.stringify(
+        args[1]!.includes("/jobs?")
+          ? { total_count: jobs.length, jobs }
+          : { workflow_runs: [{ ...run, head_sha: sha }] },
+      ),
+    };
+  };
+  return {
+    root,
+    config,
+    from,
+    git,
+    commit,
+    witness,
+    publish,
+    command,
+    jobs,
+    run,
+    policy: { requiredChecks },
+  };
+}
+
+it("ISS-250 admits squash receipts and the complete first-parent diff of a planning merge", async () => {
+  const f = await upgradeFixture();
+  const squash = await f.commit("source.txt", "#774 squash implementation\n");
+  await f.witness(squash);
+  await f.git("checkout", "-b", "planning-branch");
+  // The merged first-parent diff is planning-only. Walking branch-side commits
+  // instead would incorrectly require a witness for this reverted experiment.
+  await f.commit("source.txt", "branch experiment\n");
+  await f.commit("source.txt", "#774 squash implementation\n");
+  await f.commit("planning/one.md", "one\n");
+  await f.commit("planning/two.md", "two\n");
+  await f.git("checkout", "main");
+  await f.git("merge", "--no-ff", "planning-branch", "-m", "#779 planning merge");
+  const sha = await f.publish();
+  f.config.stateRoot += "/";
+  expect(await executorUpgrade(f.config, f.policy, f.command)).toEqual({ sha });
+  expect(await f.git("rev-parse", "HEAD")).toBe(f.from);
+});
+
+it("ISS-250 a rename into planning still needs an implementation witness", async () => {
+  const f = await upgradeFixture();
+  await mkdir(resolve(f.config.stableExecutorRoot, "planning"));
+  await f.git("mv", "source.txt", "planning/source.txt");
+  await f.git("commit", "-m", "move implementation into planning");
+  const sha = await f.publish();
+  expect(await executorUpgrade(f.config, f.policy, f.command)).toEqual({
+    sha,
+    reason: `upgrade-deferred:${sha}:missing-witness`,
+  });
+});
+
+it("ISS-250 peer deferral skips only the resumed boundary", async () => {
+  const f = await upgradeFixture();
+  await f.commit("planning/draft.md", "planning\n");
+  const sha = await f.publish();
+  const prior = process.env.ORCHESTRATION_UPGRADE_DEFERRED_SHA;
+  let boundary: () => Promise<void>;
+  try {
+    process.env.ORCHESTRATION_UPGRADE_DEFERRED_SHA = sha;
+    boundary = upgradeBoundary(f.config, f.policy, f.command);
+  } finally {
+    if (prior === undefined) delete process.env.ORCHESTRATION_UPGRADE_DEFERRED_SHA;
+    else process.env.ORCHESTRATION_UPGRADE_DEFERRED_SHA = prior;
+  }
+  await boundary();
+  await expect(boundary()).rejects.toMatchObject({ message: "upgrade-ready", sha });
+});
+
+it.each([
+  "absent",
+  "wrong-sha",
+  "foreign-executor",
+  "missing-context",
+  "failed-context",
+  "pending-run",
+  "non-fast-forward",
+])("ISS-250 defers %s once per fetched SHA without changing retained records", async (kind) => {
+  const f = await upgradeFixture();
+  const step = await f.commit("source.txt", "implementation\n");
+  if (kind !== "absent")
+    await f.witness(kind === "wrong-sha" ? f.from : step, kind !== "foreign-executor");
+  const sha = await f.publish();
+  if (kind === "missing-context") f.jobs.pop();
+  if (kind === "failed-context") f.jobs[0]!.conclusion = "failure";
+  if (kind === "pending-run") f.run.status = "in_progress";
+  if (kind === "non-fast-forward") await f.commit("other.txt", "divergent\n");
+  const reason =
+    kind === "non-fast-forward"
+      ? "upgrade-deferred:not-fast-forward"
+      : ["absent", "wrong-sha", "foreign-executor"].includes(kind)
+        ? `upgrade-deferred:${step}:missing-witness`
+        : kind === "pending-run"
+          ? `upgrade-deferred:${sha}:bootstrap-incomplete`
+          : `upgrade-deferred:${sha}:required-check:${kind === "missing-context" ? "Node 24 / macos-latest" : "Node 24 / ubuntu-latest"}`;
+  expect(await executorUpgrade(f.config, f.policy, f.command)).toEqual({ sha, reason });
+  const before = await snapshot(f.config.stateRoot);
+  const rows: object[] = [];
+  const boundary = upgradeBoundary(f.config, f.policy, f.command, (row) => rows.push(row));
+  await boundary();
+  await boundary();
+  expect(rows).toHaveLength(1);
+  const after = await snapshot(f.config.stateRoot);
+  for (const [path, bytes] of before) expect(after.get(path)).toBe(bytes);
+  expect(after.size).toBe(before.size + 1);
+});
+
+it("ISS-250 reaches upgrade-ready only after completion, before selection; Chase never upgrades", async () => {
+  const f = await upgradeFixture();
+  await f.commit("planning/draft.md", "planning\n");
+  const sha = await f.publish();
+  const events: string[] = [];
+  const repository = {
+    ...f.policy,
+    selectCandidates: async () => {
+      events.push("select");
+      return [{ key: "ISS-250", number: 787 }];
+    },
+  } as unknown as RepositoryAdapter;
+  let state: "OPEN" | "CLOSED" = "OPEN";
+  const adapter = {
+    currentMain: async () => sha,
+    issue: async () => ({ state, key: "ISS-250", labels: [], comments: [] }),
+    removeReady: async () => {},
+    close: async () => {
+      state = "CLOSED";
+    },
+    comment: async () => {},
+    completedBoundary: upgradeBoundary(f.config, f.policy, f.command),
+  };
+  const next = () =>
+    nextCycle(f.config, f.config.stableExecutorRoot, adapter, repository, async () => {});
+  const cycle = (await next())!;
+  expect(events).toEqual(["select"]);
+  await persistCycle(f.config, cycle);
+  expect((await next())!.selection).toEqual(cycle.selection);
+  await completeCycle(f.config, cycle, [], adapter);
+  const retained = await snapshot(f.config.stateRoot);
+  await expect(next()).rejects.toMatchObject({ message: "upgrade-ready", sha });
+  expect(events).toEqual(["select"]);
+  expect(await snapshot(f.config.stateRoot)).toEqual(retained);
+  f.config.adapter = "chase-sets";
+  adapter.completedBoundary = upgradeBoundary(f.config, f.policy, async () => {
+    throw new Error("Chase must not probe");
+  });
+  expect(await next()).toBeDefined();
+  expect(events).toEqual(["select", "select"]);
+});
 
 it("ISS-187 enters through the supervisory command, completes one detour and holds the saved cycle", async () => {
   const f = await prerequisiteFixture();
@@ -250,7 +477,7 @@ async function fixture() {
   return { request, runState, worktreeRoot };
 }
 
-async function run(request: string) {
+async function run(request: string, environment: NodeJS.ProcessEnv = {}) {
   const token = `command-${++runOrdinal}`;
   const stdoutPath = resolve(dirname(request), `${token}.stdout`);
   const stderrPath = resolve(dirname(request), `${token}.stderr`);
@@ -270,6 +497,7 @@ async function run(request: string) {
           stdio: ["ignore", stdoutFile.fd, stderrFile.fd],
           env: {
             ...process.env,
+            ...environment,
             SUPERVISE_FIXTURE_STATE: resolve(request, "../state/synthetic-command-run"),
           },
         },
@@ -296,6 +524,66 @@ async function run(request: string) {
     stderr: await readFile(stderrPath, "utf8"),
   };
 }
+
+it.skipIf(process.platform !== "linux")(
+  "ISS-250 the real supervisor exits upgrade-ready from a retained completed cycle",
+  async () => {
+    const f = await upgradeFixture();
+    await f.commit("planning/draft.md", "planning\n");
+    const sha = await f.publish();
+    f.config.run = "synthetic-command-run";
+    f.config.gitExecutable = (await promisify(execFile)("which", ["git"])).stdout.trim();
+    const directory = resolve(f.config.stateRoot, f.config.run);
+    await mkdir(directory);
+    const selection = {
+      cycle: 1,
+      key: "ISS-105",
+      number: 362,
+      base: f.from,
+      planningRevision: f.from,
+    };
+    const saved = {
+      "cycle-1-selected.json": selection,
+      "cycle-1-complete.json": { selection, history: [] },
+      "command-issue.json": { state: "CLOSED", key: "ISS-105", labels: [], comments: [] },
+      "command-controls.json": { main: sha },
+    };
+    for (const [name, value] of Object.entries(saved))
+      await writeFile(resolve(directory, name), JSON.stringify(value));
+    const request = resolve(f.root, "loop.json");
+    await writeFile(request, JSON.stringify(f.config));
+    const bin = resolve(f.root, "bin");
+    await mkdir(bin);
+    const jobs = ["linux", "windows", "macos"].map((name) => ({
+      name,
+      status: "completed",
+      conclusion: "success",
+    }));
+    await writeFile(
+      resolve(bin, "gh"),
+      `#!/bin/sh
+case "$2" in
+  */jobs*) echo '${JSON.stringify({ total_count: jobs.length, jobs })}' ;;
+  *) echo '${JSON.stringify({ workflow_runs: [{ id: 1, head_sha: sha, event: "push", head_branch: "main", status: "completed" }] })}' ;;
+esac
+`,
+      { mode: 0o700 },
+    );
+    const before = await snapshot(directory);
+    const result = await run(request, { PATH: `${bin}:${process.env.PATH}` });
+    expect(result.code, result.stderr).toBe(0);
+    const lines = result.stdout
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
+    expect(
+      lines.map((row) => row.status),
+      result.stdout,
+    ).toEqual(["supervisor-started", "upgrade-ready"]);
+    expect(lines[1]).toMatchObject({ sha, run: f.config.run });
+    expect(await snapshot(directory)).toEqual(before);
+  },
+);
 
 it("exposes the usage blocked terminal on both protocol streams", async () => {
   const result = await new Promise<{ code: number | null; stdout: string; stderr: string }>(
@@ -366,6 +654,7 @@ it("runs one selected issue through observation, completion and the next selecti
     },
     { status: "observing-author", cursor: 0 },
     { status: "complete", cursor: 1, participants: 2 },
+    { status: "upgrade-deferred", reason: "upgrade-deferred:fetch:unavailable" },
     { status: "idle", run: "synthetic-command-run" },
   ]);
 }, 30_000);
@@ -1015,6 +1304,7 @@ it("production main offers the channel through the attached parent and never req
     { status: "supervisor-started", run: "synthetic-command-run" },
     { status: "observing-author", cursor: 0 },
     { status: "complete", cursor: 1, participants: 2 },
+    { status: "upgrade-deferred", reason: "upgrade-deferred:fetch:unavailable" },
     { status: "idle", run: "synthetic-command-run" },
   ]);
   expect(record).toMatchObject({ requests: [], replies: [], unaccepted: [] });
@@ -1084,6 +1374,7 @@ it("production main composes the channel onto the queue's native adapter for a b
     { status: "supervisor-started", run: "synthetic-command-run" },
     { status: "observing-author", cursor: 0 },
     { status: "complete", cursor: 1, participants: 2 },
+    { status: "upgrade-deferred", reason: "upgrade-deferred:fetch:unavailable" },
     { status: "idle", run: "synthetic-command-run" },
   ]);
   expect(record).toMatchObject({ requests: [], replies: [], unaccepted: [] });

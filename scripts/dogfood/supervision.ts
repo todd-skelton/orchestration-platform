@@ -59,6 +59,7 @@ export interface IssueObservation {
 }
 
 export interface SupervisionAdapter {
+  completedBoundary?(): Promise<void>;
   prerequisiteOwners?(
     config: LoopConfig,
     blocked: SelectedIssue,
@@ -687,6 +688,9 @@ export async function nextCycle(
 
     if (declaration) throw new QueueBlocked("prerequisite-not-admitted");
     await pauseBeforeSelection(config);
+    // ISS-250: saved active cycles return above. Re-entry and fresh completion
+    // meet here, before any next selection or its planning read.
+    if (cycle > 1) await adapter.completedBoundary?.();
     const readMain = async () => {
       try {
         const main = await adapter.currentMain(config, config.stableExecutorRoot);
