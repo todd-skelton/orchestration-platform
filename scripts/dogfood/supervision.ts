@@ -1205,7 +1205,7 @@ export function repositorySupervisionAdapter(
         break;
       } catch (error) {
         const failure = new GithubCommandFailure(error);
-        if (purpose === "learning-note" && failure.transport && attempt < 2) {
+        if (failure.transport && attempt < 2) {
           await pause((attempt + 1) * 1000);
           continue;
         }

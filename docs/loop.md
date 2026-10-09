@@ -202,9 +202,18 @@ to refreshed gates too, without renewing the allowance. Draft mutations are
 observed before applying them, so an already matching mirror is not repeated.
 Publication, hosted checks and merge/deploy remain bound to the resulting head.
 ISS-211 addresses the draft/note observation stops in `m1-iss210-20260925T0020`:
-only primary draft reads (including mutation confirmation) and learning-note
+primary draft reads (including mutation confirmation) and learning-note
 reads retry classified GitHub transport failures, with three attempts and
-1-second then 2-second waits. Sibling census and other issue reads stay single-shot.
+1-second then 2-second waits. ISS-248 extends the existing supervision issue-view
+retry to default reads after cycle 27 of `m1-iss219-20260930T1030` stopped on
+a classified connection failure while its stop-note reads recovered in-process.
+This includes prerequisite admission and retained detours, saved-cycle resume,
+and start/complete observations before and after ready removal or closure.
+Only the read repeats, including already-classified non-pre-send transport;
+mutations and acquired-response parsing remain outside the retry. Exhausted
+default reads retain `issue-observation-unavailable`; note reads retain
+`learning-note-state-unknown`. Pre-selection board/census, sibling census and
+unrelated reads stay single-shot.
 After any comment response, a fresh marker observation reconciles acceptance;
 only a proved pre-send failure plus fresh absence permits one additional post
 in that call. A comment HTTP 5xx is uncertain, never pre-send. Exhausted reads
@@ -220,8 +229,10 @@ responses that fail parsing or shape checks. The existing diagnostic reaches the
 stop body's bounded `Diagnostic:` and blocked output's `diagnostics`. A failed
 learning-note lifecycle also reports its `QueueBlocked.diagnostics` as
 `lifecycleDiagnostics` beside `lifecycleReason`; unrelated errors retain
-`learning-note-state-unknown` without a diagnostic. Non-note reads remain
-single-shot, and pre-selection board/census and current-main refusals are unchanged.
+`learning-note-state-unknown` without a diagnostic. ISS-248 retains these
+diagnostics, non-transport and malformed-response refusals, and the existing
+non-parking stop lifecycle. Pre-selection board/census and current-main
+refusals are unchanged.
 Published delivery, including a pending publication intent whose response may
 have been lost, resumes its existing reconciliation, checks and mutations; it
 does not rewrite an in-flight publication merely because main moved. An exact
