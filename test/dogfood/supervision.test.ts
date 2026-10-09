@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import * as githubFailures from "../../scripts/dogfood/github-command-failure.js";
 import { expectedBoardItems, type BoardSnapshot } from "../../scripts/planning/board-check.mjs";
 import { loadPlanningSnapshot, type PlanningSnapshot } from "../../scripts/planning/check.mjs";
 import * as planningLoader from "../../scripts/planning/check.mjs";
@@ -55,11 +56,12 @@ function noteTransport(
   });
 }
 
-async function noteFixture() {
+async function noteFixture(selection = selected().selection) {
   const root = await mkdtemp(resolve(tmpdir(), "supervision-note-"));
   roots.push(root);
   const config = loop(root);
   const cycle = selected();
+  cycle.selection = selection;
   cycle.initialHistory = [
     {
       ordinal: 1,
@@ -77,9 +79,9 @@ async function noteFixture() {
   ];
   await persistCycle(config, cycle);
   const row = {
-    number: 362,
+    number: selection.number,
     state: "OPEN",
-    body: "<!-- planning-key: ISS-105 -->",
+    body: `<!-- planning-key: ${selection.key} -->`,
     labels: [{ name: "ready" }],
     comments: [] as { body: string }[],
   };
@@ -97,6 +99,14 @@ async function noteFixture() {
         stdout: "https://github.com/fixture/repository/issues/362#issuecomment-1",
         stderr: "",
       };
+    }
+    if (args[1] === "edit") {
+      row.labels = [];
+      return { stdout: "", stderr: "" };
+    }
+    if (args[1] === "close") {
+      row.state = "CLOSED";
+      return { stdout: "", stderr: "" };
     }
     throw new Error(`unexpected mutation: ${args.join(" ")}`);
   });
@@ -304,24 +314,373 @@ it.each([
   ).rejects.toMatchObject({ code: "ENOENT" });
 });
 
-it.each(["start", "complete"])(
-  "ISS-211 non-note %s observation stays single-shot",
-  async (mode) => {
-    const f = await noteFixture();
-    f.probe.mockRejectedValue(noteTransport());
-    const operation =
-      mode === "start"
-        ? startCycle(f.config, f.cycle, f.adapter)
-        : completeCycle(f.config, f.cycle, [], f.adapter);
-    await expect(operation).rejects.toMatchObject({
-      reason: "issue-observation-unavailable",
-      diagnostics: "GitHub connection failed before send",
+async function selectedReadFixture() {
+  const f = await noteFixture({
+    ...selected().selection,
+    key: "fixture-iss248",
+    number: 9248,
+  });
+  f.config.repository = "synthetic-iss248/repository";
+  f.row.labels = [];
+  return f;
+}
+
+function expectIssueViews(f: Awaited<ReturnType<typeof selectedReadFixture>>, count: number) {
+  const views = f.run.mock.calls.filter(([, args]) => args[1] === "view");
+  expect(views).toHaveLength(count);
+  for (const call of views)
+    expect(call).toEqual([
+      "gh",
+      [
+        "issue",
+        "view",
+        "9248",
+        "--json",
+        "number,body,state,labels,comments",
+        "--repo",
+        "github.com/synthetic-iss248/repository",
+      ],
+      f.config.stableExecutorRoot,
+    ]);
+}
+
+it.each(["direct", "start"])(
+  "ISS-248 first pre-send failure recovers through %s without mutation",
+  async (caller) => {
+    const f = await selectedReadFixture();
+    const before = await snapshot(f.directory);
+    const classification = vi.spyOn(githubFailures, "GithubCommandFailure");
+    // Synthetic failed execFile result, not the incident's undisclosed stderr
+    // and not an already-classified failure passed back through commands.run.
+    f.probe.mockRejectedValueOnce(noteTransport());
+    if (caller === "direct")
+      await expect(f.adapter.issue(f.config, 9248)).resolves.toEqual({
+        key: "fixture-iss248",
+        state: "OPEN",
+        labels: [],
+        comments: [],
+      });
+    else
+      await expect(startCycle(f.config, f.cycle, f.adapter)).resolves.toEqual({
+        status: "working",
+      });
+    expect(classification).toHaveBeenCalledTimes(1);
+    expect(classification.mock.results[0]!.value).toMatchObject({
+      preSend: true,
+      transport: true,
+      message: "GitHub connection failed before send",
     });
-    expect(f.probe).toHaveBeenCalledTimes(1);
-    expect(f.pause).not.toHaveBeenCalled();
-    expect(f.post).not.toHaveBeenCalled();
+    expectIssueViews(f, 2);
+    expect(f.pause.mock.calls).toEqual([[1000]]);
+    expect(f.events).toEqual(["view", "view"]);
+    expect(f.run.mock.invocationCallOrder[0]).toBeLessThan(f.pause.mock.invocationCallOrder[0]!);
+    expect(f.pause.mock.invocationCallOrder[0]).toBeLessThan(f.run.mock.invocationCallOrder[1]!);
+    expect(await snapshot(f.directory)).toEqual(before);
   },
 );
+
+it("ISS-248 third view succeeds and the next observation is single-shot", async () => {
+  const f = await selectedReadFixture();
+  f.probe.mockRejectedValueOnce(noteTransport()).mockRejectedValueOnce(noteTransport());
+  await expect(f.adapter.issue(f.config, 9248)).resolves.toMatchObject({ key: "fixture-iss248" });
+  expectIssueViews(f, 3);
+  expect(f.pause.mock.calls).toEqual([[1000], [2000]]);
+  const order = [
+    ...f.run.mock.invocationCallOrder.map((at) => ({ at, event: "view" })),
+    ...f.pause.mock.invocationCallOrder.map((at, i) => ({ at, event: f.pause.mock.calls[i]![0] })),
+  ]
+    .sort((a, b) => a.at - b.at)
+    .map(({ event }) => event);
+  expect(order).toEqual(["view", 1000, "view", 2000, "view"]);
+  await expect(f.adapter.issue(f.config, 9248)).resolves.toMatchObject({ state: "OPEN" });
+  expectIssueViews(f, 4);
+  expect(f.pause.mock.calls).toEqual([[1000], [2000]]);
+  expect(f.events).toEqual(["view", "view", "view", "view"]);
+});
+
+it.each([
+  'Post "https://api.github.com/graphql": EOF',
+  "gh: Service Unavailable (HTTP 503)",
+  'Post "https://api.github.com/graphql": read tcp 192.0.2.1:1: i/o timeout',
+  'Post "https://api.github.com/graphql": read tcp 192.0.2.1:1: connection reset by peer',
+])("ISS-248 non-pre-send transport recovers: %s", async (stderr) => {
+  const f = await selectedReadFixture();
+  const classification = vi.spyOn(githubFailures, "GithubCommandFailure");
+  f.probe.mockRejectedValueOnce(noteTransport(stderr));
+  await expect(f.adapter.issue(f.config, 9248)).resolves.toMatchObject({ state: "OPEN" });
+  expect(classification.mock.results[0]!.value).toMatchObject({
+    preSend: false,
+    transport: true,
+    message: "GitHub transport response unavailable",
+  });
+  expectIssueViews(f, 2);
+  expect(f.pause.mock.calls).toEqual([[1000]]);
+  expect(f.events).toEqual(["view", "view"]);
+});
+
+it.each(["start", "complete", "learning-note"])(
+  "ISS-248 exhausted %s read stops at three views with its sanitized category",
+  async (caller) => {
+    const f = await selectedReadFixture();
+    const before = await snapshot(f.directory);
+    for (let i = 0; i < 3; i++) f.probe.mockRejectedValueOnce(noteTransport());
+    // A valid fourth response makes a raised bound finite and discriminating.
+    const operation =
+      caller === "start"
+        ? startCycle(f.config, f.cycle, f.adapter)
+        : caller === "complete"
+          ? completeCycle(f.config, f.cycle, f.cycle.initialHistory, f.adapter)
+          : f.adapter.issue(f.config, 9248, "learning-note");
+    await expect(operation).rejects.toMatchObject({
+      reason:
+        caller === "learning-note"
+          ? "learning-note-state-unknown"
+          : "issue-observation-unavailable",
+      diagnostics: "GitHub connection failed before send",
+    });
+    expectIssueViews(f, 3);
+    expect(f.pause.mock.calls).toEqual([[1000], [2000]]);
+    expect(f.events).toEqual(["view", "view", "view"]);
+    expect(await snapshot(f.directory)).toEqual(before);
+  },
+);
+
+it.each(
+  ["start", "complete"].flatMap((caller) =>
+    ["unclassified", "no-code", "401", "403"].map((mode) => ({ caller, mode })),
+  ),
+)("ISS-248 $caller non-transport $mode refusal stays single-shot", async ({ caller, mode }) => {
+  const f = await selectedReadFixture();
+  const failure = noteTransport(
+    mode === "401" || mode === "403" ? `gh: Forbidden (HTTP ${mode})` : "unclassified failure",
+  );
+  if (mode === "no-code") {
+    failure.stderr = noteTransport().stderr;
+    Reflect.deleteProperty(failure, "code");
+  }
+  f.probe.mockRejectedValueOnce(failure);
+  await expect(
+    caller === "start"
+      ? startCycle(f.config, f.cycle, f.adapter)
+      : completeCycle(f.config, f.cycle, [], f.adapter),
+    mode,
+  ).rejects.toMatchObject({
+    reason: "issue-observation-unavailable",
+    diagnostics: "GitHub command outcome unknown",
+  });
+  expectIssueViews(f, 1);
+  expect(f.pause).not.toHaveBeenCalled();
+  expect(f.events).toEqual(["view"]);
+});
+
+it.each(["json", "number", "labels", "comments"])(
+  "ISS-248 acquired malformed %s refuses before retry",
+  async (field) => {
+    const f = await selectedReadFixture();
+    const payload =
+      field === "json"
+        ? "not JSON"
+        : JSON.stringify({
+            ...f.row,
+            [field]: field === "number" ? 999 : [{}],
+          });
+    f.probe.mockResolvedValueOnce(payload);
+    await expect(f.adapter.issue(f.config, 9248)).rejects.toMatchObject({
+      reason: "issue-observation-unavailable",
+      diagnostics: "malformed issue observation",
+    });
+    expectIssueViews(f, 1);
+    expect(f.pause).not.toHaveBeenCalled();
+    expect(f.events).toEqual(["view"]);
+  },
+);
+
+it("ISS-248 changed key refuses without retry or write", async () => {
+  const f = await selectedReadFixture();
+  f.row.body = "<!-- planning-key: fixture-other -->";
+  await expect(startCycle(f.config, f.cycle, f.adapter)).rejects.toMatchObject({
+    reason: "selected-issue-identity-drift",
+  });
+  expectIssueViews(f, 1);
+  expect(f.pause).not.toHaveBeenCalled();
+  expect(f.events).toEqual(["view"]);
+});
+
+it("ISS-248 closed observation alone does not complete the cycle", async () => {
+  const f = await selectedReadFixture();
+  f.row.state = "CLOSED";
+  const before = await snapshot(f.directory);
+  await expect(startCycle(f.config, f.cycle, f.adapter)).resolves.toEqual({ status: "closed" });
+  expectIssueViews(f, 1);
+  expect(f.pause).not.toHaveBeenCalled();
+  expect(f.events).toEqual(["view"]);
+  expect(await snapshot(f.directory)).toEqual(before);
+});
+
+it.each(["ready-retained", "closed-after-edit", "open-after-close"])(
+  "ISS-248 confirmation retains authoritative refusal: %s",
+  async (mode) => {
+    const f = await selectedReadFixture();
+    f.row.labels = [{ name: "ready" }];
+    const before = await snapshot(f.directory);
+    f.probe.mockResolvedValueOnce(JSON.stringify(f.row)).mockResolvedValueOnce(
+      JSON.stringify({
+        ...f.row,
+        state: mode === "closed-after-edit" ? "CLOSED" : "OPEN",
+        labels: mode === "closed-after-edit" ? [] : f.row.labels,
+      }),
+    );
+    await expect(
+      mode === "open-after-close"
+        ? completeCycle(f.config, f.cycle, f.cycle.initialHistory, f.adapter)
+        : startCycle(f.config, f.cycle, f.adapter),
+    ).rejects.toMatchObject({
+      reason:
+        mode === "open-after-close"
+          ? "completed-issue-state-unknown"
+          : "working-label-state-unknown",
+    });
+    expectIssueViews(f, 2);
+    expect(f.pause).not.toHaveBeenCalled();
+    expect(f.events).toEqual(["view", mode === "open-after-close" ? "close" : "edit", "view"]);
+    expect(await snapshot(f.directory)).toEqual(before);
+  },
+);
+
+it.each(["start", "complete"])(
+  "ISS-248 %s retries the confirmation read without repeating the mutation",
+  async (caller) => {
+    const f = await selectedReadFixture();
+    f.row.labels = [{ name: "ready" }];
+    const before = await snapshot(f.directory);
+    f.probe.mockResolvedValueOnce(JSON.stringify(f.row)).mockRejectedValueOnce(noteTransport());
+    if (caller === "start") {
+      await expect(startCycle(f.config, f.cycle, f.adapter)).resolves.toEqual({
+        status: "working",
+      });
+      expect(f.row.labels).toEqual([]);
+      expect(await snapshot(f.directory)).toEqual(before);
+    } else {
+      await completeCycle(f.config, f.cycle, f.cycle.initialHistory, f.adapter);
+      expect(f.row.state).toBe("CLOSED");
+      const after = await snapshot(f.directory);
+      const completion = resolve(f.directory, "cycle-1-complete.json");
+      expect(JSON.parse(after.get(completion)!)).toEqual({
+        selection: f.cycle.selection,
+        history: f.cycle.initialHistory,
+      });
+      after.delete(completion);
+      expect(after).toEqual(before);
+    }
+    expectIssueViews(f, 3);
+    expect(f.pause.mock.calls).toEqual([[1000]]);
+    expect(f.events).toEqual(["view", caller === "start" ? "edit" : "close", "view", "view"]);
+    const mutation = f.run.mock.calls.find(([, args]) => args[1] !== "view")!;
+    expect(mutation[1]).toEqual([
+      "issue",
+      caller === "start" ? "edit" : "close",
+      "9248",
+      ...(caller === "start" ? ["--remove-label", "ready"] : []),
+      "--repo",
+      "github.com/synthetic-iss248/repository",
+    ]);
+  },
+);
+
+it("ISS-248 saved-cycle resume repeats only the read and retains all records", async () => {
+  const f = await selectedReadFixture();
+  const before = await snapshot(f.directory);
+  f.probe.mockRejectedValueOnce(noteTransport());
+  const resumed = await nextCycle(f.config, f.config.stableExecutorRoot, f.adapter, f.policy);
+  expect(resumed?.selection).toEqual(f.cycle.selection);
+  expectIssueViews(f, 2);
+  expect(f.pause.mock.calls).toEqual([[1000]]);
+  expect(f.events).toEqual(["view", "view"]);
+  expect(await snapshot(f.directory)).toEqual(before);
+});
+
+it("ISS-248 exhausted observation creates one non-parking stop and ordinary restart", async () => {
+  const f = await selectedReadFixture();
+  const selection = await readFile(resolve(f.directory, "cycle-1-selected.json"));
+  for (let i = 0; i < 3; i++) f.probe.mockRejectedValueOnce(noteTransport());
+  const failure = await startCycle(f.config, f.cycle, f.adapter).catch((error: unknown) => error);
+  expect(failure).toBeInstanceOf(QueueBlocked);
+  const blocked = failure as QueueBlocked;
+  expect(blocked).toMatchObject({
+    reason: "issue-observation-unavailable",
+    diagnostics: "GitHub connection failed before send",
+  });
+  expect(f.events).toEqual(["view", "view", "view"]);
+  await expect(
+    stopCycle(f.config, f.cycle, blocked.reason, 1, f.adapter, f.policy, blocked.diagnostics),
+  ).resolves.toBe("run");
+  const stopped = await snapshot(f.directory);
+  expect(stopped.size).toBe(3); // selection, one intent, one note completion
+  const intent = JSON.parse(await readFile(resolve(f.directory, "cycle-1-stop-1.json"), "utf8"));
+  expect(intent).toMatchObject({ attempts: 1, history: f.cycle.initialHistory });
+  expect(intent.body).toContain('Diagnostic: "GitHub connection failed before send"');
+  expect(JSON.stringify([...stopped])).not.toMatch(/SECRET|Bearer|command echo|graphql/);
+  expect(f.post).toHaveBeenCalledTimes(1);
+  expect(f.park).not.toHaveBeenCalled();
+  expect(f.events).toEqual(["view", "view", "view", "view", "comment", "view"]);
+  expect(f.pause.mock.calls).toEqual([[1000], [2000]]);
+  await expect(f.reconcile()).resolves.toBeUndefined();
+  await expect(
+    nextCycle(f.config, f.config.stableExecutorRoot, f.adapter, f.policy),
+  ).resolves.toMatchObject({ selection: f.cycle.selection });
+  await expect(startCycle(f.config, f.cycle, f.adapter)).resolves.toEqual({ status: "working" });
+  expect(await snapshot(f.directory)).toEqual(stopped);
+  expect(await readFile(resolve(f.directory, "cycle-1-selected.json"))).toEqual(selection);
+  expect(f.post).toHaveBeenCalledTimes(1);
+  expect(f.pause.mock.calls).toEqual([[1000], [2000]]);
+});
+
+it("ISS-248 prerequisite admission and retained detour use the same read boundary", async () => {
+  const f = await prerequisiteFixture();
+  roots.push(f.root);
+  const original = f.host.issue;
+  const pendingFailures = new Set([f.blocked.selection.number, f.loop.prerequisite!.number]);
+  const run = vi.fn(async (_executable: string, args: string[], _cwd: string) => {
+    expect(args.slice(0, 2)).toEqual(["issue", "view"]);
+    const number = Number(args[2]);
+    if (pendingFailures.delete(number)) throw noteTransport();
+    const row = await original(f.loop, number);
+    return {
+      stdout: JSON.stringify({
+        number,
+        body: `<!-- planning-key: ${row.key} -->`,
+        state: row.state,
+        labels: row.labels.map((name) => ({ name })),
+        comments: row.comments.map((body) => ({ body })),
+      }),
+      stderr: "",
+    };
+  });
+  const pause = vi.fn(async (_ms: number) => {});
+  f.host.issue = repositorySupervisionAdapter({ run }, pause).issue;
+  const before = await snapshot(f.runState);
+  const launches = f.calls.filter((call) => call.startsWith("launch:"));
+  const detour = (await f.advance())!;
+  expect(detour.selection.key).toBe(f.loop.prerequisite!.key);
+  expect(run.mock.calls.map(([, args]) => args[2])).toEqual(["159", "159", "110", "110"]);
+  expect(pause.mock.calls).toEqual([[1000], [1000]]);
+  expect(await snapshot(f.runState)).toEqual(before);
+  await persistCycle(f.loop, detour);
+  const retained = await snapshot(f.runState);
+  pendingFailures.add(110);
+  expect(await f.advance()).toEqual(detour);
+  expect(run.mock.calls.map(([, args]) => args[2])).toEqual([
+    "159",
+    "159",
+    "110",
+    "110",
+    "110",
+    "110",
+  ]);
+  expect(pause.mock.calls).toEqual([[1000], [1000], [1000]]);
+  expect(await snapshot(f.runState)).toEqual(retained);
+  expect(f.calls.filter((call) => call.startsWith("launch:"))).toEqual(launches);
+});
 
 it.each(["malformed-json", "wrong-number"])(
   "ISS-217 non-note %s retains a fixed malformed observation diagnostic",
