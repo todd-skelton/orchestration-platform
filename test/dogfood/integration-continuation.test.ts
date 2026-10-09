@@ -693,6 +693,7 @@ it.each([
   "unexecuted again",
   "refresh",
   "pending receipt",
+  "published admission negatives",
   "published conflict",
   "published CRLF conflict",
   "published CRLF outside hunk",
@@ -1173,248 +1174,258 @@ it.each([
     );
     const hef = resolve(item.source.stateDirectory, "gate-stop-continuation.json");
     const admit = () => admitPublishedConflict(config, f.selected, observations);
-    for (const object of [
-      p,
-      p.selected,
-      p.authority,
-      p.hosted,
-      p.hosted.publication,
-      p.resolutions[0]!,
-    ]) {
-      (object as any).unknown = true;
-      await expect(admit()).rejects.toMatchObject({ reason: "invalid-integration-continuation" });
-      delete (object as any).unknown;
-    }
-    await expect(
-      admitPublishedConflict(
-        { ...config, providerOutageCeilingMs: 12345 },
-        f.selected,
-        observations,
-      ),
-    ).rejects.toMatchObject({
-      reason: "integration-continuation-history-unavailable",
-      diagnostics: "complete original configuration and recovery declaration",
-    });
-    await expect(
-      admitPublishedConflict(
-        config,
-        { ...f.selected, base: repair, planningRevision: repair },
-        observations,
-      ),
-    ).rejects.toMatchObject({
-      reason: "integration-continuation-history-unavailable",
-      diagnostics: "retained stop-cycle selection",
-    });
-    await f.put(item.source.stateDirectory, "gate-stop-continuation", {
-      synthetic: "already spent",
-    });
-    await expect(admit()).rejects.toMatchObject({
-      reason: "integration-continuation-already-consumed",
-    });
-    await rm(hef);
-    await writeFile(
-      claim,
-      JSON.stringify({ schemaVersion: "dogfood-integration-continuation/v1" }),
-    );
-    await expect(admit()).rejects.toMatchObject({
-      reason: "integration-continuation-already-consumed",
-    });
-    await rm(claim);
-    const originalReceipt = comments[0]!;
-    comments[0] += " ";
-    await expect(admit()).rejects.toMatchObject({
-      reason: "integration-continuation-history-unavailable",
-      diagnostics: "complete ISS-216 receipt",
-    });
-    comments[0] = originalReceipt;
-    await f.git(["push", "--force", "origin", `${repair}:refs/heads/${publication!.sourceBranch}`]);
-    await expect(admit()).rejects.toMatchObject({ reason: "publication-state-unknown" });
-    await f.git([
-      "push",
-      "--force",
-      "origin",
-      `${failed.head}:refs/heads/${publication!.sourceBranch}`,
-    ]);
-    liveAuthorityBody = "SYNTHETIC superseded decision";
-    await expect(admit()).rejects.toMatchObject({
-      reason: "integration-continuation-authority-mismatch",
-    });
-    liveAuthorityBody = p.authority.body;
-    const controls: [string, () => void, string, string?][] = [
-      [
-        "log hash",
-        () => {
-          p.hosted.evidenceSha256 = "e".repeat(64);
-        },
-        "integration-continuation-history-unavailable",
-        "failed log hash",
-      ],
-      [
-        "history digest",
-        () => {
-          p.terminalHistoryDigest = "e".repeat(64);
-        },
-        "integration-continuation-history-unavailable",
-        "failed hosted cursor and raw history",
-      ],
-      [
-        "reservation digest",
-        () => {
-          p.terminalReservationSha256 = "e".repeat(64);
-        },
-        "integration-continuation-history-unavailable",
-        "original reserved v2 and consumed resolution",
-      ],
-      [
-        "source author",
-        () => {
-          p.authorId = "different-author";
-        },
-        "integration-continuation-history-unavailable",
-        "source author and original base",
-      ],
-      [
-        "source PASS",
-        () => {
-          packet.reviewId = "different-review";
-        },
-        "integration-continuation-history-unavailable",
-        "failed hosted cursor and raw history",
-      ],
-      [
-        "base",
-        () => {
-          p.originalBase = repair;
-        },
-        "integration-continuation-history-unavailable",
-        "source author and original base",
-      ],
-      [
-        "owning issue",
-        () => {
-          e.data.issue.state = "CLOSED";
-        },
-        "integration-continuation-history-unavailable",
-        "open owning issue",
-      ],
-      [
-        "publication head",
-        () => {
-          e.data.pr.headRefOid = repair;
-        },
-        "gate-stop-authorization-mismatch",
-        "publication identity",
-      ],
-      [
-        "publication ref",
-        () => {
-          e.data.pr.headRefName = "different";
-        },
-        "gate-stop-authorization-mismatch",
-        "publication identity",
-      ],
-      [
-        "draft",
-        () => {
-          e.data.pr.isDraft = false;
-        },
-        "gate-stop-authorization-mismatch",
-        "publication identity",
-      ],
-      [
-        "green pending",
-        () => {
-          e.data.green.status = "in_progress";
-        },
-        "gate-stop-authorization-mismatch",
-        "failed/green workflow identity or result",
-      ],
-      [
-        "green cancelled",
-        () => {
-          e.data.greenJobs[3]!.conclusion = "cancelled";
-        },
-        "gate-stop-authorization-mismatch",
-        "green effective jobs must execute or retain failed-attempt successes",
-      ],
-      [
-        "green skipped",
-        () => {
-          e.data.greenJobs[3]!.conclusion = "skipped";
-        },
-        "gate-stop-authorization-mismatch",
-        "green effective jobs must execute or retain failed-attempt successes",
-      ],
-      [
-        "green unexecuted",
-        () => {
-          e.data.greenJobs[3]!.runner_id = 0;
-        },
-        "gate-stop-authorization-mismatch",
-        "green effective jobs must execute or retain failed-attempt successes",
-      ],
-      [
-        "green empty steps",
-        () => {
-          e.data.greenJobs[3]!.steps = [];
-        },
-        "gate-stop-authorization-mismatch",
-        "green effective jobs must execute or retain failed-attempt successes",
-      ],
-      [
-        "foreign workflow",
-        () => {
-          e.data.green.workflow_id++;
-        },
-        "gate-stop-authorization-mismatch",
-        "failed/green workflow identity or result",
-      ],
-      [
-        "control base",
-        () => {
-          e.data.control.head_sha = failed.head;
-        },
-        "gate-stop-authorization-mismatch",
-        "base control identity or result",
-      ],
-      [
-        "extra failed job",
-        () => {
-          e.data.jobs[0]!.conclusion = "failure";
-        },
-        "gate-stop-authorization-mismatch",
-        "failed attempt job Node 24 / ubuntu-latest",
-      ],
-    ];
-    for (const [label, change, reason, diagnostics] of controls) {
-      const oldPacket = structuredClone(packet),
-        oldData = structuredClone(e.data);
-      change();
-      await expect(admit(), label).rejects.toMatchObject({
-        reason,
-        ...(diagnostics ? { diagnostics } : {}),
-      });
-      await expect(readFile(claim), label).rejects.toMatchObject({ code: "ENOENT" });
-      expect(await readFile(attemptPath, "utf8"), label).toBe(failedBytes);
-      Object.assign(packet, oldPacket);
-      // Keep the bound case reference used by this fixture's authority transport.
-      Object.assign(p, oldPacket.publishedConflict);
-      packet.publishedConflict = p;
-      Object.assign(e.data, oldData);
-    }
+    const admissionNegatives = mode === "published admission negatives";
     const later = resolve(f.runState, "cycle-4-complete.json");
     const laterSelection = { ...cycle.selection, cycle: 4, key: "ISS-999", number: 999 };
     await f.put(f.runState, "cycle-4-selected", laterSelection);
-    const nearCeiling = [...failed.history];
-    while (
-      nearCeiling.filter((row: QueueParticipant) => row.item.startsWith(`${KEY}:`)).length < 63
-    )
-      nearCeiling.push(
-        participant(nearCeiling.length + 1, `${KEY}:4`, "refresh", "reviewer", "passed"),
+    // ISS-247's Windows timeout: exercise this matrix once, separately from
+    // resolution/delivery lifecycles, under the same unchanged test budget.
+    if (admissionNegatives) {
+      for (const object of [
+        p,
+        p.selected,
+        p.authority,
+        p.hosted,
+        p.hosted.publication,
+        p.resolutions[0]!,
+      ]) {
+        (object as any).unknown = true;
+        await expect(admit()).rejects.toMatchObject({ reason: "invalid-integration-continuation" });
+        delete (object as any).unknown;
+      }
+      await expect(
+        admitPublishedConflict(
+          { ...config, providerOutageCeilingMs: 12345 },
+          f.selected,
+          observations,
+        ),
+      ).rejects.toMatchObject({
+        reason: "integration-continuation-history-unavailable",
+        diagnostics: "complete original configuration and recovery declaration",
+      });
+      await expect(
+        admitPublishedConflict(
+          config,
+          { ...f.selected, base: repair, planningRevision: repair },
+          observations,
+        ),
+      ).rejects.toMatchObject({
+        reason: "integration-continuation-history-unavailable",
+        diagnostics: "retained stop-cycle selection",
+      });
+      await f.put(item.source.stateDirectory, "gate-stop-continuation", {
+        synthetic: "already spent",
+      });
+      await expect(admit()).rejects.toMatchObject({
+        reason: "integration-continuation-already-consumed",
+      });
+      await rm(hef);
+      await writeFile(
+        claim,
+        JSON.stringify({ schemaVersion: "dogfood-integration-continuation/v1" }),
       );
-    await writeFile(later, JSON.stringify({ selection: laterSelection, history: nearCeiling }));
-    await expect(admit()).rejects.toMatchObject({ reason: "native-launch-ceiling-exhausted" });
-    await rm(later);
+      await expect(admit()).rejects.toMatchObject({
+        reason: "integration-continuation-already-consumed",
+      });
+      await rm(claim);
+      const originalReceipt = comments[0]!;
+      comments[0] += " ";
+      await expect(admit()).rejects.toMatchObject({
+        reason: "integration-continuation-history-unavailable",
+        diagnostics: "complete ISS-216 receipt",
+      });
+      comments[0] = originalReceipt;
+      await f.git([
+        "push",
+        "--force",
+        "origin",
+        `${repair}:refs/heads/${publication!.sourceBranch}`,
+      ]);
+      await expect(admit()).rejects.toMatchObject({ reason: "publication-state-unknown" });
+      await f.git([
+        "push",
+        "--force",
+        "origin",
+        `${failed.head}:refs/heads/${publication!.sourceBranch}`,
+      ]);
+      liveAuthorityBody = "SYNTHETIC superseded decision";
+      await expect(admit()).rejects.toMatchObject({
+        reason: "integration-continuation-authority-mismatch",
+      });
+      liveAuthorityBody = p.authority.body;
+      const controls: [string, () => void, string, string?][] = [
+        [
+          "log hash",
+          () => {
+            p.hosted.evidenceSha256 = "e".repeat(64);
+          },
+          "integration-continuation-history-unavailable",
+          "failed log hash",
+        ],
+        [
+          "history digest",
+          () => {
+            p.terminalHistoryDigest = "e".repeat(64);
+          },
+          "integration-continuation-history-unavailable",
+          "failed hosted cursor and raw history",
+        ],
+        [
+          "reservation digest",
+          () => {
+            p.terminalReservationSha256 = "e".repeat(64);
+          },
+          "integration-continuation-history-unavailable",
+          "original reserved v2 and consumed resolution",
+        ],
+        [
+          "source author",
+          () => {
+            p.authorId = "different-author";
+          },
+          "integration-continuation-history-unavailable",
+          "source author and original base",
+        ],
+        [
+          "source PASS",
+          () => {
+            packet.reviewId = "different-review";
+          },
+          "integration-continuation-history-unavailable",
+          "failed hosted cursor and raw history",
+        ],
+        [
+          "base",
+          () => {
+            p.originalBase = repair;
+          },
+          "integration-continuation-history-unavailable",
+          "source author and original base",
+        ],
+        [
+          "owning issue",
+          () => {
+            e.data.issue.state = "CLOSED";
+          },
+          "integration-continuation-history-unavailable",
+          "open owning issue",
+        ],
+        [
+          "publication head",
+          () => {
+            e.data.pr.headRefOid = repair;
+          },
+          "gate-stop-authorization-mismatch",
+          "publication identity",
+        ],
+        [
+          "publication ref",
+          () => {
+            e.data.pr.headRefName = "different";
+          },
+          "gate-stop-authorization-mismatch",
+          "publication identity",
+        ],
+        [
+          "draft",
+          () => {
+            e.data.pr.isDraft = false;
+          },
+          "gate-stop-authorization-mismatch",
+          "publication identity",
+        ],
+        [
+          "green pending",
+          () => {
+            e.data.green.status = "in_progress";
+          },
+          "gate-stop-authorization-mismatch",
+          "failed/green workflow identity or result",
+        ],
+        [
+          "green cancelled",
+          () => {
+            e.data.greenJobs[3]!.conclusion = "cancelled";
+          },
+          "gate-stop-authorization-mismatch",
+          "green effective jobs must execute or retain failed-attempt successes",
+        ],
+        [
+          "green skipped",
+          () => {
+            e.data.greenJobs[3]!.conclusion = "skipped";
+          },
+          "gate-stop-authorization-mismatch",
+          "green effective jobs must execute or retain failed-attempt successes",
+        ],
+        [
+          "green unexecuted",
+          () => {
+            e.data.greenJobs[3]!.runner_id = 0;
+          },
+          "gate-stop-authorization-mismatch",
+          "green effective jobs must execute or retain failed-attempt successes",
+        ],
+        [
+          "green empty steps",
+          () => {
+            e.data.greenJobs[3]!.steps = [];
+          },
+          "gate-stop-authorization-mismatch",
+          "green effective jobs must execute or retain failed-attempt successes",
+        ],
+        [
+          "foreign workflow",
+          () => {
+            e.data.green.workflow_id++;
+          },
+          "gate-stop-authorization-mismatch",
+          "failed/green workflow identity or result",
+        ],
+        [
+          "control base",
+          () => {
+            e.data.control.head_sha = failed.head;
+          },
+          "gate-stop-authorization-mismatch",
+          "base control identity or result",
+        ],
+        [
+          "extra failed job",
+          () => {
+            e.data.jobs[0]!.conclusion = "failure";
+          },
+          "gate-stop-authorization-mismatch",
+          "failed attempt job Node 24 / ubuntu-latest",
+        ],
+      ];
+      for (const [label, change, reason, diagnostics] of controls) {
+        const oldPacket = structuredClone(packet),
+          oldData = structuredClone(e.data);
+        change();
+        await expect(admit(), label).rejects.toMatchObject({
+          reason,
+          ...(diagnostics ? { diagnostics } : {}),
+        });
+        await expect(readFile(claim), label).rejects.toMatchObject({ code: "ENOENT" });
+        expect(await readFile(attemptPath, "utf8"), label).toBe(failedBytes);
+        Object.assign(packet, oldPacket);
+        // Keep the bound case reference used by this fixture's authority transport.
+        Object.assign(p, oldPacket.publishedConflict);
+        packet.publishedConflict = p;
+        Object.assign(e.data, oldData);
+      }
+      const nearCeiling = [...failed.history];
+      while (
+        nearCeiling.filter((row: QueueParticipant) => row.item.startsWith(`${KEY}:`)).length < 63
+      )
+        nearCeiling.push(
+          participant(nearCeiling.length + 1, `${KEY}:4`, "refresh", "reviewer", "passed"),
+        );
+      await writeFile(later, JSON.stringify({ selection: laterSelection, history: nearCeiling }));
+      await expect(admit()).rejects.toMatchObject({ reason: "native-launch-ceiling-exhausted" });
+      await rm(later);
+    }
     // A later unrelated cycle remains charged and precedes the new integration pair.
     const laterHistory = [
       ...failed.history,
@@ -1434,7 +1445,7 @@ it.each([
       expect(await readFile(attemptPath, "utf8")).toBe(failedBytes);
       return;
     }
-    if (mode === "published conflict") {
+    if (admissionNegatives) {
       const write = filesystem.writeFile;
       const spy = vi
         .spyOn(filesystem, "writeFile")
@@ -1478,6 +1489,17 @@ it.each([
     await admit();
     expect(e.calls).toHaveLength(reads);
     expect(await readFile(claim, "utf8")).toBe(reserved);
+    if (admissionNegatives) {
+      expect(launches).toEqual(["author", "reviewer"]);
+      expect(effects.filter((effect) => effect === "publish")).toHaveLength(1);
+      expect(await readFile(attemptPath, "utf8")).toBe(failedBytes);
+      expect(await readFile(f.reservation, "utf8")).toBe(terminalBytes);
+      await expect(readFile(hef)).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(readdir(resolve(packet.attemptDirectory, "integration"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+      return;
+    }
     q = await f.compose(config);
     expect(q.stateDirectory).toBe(resolve(packet.attemptDirectory, "integration"));
     expect(q.items[0]!.implementationAttempt).toBe(4);
