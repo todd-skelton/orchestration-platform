@@ -400,6 +400,105 @@ This capability supplies no #457 ruling, planning re-entry, installation or
 preserved-run resume authority. Host installation still requires independent
 exact-head PASS, three-OS bootstrap green and absent supervisors.
 
+ISS-247 adds the distinct optional `publishedConflict` case to the existing
+`dogfood-integration-continuation/v1` packet. It cannot coexist with
+`spentResolution`. The original packet fields retain their exact meanings;
+`allowedPaths` is exactly the ruled K path set. Existing v1 and spent-resolution
+packets keep their shapes and behavior. This case recognizes a completed
+`continuation-failed` stop caused by executed hosted failure of a published,
+locally gated, exact-head source PASS with a spent resolution. It does not run
+HEF, manufacture an exhausted-conflict stop or require an earlier conflict seed
+or failed resolution author. An existing HEF reservation or integration claim
+cannot chain into a fresh admission.
+
+The recursively closed `publishedConflict` object contains:
+
+- `kind: "published-conflict"`, absolute `sourceDirectory`, `authorId`,
+  `originalBase` and observed integration `main` (full commit IDs).
+- `originalConfig`, the unchanged UTF-8 `JSON.stringify` serialization of the
+  complete original loop config, and `originalConfigSha256`. The current config
+  is exactly that object with `integrationContinuation` appended. No material
+  field is omitted from either fingerprint. `terminalReservationSha256` hashes
+  the complete original v2 reservation bytes; `terminalBindingDigest` is its
+  `queueDigest(binding)`. `terminalHistoryDigest` hashes the failed attempt's
+  original history. The original config contains the complete, byte-identical
+  already-reserved v2 packet for this same attempt; no other recovery declaration
+  may coexist.
+- `selected`, exactly `{cycle, key, number, base, planningRevision}`, names the
+  retained stop-cycle selection. Its selection without `cycle` must equal the
+  original v2 binding, including both revisions. Fresh selection at newer main
+  refuses; readiness is not this entrypoint. `receiptUrl` names the complete
+  ISS-216 stop receipt, compared byte for byte with the posted stop body.
+- `authority`, exactly `{id, author, body, sha256}`, binds the fresh interpreted
+  decision at the packet's `authorityUrl`. It names the stop, source, reviewed
+  head, main, original config/reservation/history/binding digests, complete
+  serialized hosted and scope objects, and `changedPathsExercised: yes|no`.
+  The host interprets that decision; matching text never establishes approval.
+- `hosted`, exactly `{actionsRun, runAttempt, job, greenRunAttempt, controlRun,
+  controlRunAttempt, controlJob, evidenceSha256, failedTests, publication}`.
+  Run, attempt and job identifiers are positive safe integers; hashes are
+  lowercase SHA-256. `publication` is exactly `{number, url, head, sourceBranch}`.
+  Failed tests are nonempty unique normalized repository-relative file paths.
+  The existing executed-hosted observer requires complete failed and later-green
+  censuses from the same run/workflow/head and an executed green shard control
+  on the recorded base. An unchanged failed test path is only a necessary filter,
+  not causal exoneration. Required green, positive runners and nonempty execution
+  steps remain mandatory; a second failed shard refuses.
+- `resolutions` and `preservation`, arrays of exactly `{path, semantics}`.
+  Resolutions enumerate K; preservation names only a ruled subset of eligible U.
+  K retains literal hunk-only edits and immutable outside bytes/line endings.
+  Auto-merge and census membership grant no preservation permission.
+
+Immediately before claiming, admission observes the OPEN owning issue and OPEN
+draft PR, source author/PASS/gates, failed log digest, complete hosted evidence,
+receipt and decision. It fetches actual main, reads the published remote ref,
+and independently reproduces the conflict using the native conflict capture in
+a disposable probe. It brackets main, remote and external observations again.
+The claim retains UTC bounds and production GitHub response bytes. Unavailable
+observations stop the host; identity, scope and authority refusals create no
+claim or worker. The live branch, failed cursor, old worktrees and all old
+records remain unchanged.
+
+The existing lineage-exclusive `integration-continuation-<digest>.json` claim
+retains the packet, both config bindings, original v2 and failed cursor bytes,
+stop/completion bytes, external observations, native census, complete effective
+later run history, routing progress and inherited allowances. Its fresh
+`integration/` workspace begins at the reviewed published head at the same
+absolute attempt. The historical resolution stays spent; this claim alone owns
+one separately ruled resolution. The finite integration bound is three actual
+launches, or two when the shared mechanical retry is spent, still within the
+issue's unchanged 64-launch allowance. Later unrelated participants stay charged
+without spending this integration's bound. No source repair, gate correction,
+new attempt or second resolution is admitted.
+
+Saved completed and pending stop reconciliation, native composition and direct
+delivery select this same claim. Replay uses retained observations and resumes
+the existing workers/effects; it does not reserve again. Failed/completed entry
+is terminal. The resolver captures the actual C/M/S seed and census before its
+author and rechecks exact ruled K/U. A seed is never accepted. Independent
+exact-result DELTA must inspect both parents, changed K/U, auto-merged behavior
+and direct callers with inherited traces. Later compatible clean main movement
+requires fresh DELTA and gates inside the same bound; another conflict stops.
+Every final-head local/after-mirror gate runs again, then ordinary forward-only
+refresh updates the same PR using its exact remote-head lease. Publication
+reconciliation, Ubuntu/Windows/macOS hosted green, merge, cleanup and applicable
+deployment remain mandatory. Old PASS and green are provenance for their own
+head only.
+
+ISS-239 owns the judged-recovery inventory and ISS-241 its producer retirement
+handoff: include this packet validator/producer, `admitPublishedConflict`, the
+integration claim, `queueConfigFromLoop`, completed/pending stop readers and
+`nextCycle`, `queueStep`, `boundedNative`, `refreshDelivery`, and publication/replay
+consumers. This adds no cutover policy or cyclic blocker. ISS-221 retains Windows
+budget ownership; no timeout, shard, workflow, attribution or waiver changes.
+This behavior is candidate-only until independent exact-head review, local gates
+and executed final-head three-OS bootstrap precede a separately authorized
+quiescent installation. The host must then obtain a new interpreted decision,
+construct the reviewed closed declaration and capture fresh admission evidence
+for the same saved cycle. Landing grants no ISS-234 readiness, rerun, grant,
+installation or start. Refusal means retain evidence and withhold start; rollback
+never deletes claims, resets charges or edits history.
+
 ISS-214 repairs `unreviewed-delivery-source` at
 `loop-stop:m1-iss146-147-20260914T2325:11:2`: publication had advanced the
 accepted review beyond the immutable source PASS. Integration delivery now

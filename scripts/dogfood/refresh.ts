@@ -82,6 +82,10 @@ export async function refreshDelivery(
     context: string;
     main: string;
     inheritedDirectory: string;
+    published?: {
+      resolutions: { path: string; semantics: string }[];
+      preservation: { path: string; semantics: string }[];
+    };
     spent?: {
       conflict: Conflict;
       candidate: string;
@@ -134,6 +138,8 @@ export async function refreshDelivery(
   }
   if ((!published && !publishing && !complete) || dirty) {
     const main = await currentMain(git);
+    if (!active && continuation?.published && main !== continuation.main)
+      throw new QueueBlocked("current-main-moved");
     if (continuation && (await git(["merge-base", continuation.main, main])) !== continuation.main)
       throw new QueueBlocked("current-main-incompatible");
     if (dirty && (await git(["merge-base", main, published.head])) === main)
@@ -279,7 +285,8 @@ export async function refreshDelivery(
         active.previousHead,
         active.conflict,
         () => save(origin, "native-refresh", active),
-        continuation?.spent?.preservation,
+        continuation?.published?.preservation ?? continuation?.spent?.preservation,
+        continuation?.published?.resolutions,
       );
     } catch (error) {
       if (

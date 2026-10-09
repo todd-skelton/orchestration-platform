@@ -168,6 +168,7 @@ export const stopRules: readonly StopRule[] = [
       "inconsistent-source-review-verdict",
       "integration-continuation-already-consumed",
       "integration-continuation-history-unavailable",
+      "integration-continuation-launch-exhausted",
       // The worker intent survives; no attempt identity exists to resume.
       "launch-identity-timeout-reconcile",
       "loop-roots-overlap",
