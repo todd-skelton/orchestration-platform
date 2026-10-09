@@ -926,7 +926,7 @@
       "title": "Refresh verification-only delivery again when main moves after a passing delta review",
       "summary": "Reuse native current-main refresh after verification PASS, including retained movement stops, without renewing the grant, reservation or implementation attempt.",
       "milestone": "M1",
-      "blockedBy": ["ISS-233", "ISS-243", "ISS-244", "ISS-245"]
+      "blockedBy": ["ISS-233", "ISS-243", "ISS-244", "ISS-245", "ISS-246"]
     },
     {
       "key": "ISS-235",
@@ -1013,6 +1013,14 @@
       "file": "planning/drafts/ISS-245.md",
       "title": "Preserve resumed-cycle participant history and preflight terminal admission without writes",
       "summary": "Repair the retained hosted-continuation history fork without refunding launches or editing records, and share complete v2 admission checks with a read-only preflight before ISS-234 re-entry.",
+      "milestone": "M1",
+      "blockedBy": []
+    },
+    {
+      "key": "ISS-246",
+      "file": "planning/drafts/ISS-246.md",
+      "title": "Admit one host-bound re-observation of an executed hosted failure on an unchanged reviewed head",
+      "summary": "Make the no-next-attempt work-failure stop self-describing and add one closed hostedExecutedFailure gate-stop grant kind, bound to an executed exact-head green control, without retries, timeout, attempt or ceiling changes.",
       "milestone": "M1",
       "blockedBy": []
     }
