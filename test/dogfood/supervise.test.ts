@@ -10,6 +10,7 @@ import {
   readdir,
   realpath,
   rm,
+  symlink,
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -532,7 +533,15 @@ it.skipIf(process.platform !== "linux")(
     await f.commit("planning/draft.md", "planning\n");
     const sha = await f.publish();
     f.config.run = "synthetic-command-run";
-    f.config.gitExecutable = (await promisify(execFile)("which", ["git"])).stdout.trim();
+    const bin = resolve(f.root, "bin");
+    await mkdir(bin);
+    // The supervisor prepends the configured Git directory to PATH. Keep the
+    // fake gh there too, so a colocated host gh (as on Ubuntu CI) cannot win.
+    f.config.gitExecutable = resolve(bin, "git");
+    await symlink(
+      (await promisify(execFile)("which", ["git"])).stdout.trim(),
+      f.config.gitExecutable,
+    );
     const directory = resolve(f.config.stateRoot, f.config.run);
     await mkdir(directory);
     const selection = {
@@ -552,8 +561,6 @@ it.skipIf(process.platform !== "linux")(
       await writeFile(resolve(directory, name), JSON.stringify(value));
     const request = resolve(f.root, "loop.json");
     await writeFile(request, JSON.stringify(f.config));
-    const bin = resolve(f.root, "bin");
-    await mkdir(bin);
     const jobs = ["linux", "windows", "macos"].map((name) => ({
       name,
       status: "completed",
@@ -562,6 +569,7 @@ it.skipIf(process.platform !== "linux")(
     await writeFile(
       resolve(bin, "gh"),
       `#!/bin/sh
+printf '%s\\n' "$@" >> "$0.calls"
 case "$2" in
   */jobs*) echo '${JSON.stringify({ total_count: jobs.length, jobs })}' ;;
   *) echo '${JSON.stringify({ workflow_runs: [{ id: 1, head_sha: sha, event: "push", head_branch: "main", status: "completed" }] })}' ;;
@@ -581,6 +589,12 @@ esac
       result.stdout,
     ).toEqual(["supervisor-started", "upgrade-ready"]);
     expect(lines[1]).toMatchObject({ sha, run: f.config.run });
+    expect((await readFile(resolve(bin, "gh.calls"), "utf8")).trim().split("\n")).toEqual([
+      "api",
+      `repos/${f.config.repository}/actions/workflows/bootstrap.yml/runs?event=push&branch=main&head_sha=${sha}&per_page=100`,
+      "api",
+      `repos/${f.config.repository}/actions/runs/1/jobs?filter=latest&per_page=100&page=1`,
+    ]);
     expect(await snapshot(directory)).toEqual(before);
   },
 );
