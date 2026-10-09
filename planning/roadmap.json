@@ -1031,6 +1031,22 @@
       "summary": "Bind one same-attempt published-conflict integration to the retained v2 admission and fresh authority, preserving spent allowances, exact-head review and forward PR delivery.",
       "milestone": "M1",
       "blockedBy": []
+    },
+    {
+      "key": "ISS-249",
+      "file": "planning/drafts/ISS-249.md",
+      "title": "Resolve native ladder models from the shared model registry instead of literal selectors",
+      "summary": "Let ladders name model families resolved from the shared registry when a launch intent is written, ending selector-replacement slices without migrating saved runs.",
+      "milestone": "M1",
+      "blockedBy": []
+    },
+    {
+      "key": "ISS-250",
+      "file": "planning/drafts/ISS-250.md",
+      "title": "Install a reviewed green main between issues without a host script",
+      "summary": "Install reviewed three-OS-green fast-forward main at an issue boundary under an executor-wide lock with a durable failure state, replacing per-landing host install scripts.",
+      "milestone": "M1",
+      "blockedBy": []
     }
   ]
 }
