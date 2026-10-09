@@ -1,6 +1,8 @@
 import { realpathSync, writeFileSync } from "node:fs";
-import { access, readFile, realpath } from "node:fs/promises";
-import { delimiter, dirname, resolve } from "node:path";
+import { access, readFile, readdir, realpath, writeFile } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { basename, delimiter, dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   currentCandidateAttempt,
@@ -364,6 +366,142 @@ let repositoryAdapter;
 let queueAdapter;
 let supervisor;
 
+const execute = promisify(execFile);
+class UpgradeReady extends Error {
+  constructor(sha) {
+    super("upgrade-ready");
+    this.sha = sha;
+  }
+}
+
+// ISS-250: use native merge receipts, not commit parent count, as the review
+// witness. Setup identifies this executor's self runs without replaying them.
+export async function executorUpgrade(config, repository, command = execute) {
+  if (config.adapter !== "self") return undefined;
+  const git = async (...args) =>
+    (await command(config.gitExecutable, ["-C", config.stableExecutorRoot, ...args])).stdout;
+  let sha;
+  let step = "fetch";
+  try {
+    await git("fetch", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main");
+    sha = (await git("rev-parse", "refs/remotes/origin/main")).trim();
+    const from = (await git("rev-parse", "HEAD")).trim();
+    if (sha === from) return undefined;
+    try {
+      await git("merge-base", "--is-ancestor", from, sha);
+    } catch {
+      return { sha, reason: "upgrade-deferred:not-fast-forward" };
+    }
+    step = "witness";
+    const witnesses = new Set();
+    const stateRoot = resolve(config.stateRoot);
+    const executorRoot = await realpath(config.stableExecutorRoot);
+    const files = await readdir(stateRoot, { recursive: true });
+    for (const file of files.filter((file) => basename(file) === "merge.json")) {
+      const directory = dirname(resolve(stateRoot, file));
+      for (let parent = directory; parent !== stateRoot; parent = dirname(parent)) {
+        let setup;
+        try {
+          setup = JSON.parse(await readFile(resolve(parent, "setup/setup-plan.json"), "utf8"));
+        } catch (error) {
+          if (error.code === "ENOENT") continue;
+          throw error;
+        }
+        if (
+          setup.repository === config.repository &&
+          setup.controllerRoot === executorRoot &&
+          setup.repositoryRoot === executorRoot
+        ) {
+          witnesses.add(
+            JSON.parse(await readFile(resolve(directory, "merge.json"), "utf8")).mergeCommit,
+          );
+        }
+        break;
+      }
+    }
+    for (const commit of (await git("rev-list", "--first-parent", `${from}..${sha}`))
+      .trim()
+      .split("\n")) {
+      step = commit;
+      if (witnesses.has(commit)) continue;
+      const paths = (await git("diff", "--no-renames", "--name-only", "-z", `${commit}^1`, commit))
+        .split("\0")
+        .filter(Boolean);
+      if (!paths.every((path) => path.startsWith("planning/")))
+        return { sha, reason: `upgrade-deferred:${commit}:missing-witness` };
+    }
+    step = "bootstrap";
+    const api = async (path) => JSON.parse((await command("gh", ["api", path])).stdout);
+    const runs = await api(
+      `repos/${config.repository}/actions/workflows/bootstrap.yml/runs?event=push&branch=main&head_sha=${sha}&per_page=100`,
+    );
+    const run = runs.workflow_runs
+      .filter((run) => run.head_sha === sha && run.event === "push" && run.head_branch === "main")
+      .sort((a, b) => b.id - a.id)[0];
+    if (!run || run.status !== "completed")
+      return { sha, reason: `upgrade-deferred:${sha}:bootstrap-incomplete` };
+    const jobs = [];
+    let total;
+    for (let page = 1; ; page++) {
+      const result = await api(
+        `repos/${config.repository}/actions/runs/${run.id}/jobs?filter=latest&per_page=100&page=${page}`,
+      );
+      total ??= result.total_count;
+      if (!Number.isSafeInteger(total) || total < 0 || result.total_count !== total)
+        throw new Error("incomplete job census");
+      jobs.push(...result.jobs);
+      if (jobs.length === total) break;
+      if (jobs.length > total || !result.jobs.length) throw new Error("incomplete job census");
+    }
+    for (const name of await repository.requiredChecks({ repository: config.repository })) {
+      const rows = jobs.filter((job) => job.name === name);
+      if (rows.length !== 1 || rows[0].status !== "completed" || rows[0].conclusion !== "success")
+        return { sha, reason: `upgrade-deferred:${sha}:required-check:${name}` };
+    }
+    return { sha };
+  } catch {
+    return { sha, reason: `upgrade-deferred:${step}:unavailable` };
+  }
+}
+
+export function upgradeBoundary(
+  config,
+  repository,
+  command = execute,
+  emit = (row) => process.stdout.write(`${JSON.stringify(row)}\n`),
+) {
+  // A peer's lock deferral must pass the resumed boundary once, without
+  // disabling a later completed cycle's opportunity to install the same S.
+  let deferredSha = process.env.ORCHESTRATION_UPGRADE_DEFERRED_SHA;
+  return async () => {
+    const result = await executorUpgrade(config, repository, command);
+    const deferred = result?.sha !== undefined && result.sha === deferredSha;
+    deferredSha = undefined;
+    if (!result || deferred) return;
+    if (!result.reason) throw new UpgradeReady(result.sha);
+    const row = {
+      status: "upgrade-deferred",
+      ...result,
+      run: config.run,
+      observedAt: new Date().toISOString(),
+    };
+    try {
+      await writeFile(
+        resolve(
+          config.stateRoot,
+          config.run,
+          `upgrade-deferred-${result.sha ?? "unavailable"}.json`,
+        ),
+        `${JSON.stringify(row)}\n`,
+        { flag: "wx", flush: true },
+      );
+      emit(row);
+    } catch (error) {
+      if (error.code !== "EEXIST") throw error;
+    }
+  };
+}
+
 function blocked(error, lifecycleReason, lifecycleDiagnostics) {
   const reason = error instanceof QueueBlocked ? error.reason : "queue-internal-error";
   const diagnostics =
@@ -468,6 +606,7 @@ async function main() {
     repositoryAdapter = await loadRepositoryAdapter(loop.adapter, executingRoot);
     process.env.PATH = `${dirname(loop.gitExecutable)}${delimiter}${process.env.PATH ?? ""}`;
     supervisor = repositorySupervisionAdapter();
+    supervisor.completedBoundary = upgradeBoundary(loop, repositoryAdapter);
     for (;;) {
       let retained;
       try {
@@ -555,6 +694,12 @@ async function main() {
         queueAdapter = undefined;
         validatedExecutor = undefined;
       } catch (error) {
+        if (error instanceof UpgradeReady) {
+          process.stdout.write(
+            `${JSON.stringify({ status: "upgrade-ready", sha: error.sha, run: loop.run, observedAt: new Date().toISOString() })}\n`,
+          );
+          break;
+        }
         if (error instanceof PauseRequested) {
           process.stdout.write(
             `${JSON.stringify({ status: "paused", run: loop.run, pid: process.pid, observedAt: new Date().toISOString(), pause: error.pause })}\n`,

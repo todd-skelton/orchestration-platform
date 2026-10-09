@@ -83,6 +83,8 @@ export const stopRules: readonly StopRule[] = [
     legacyParking: false,
     reasons: [
       "provider-model-refused",
+      "executor-busy",
+      "upgrade-requires-restart",
       "operator-evidence-required",
       "operator-evidence-authority",
       "native-launch-ceiling-exhausted",
@@ -112,6 +114,7 @@ export const stopRules: readonly StopRule[] = [
     faultClass: "halt",
     legacyParking: false,
     reasons: [
+      "executor-install-failed",
       "invalid-verification-only-grant",
       "verification-only-mismatch",
       "verification-only-spent",
