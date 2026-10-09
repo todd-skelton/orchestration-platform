@@ -60,6 +60,7 @@ import * as self from "../../adapters/self.mjs";
 import { candidatePlanningBase } from "../../scripts/planning/candidate-board.mjs";
 import { repositoryDeliveryPolicy } from "../../scripts/dogfood/repository-adapter.mjs";
 import { isItemStopReason } from "../../scripts/dogfood/supervision.js";
+import { refreshDelivery } from "../../scripts/dogfood/refresh.js";
 
 vi.mock("../../scripts/planning/board-check.mjs", async (original) => ({
   ...(await original<object>()),
@@ -2404,6 +2405,45 @@ async function conflictingFixture() {
   f.setResolution(() => writeFile(resolve(f.sourceTree, "feature.txt"), "candidate\nmain\n"));
   return f;
 }
+
+it("ISS-247 rejects a stale DELTA summary at the native refresh acceptance boundary", async () => {
+  const f = await conflictingFixture();
+  await f.deliver();
+  const active = JSON.parse(await readFile(resolve(f.sourceState, "native-refresh.json"), "utf8"));
+  const terminalPath = resolve(active.directory, "reviewer-terminal.json");
+  const terminal = JSON.parse(await readFile(terminalPath, "utf8"));
+  const summary = JSON.parse(terminal.summary);
+  expect(summary.head).toBe(active.head);
+  expect(active.head).not.toBe(f.head);
+  await writeFile(
+    terminalPath,
+    JSON.stringify({ ...terminal, summary: JSON.stringify({ ...summary, head: f.head }) }),
+  );
+  const config: DeliveryConfig = {
+    ...f.source,
+    controller: f.source.owner,
+    controllerRoot: f.repo,
+    repositoryRoot: f.repo,
+    controllerRevision: f.config.controllerRevision,
+    candidateHead: f.head,
+    retries: 0,
+    policy: {},
+  };
+  const evidence = await f.delivery.source(config);
+  const gates = [...f.gateHeads];
+  await expect(
+    refreshDelivery(
+      config,
+      f.source,
+      evidence,
+      f.native,
+      f.item.setup.pilotWorktree,
+      0,
+      f.delivery,
+    ),
+  ).rejects.toMatchObject({ reason: "malformed-source-review-report" });
+  expect(f.gateHeads).toEqual(gates);
+});
 
 const overlapPath = "overlap with spaces.txt";
 const overlapBase = "first\n" + "stable\n".repeat(10) + "last\n";
