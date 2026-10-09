@@ -1,6 +1,15 @@
 import { createHash } from "node:crypto";
 import { execFile } from "node:child_process";
-import { mkdir, readFile, readdir, realpath, rename, writeFile } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  realpath,
+  rename,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { basename, dirname, isAbsolute, posix, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { unparkInstructions as selfUnparkInstructions } from "../../adapters/self.mjs";
@@ -20,6 +29,8 @@ import type {
   TerminalAttemptAdmission,
 } from "./continuation.js";
 import type { Conflict } from "./conflict.js";
+// @ts-expect-error Node 24 executes this private TypeScript composition directly.
+import { captureConflict } from "./conflict.ts";
 export { continuationSlug };
 import { resolveRouting, validateRoutingRow, type RoutingRow } from "./routing.mjs";
 import { assertControllerExecutor, githubDeliveryAdapter } from "./delivery-adapter.mjs";
@@ -117,6 +128,11 @@ export interface QueueItem {
     sourceDirectory: string;
     main: string;
     context: string;
+    published?: {
+      resolutions: { path: string; semantics: string }[];
+      preservation: { path: string; semantics: string }[];
+      launchLimit: number;
+    };
     spent?: {
       conflict: Conflict;
       candidate: string;
@@ -844,7 +860,9 @@ export function validateLoopConfig(config: LoopConfig) {
     const packet = config.terminalAttemptAdmission;
     validateTerminalAttemptAdmission(packet);
     demand(
-      !config.integrationContinuation &&
+      (!config.integrationContinuation ||
+        (packet.schemaVersion === "dogfood-terminal-attempt-admission/v2" &&
+          !!config.integrationContinuation.publishedConflict)) &&
         !config.acceptedReplan &&
         (!config.gateStopAuthorization ||
           (packet.schemaVersion === "dogfood-terminal-attempt-admission/v2" &&
@@ -910,6 +928,20 @@ export function validateLoopConfig(config: LoopConfig) {
         packet.absoluteAttempt <= config.attemptCeiling,
       "invalid-integration-continuation",
     );
+    if (packet.publishedConflict)
+      demand(
+        config.adapter === "self" &&
+          config.terminalAttemptAdmission?.schemaVersion ===
+            "dogfood-terminal-attempt-admission/v2" &&
+          config.terminalAttemptAdmission.issueKey === packet.issueKey &&
+          config.terminalAttemptAdmission.nextAbsoluteAttempt === packet.absoluteAttempt &&
+          !config.gateStopAuthorization &&
+          !config.verificationOnly &&
+          !config.prerequisite &&
+          !config.blockedCycleResume &&
+          packet.publishedConflict.sourceDirectory === resolve(packet.attemptDirectory, "source"),
+        "invalid-integration-continuation",
+      );
   }
   demand(
     config.providerOutageCeilingMs === undefined ||
@@ -2176,6 +2208,465 @@ export async function admitExecutedHostedStop(
   return reservation;
 }
 
+// ISS-247: observe the actual published hosted stop without spending HEF or
+// changing its failed cursor. Only the native integration claim admits work.
+export async function admitPublishedConflict(
+  config: LoopConfig,
+  selected: SelectedLoopIssue,
+  observations: Parameters<typeof admitExecutedHostedStop>[2] = {},
+) {
+  validateLoopConfig(config);
+  const packet = config.integrationContinuation;
+  const p = packet?.publishedConflict;
+  if (!packet || !p || packet.issueKey !== selected.key) return undefined;
+  const reason = "integration-continuation-history-unavailable";
+  const check = (ok: unknown, detail: string) => demand(ok, reason, detail);
+  const hash = (bytes: string | Buffer) => createHash("sha256").update(bytes).digest("hex");
+  const original: LoopConfig = JSON.parse(p.originalConfig);
+  validateLoopConfig(original);
+  check(
+    !original.integrationContinuation &&
+      !original.gateStopAuthorization &&
+      JSON.stringify(original) === p.originalConfig &&
+      queueDigest(original) === p.originalConfigSha256 &&
+      queueDigest({ ...original, integrationContinuation: packet }) === queueDigest(config),
+    "complete original configuration and recovery declaration",
+  );
+  const { cycle, ...selection } = p.selected;
+  check(queueDigest(selection) === queueDigest(selected), "retained stop-cycle selection");
+  const runDirectory = resolve(config.stateRoot, config.run);
+  const savedSelection = await json(runDirectory, `cycle-${cycle}-selected`);
+  check(queueDigest(savedSelection) === queueDigest(p.selected), "saved selection bytes");
+  const terminalName = `terminal-attempt-admission-${queueDigest({ repository: config.repository, issue: selected.key })}`;
+  const terminalBytes = await readFile(resolve(config.stateRoot, `${terminalName}.json`), "utf8");
+  const terminal = JSON.parse(terminalBytes);
+  check(
+    hash(terminalBytes) === p.terminalReservationSha256 &&
+      queueDigest(terminal.binding) === p.terminalBindingDigest &&
+      terminal.binding.configDigest === p.originalConfigSha256 &&
+      queueDigest(terminal.binding.packet) === queueDigest(config.terminalAttemptAdmission) &&
+      queueDigest(terminal.binding.selected) === queueDigest(selected) &&
+      terminal.resolutionUsed === true,
+    "original reserved v2 and consumed resolution",
+  );
+  const claimName = `integration-continuation-${queueDigest({ repository: config.repository, issue: selected.key })}`;
+  const saved = await optionalRecord(config.stateRoot, claimName);
+  if (saved !== ABSENT) {
+    demand(
+      saved.packet?.publishedConflict &&
+        queueDigest(saved.packet) === queueDigest(packet) &&
+        saved.configDigest === queueDigest(config),
+      "integration-continuation-already-consumed",
+    );
+    return saved;
+  }
+  for (const name of ["gate-stop-continuation", "gate-correction"])
+    demand(
+      (await optionalRecord(p.sourceDirectory, name)) === ABSENT,
+      "integration-continuation-already-consumed",
+    );
+  demand(
+    (await optionalRecord(resolve(packet.attemptDirectory, "integration"), "attempt")) === ABSENT,
+    "integration-continuation-already-consumed",
+  );
+  const stopNumber = Number(packet.stopMarker.split(":")[3]);
+  const stopName = `cycle-${cycle}-stop-${stopNumber}`;
+  const stopBytes = await readFile(resolve(runDirectory, `${stopName}.json`), "utf8");
+  const stop = JSON.parse(stopBytes);
+  const completionBytes = await readFile(
+    resolve(runDirectory, `${stopName}-complete.json`),
+    "utf8",
+  );
+  const completion = JSON.parse(completionBytes);
+  check(
+    stop.marker === packet.stopMarker &&
+      stop.reason === "continuation-failed" &&
+      stop.attempts === packet.absoluteAttempt &&
+      stop.stop === stopNumber &&
+      queueDigest(stop.selection) === queueDigest(p.selected) &&
+      completion.stop === stopNumber &&
+      queueDigest(completion.selection) === queueDigest(stop.selection) &&
+      queueDigest(completion.history) === queueDigest(stop.history),
+    "completed actual hosted stop",
+  );
+  const failedAttemptBytes = await readFile(
+    resolve(packet.attemptDirectory, "attempt.json"),
+    "utf8",
+  );
+  const attempt = JSON.parse(failedAttemptBytes);
+  validateFailedAttempt(attempt, packet.absoluteAttempt, config.attemptCeiling);
+  const logPath = resolve(p.sourceDirectory, "hosted-failure.log");
+  check(
+    attempt.run === config.run &&
+      attempt.issue === packet.issueUrl &&
+      attempt.item === `${selected.key}:${packet.absoluteAttempt}` &&
+      attempt.candidateAttempt === packet.absoluteAttempt &&
+      attempt.head === packet.candidateHead &&
+      attempt.reviewId === packet.reviewId &&
+      attempt.acceptedStage === null &&
+      attempt.stateDirectory === null &&
+      queueDigest(attempt.history) === p.terminalHistoryDigest &&
+      attempt.findings.length === 1 &&
+      attempt.findings[0]!.text === hostedFailurePrompt(logPath),
+    "failed hosted cursor and raw history",
+  );
+  const accounting = await retainedRunHistory(config, [attempt.history, stop.history]);
+  const initialHistory = accounting.history;
+  const charged = issueLaunches(initialHistory, attempt.item);
+  demand(charged + 2 <= config.nativeLaunchCeiling, "native-launch-ceiling-exhausted");
+  const source = (await json(p.sourceDirectory, "config")).config as SourceConfig;
+  const author = await json(p.sourceDirectory, "author-attempt");
+  const authorTerminal = await json(p.sourceDirectory, "author-terminal");
+  check(
+    source.run === config.run &&
+      source.issue === packet.issueUrl &&
+      source.repository === config.repository &&
+      source.stateDirectory === p.sourceDirectory &&
+      (source.mainBase ?? source.base) === p.originalBase &&
+      author.id === p.authorId &&
+      authorTerminal.id === author.id &&
+      authorTerminal.status === "passed" &&
+      authorTerminal.head === source.base,
+    "source author and original base",
+  );
+  const gitCaptures: {
+    args: string[];
+    bytes: string;
+    observationStart: string;
+    observationEnd: string;
+  }[] = [];
+  const gitAt = async (root: string, args: string[]) => {
+    const observationStart = new Date().toISOString();
+    const { stdout } = await exec(config.gitExecutable, ["-C", root, ...args]);
+    if (args[0] === "ls-remote" || args.includes("refs/remotes/origin/main^{commit}"))
+      gitCaptures.push({
+        args,
+        bytes: stdout,
+        observationStart,
+        observationEnd: new Date().toISOString(),
+      });
+    return stdout.trim();
+  };
+  const git = (args: string[]) => gitAt(config.stableExecutorRoot, args);
+  const delivery: DeliveryConfig = {
+    ...source,
+    controller: source.owner,
+    controllerRoot: config.stableExecutorRoot,
+    repositoryRoot: config.stableExecutorRoot,
+    controllerRevision: await git(["rev-parse", "HEAD"]),
+    candidateHead: packet.candidateHead,
+    retries: attempt.retries,
+    policy: {},
+  };
+  const evidence = await githubDeliveryAdapter().source(delivery);
+  check(
+    evidence.head === packet.candidateHead && evidence.reviewId === packet.reviewId,
+    "source exact-head PASS",
+  );
+  const publication = await json(p.sourceDirectory, "publication");
+  check(
+    publication.repository === config.repository &&
+      Object.entries(p.hosted.publication).every(([key, value]) => publication[key] === value),
+    "retained publication",
+  );
+  const plan = await json(p.sourceDirectory, "delivery-plan");
+  const gates = [...plan.plan.gates.beforeMirror, ...plan.plan.gates.afterMirror];
+  check(gates.length > 0, "original local gates");
+  for (const [index, name] of gates.entries()) {
+    const gate = await json(p.sourceDirectory, `gate-${index + 1}`);
+    check(gate.head === packet.candidateHead && gate.name === name, "original gate head/result");
+  }
+  const log = await readFile(logPath);
+  check(hash(log) === p.hosted.evidenceSha256, "failed log hash");
+  const header = JSON.parse(log.toString("utf8").split("\n")[0]!);
+  check(
+    header.repository === config.repository &&
+      header.run === config.run &&
+      header.issue === packet.issueUrl &&
+      header.head === packet.candidateHead &&
+      queueDigest(header.publication) === queueDigest(publication) &&
+      (header.jobs ?? header.checks).some(
+        (job: CheckEvidence) =>
+          job.bucket === "fail" &&
+          job.actions?.run === p.hosted.actionsRun &&
+          job.actions.attempt === p.hosted.runAttempt &&
+          job.actions.job === p.hosted.job,
+      ),
+    "failed log identity",
+  );
+  const changed = (
+    await exec(config.gitExecutable, [
+      "-C",
+      config.stableExecutorRoot,
+      "diff",
+      "--name-only",
+      "--no-renames",
+      "-z",
+      `${p.originalBase}...${packet.candidateHead}`,
+    ])
+  ).stdout.split("\0");
+  for (const path of p.hosted.failedTests) {
+    const literal = path.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    check(
+      !changed.includes(path) &&
+        new RegExp(`(?:^|[\\s"'(\\[›❯])${literal}(?=$|[\\s:"')\\]›❯])`, "m").test(
+          log.toString("utf8"),
+        ) &&
+        (await git(["cat-file", "-t", `${packet.candidateHead}:${path}`])) === "blob",
+      "unchanged failed test evidence",
+    );
+  }
+  const inheritedWorkerRetry =
+    source.inheritedWorkerRetry === true ||
+    attempt.retries > 0 ||
+    author.retries === 1 ||
+    (await json(p.sourceDirectory, "reviewer-attempt")).retries === 1;
+  const captures: {
+    args: string[];
+    bytes: string;
+    observationStart: string;
+    observationEnd: string;
+  }[] = [];
+  const commands: GithubDeliveryCommands = {
+    async gh(_config, args) {
+      return (await exec("gh", args)).stdout;
+    },
+    async ghJson(current, args) {
+      const observationStart = new Date().toISOString();
+      const bytes = observations.commands
+        ? JSON.stringify(await observations.commands.ghJson(current, args))
+        : (await exec("gh", args)).stdout;
+      captures.push({ args, bytes, observationStart, observationEnd: new Date().toISOString() });
+      return JSON.parse(bytes);
+    },
+  };
+  const observationStart = new Date().toISOString();
+  const readAuthority = async (url: string) => {
+    if (observations.authority) return observations.authority(url);
+    const id = url.split("issuecomment-")[1];
+    const comment = await commands.ghJson(delivery, [
+      "api",
+      `repos/${config.repository}/issues/comments/${id}`,
+    ]);
+    return {
+      id: String(comment.id),
+      url: comment.html_url,
+      author: comment.user?.login,
+      body: comment.body,
+      capturedAt: new Date().toISOString(),
+    };
+  };
+  let issue, authority, receipt, hosted;
+  const main = await currentMain(git);
+  check(main === p.main, "ruled current main");
+  demand(
+    (await git(["merge-base", p.originalBase, main])) === p.originalBase,
+    "current-main-incompatible",
+  );
+  const remoteHead = async () => {
+    try {
+      return await git([
+        "ls-remote",
+        "--exit-code",
+        "origin",
+        `refs/heads/${p.hosted.publication.sourceBranch}`,
+      ]);
+    } catch {
+      throw new QueueBlocked("publication-state-unknown");
+    }
+  };
+  const remote = await remoteHead();
+  demand(
+    remote === `${packet.candidateHead}\trefs/heads/${p.hosted.publication.sourceBranch}`,
+    "publication-state-unknown",
+  );
+  const conflict: Conflict = {};
+  try {
+    issue = await commands.ghJson(delivery, [
+      "issue",
+      "view",
+      String(selected.number),
+      "--repo",
+      config.repository,
+      "--json",
+      "number,url,state",
+    ]);
+    receipt = await readAuthority(p.receiptUrl);
+    authority = await readAuthority(packet.authorityUrl);
+    hosted = await observeExecutedHostedFailure(
+      delivery,
+      publication,
+      p.hosted,
+      p.originalBase,
+      commands,
+      true,
+    );
+  } catch (error) {
+    if (error instanceof DeliveryBlocked) throw new QueueBlocked(error.reason, error.diagnostics);
+    throw new QueueBlocked("integration-continuation-authority-unavailable");
+  }
+  check(
+    issue.number === selected.number && issue.url === packet.issueUrl && issue.state === "OPEN",
+    "open owning issue",
+  );
+  check(
+    receipt.url === p.receiptUrl &&
+      receipt.id === p.receiptUrl.split("issuecomment-")[1] &&
+      receipt.body === postedStopBody(stop.body, selfUnparkInstructions),
+    "complete ISS-216 receipt",
+  );
+  demand(
+    authority.url === packet.authorityUrl &&
+      authority.id === p.authority.id &&
+      authority.author === p.authority.author &&
+      authority.body === p.authority.body &&
+      hash(authority.body) === p.authority.sha256 &&
+      [
+        packet.stopMarker,
+        p.sourceDirectory,
+        p.originalConfigSha256,
+        p.terminalReservationSha256,
+        packet.candidateHead,
+        p.main,
+        p.terminalHistoryDigest,
+        p.terminalBindingDigest,
+        JSON.stringify(p.hosted),
+        JSON.stringify(p.resolutions),
+        JSON.stringify(p.preservation),
+      ].every((s) => authority.body.includes(s)) &&
+      /changedPathsExercised: (yes|no)/.test(authority.body),
+    "integration-continuation-authority-mismatch",
+  );
+  check(
+    hosted.control.run_attempt === p.hosted.controlRunAttempt &&
+      hosted.controlJobs.jobs.some(
+        (job) =>
+          job.id === p.hosted.controlJob &&
+          job.name === hosted.failedJobs.jobs.find((j) => j.id === p.hosted.job)?.name,
+      ),
+    "bound control attempt/job",
+  );
+  // The same native capture used by resolution proves K and seed-bound U in a
+  // disposable probe. It grants no launch and never touches a retained worktree.
+  const probe = await mkdtemp(resolve(config.stateRoot, "published-conflict-probe-"));
+  const worktree = resolve(probe, "worktree");
+  let added = false;
+  try {
+    await git(["worktree", "add", "--detach", worktree, packet.candidateHead]);
+    added = true;
+    await captureConflict(
+      { ...source, worktree, stateDirectory: probe, correctionPaths: packet.allowedPaths },
+      { git: gitAt } as Adapter,
+      main,
+      packet.candidateHead,
+      conflict,
+      async () => {},
+    );
+    demand(
+      queueDigest(conflict.census!.k) === queueDigest([...packet.allowedPaths].sort()) &&
+        p.preservation.every((rule) => conflict.census!.u.includes(rule.path)),
+      "conflict-resolution-scope-escape",
+    );
+  } finally {
+    if (added) await git(["worktree", "remove", "--force", worktree]);
+    await rm(probe, { recursive: true, force: true });
+  }
+  // Bracket moving publication, owning issue and main after native reproduction.
+  try {
+    const repeated = await observeExecutedHostedFailure(
+      delivery,
+      publication,
+      p.hosted,
+      p.originalBase,
+      commands,
+      true,
+    );
+    check(
+      queueDigest({
+        ...hosted,
+        observationStart: null,
+        observationEnd: null,
+        mergeability: null,
+      }) ===
+        queueDigest({
+          ...repeated,
+          observationStart: null,
+          observationEnd: null,
+          mergeability: null,
+        }),
+      "moving hosted identities",
+    );
+    const after = await commands.ghJson(delivery, [
+      "issue",
+      "view",
+      String(selected.number),
+      "--repo",
+      config.repository,
+      "--json",
+      "number,url,state",
+    ]);
+    check(queueDigest(after) === queueDigest(issue), "moving owning issue");
+    const ruling = await readAuthority(packet.authorityUrl);
+    const repeatedReceipt = await readAuthority(p.receiptUrl);
+    check(
+      repeatedReceipt.body === receipt.body &&
+        repeatedReceipt.id === receipt.id &&
+        repeatedReceipt.url === receipt.url,
+      "moving complete receipt",
+    );
+    demand(
+      ruling.body === authority.body &&
+        ruling.author === authority.author &&
+        ruling.id === authority.id &&
+        ruling.url === authority.url,
+      "integration-continuation-authority-mismatch",
+    );
+  } catch (error) {
+    if (error instanceof QueueBlocked) throw error;
+    if (error instanceof DeliveryBlocked) throw new QueueBlocked(error.reason, error.diagnostics);
+    throw new QueueBlocked("integration-continuation-authority-unavailable");
+  }
+  demand((await currentMain(git)) === main, "current-main-moved");
+  demand((await remoteHead()) === remote, "publication-state-unknown");
+  const reservation = {
+    packet,
+    configDigest: queueDigest(config),
+    originalConfig: p.originalConfig,
+    terminalBytes,
+    failedAttemptBytes,
+    failedAttemptSha256: hash(failedAttemptBytes),
+    stopBytes,
+    completionBytes,
+    receipt,
+    authority,
+    issue,
+    hosted,
+    captures,
+    gitCaptures,
+    conflict,
+    observationStart,
+    observationEnd: new Date().toISOString(),
+    remote,
+    initialHistory,
+    authorFailures: attempt.authorFailures ?? source.authorFailures ?? { count: 0, ids: [] },
+    reviewerRung:
+      initialHistory.findLast(
+        (participant) => participant.item === attempt.item && participant.role === "reviewer",
+      )?.rung ?? 0,
+    inheritedWorkerRetry,
+    resolutionUsed: true,
+    correctionUsed: terminal.correctionUsed,
+    charged,
+    launchLimit: Math.min(inheritedWorkerRetry ? 2 : 3, config.nativeLaunchCeiling - charged),
+    directory: resolve(packet.attemptDirectory, "integration"),
+  };
+  await writeFile(resolve(config.stateRoot, `${claimName}.json`), JSON.stringify(reservation), {
+    flag: "wx",
+    flush: true,
+  });
+  return reservation;
+}
+
 export async function queueConfigFromLoop(
   config: LoopConfig,
   executingRoot: string,
@@ -2307,8 +2798,11 @@ export async function queueConfigFromLoop(
       ? config.integrationContinuation
       : undefined;
   const integrationClaim = `integration-continuation-${queueDigest({ repository: config.repository, issue: selected.key })}`;
+  const publishedAdmission = integrationPacket?.publishedConflict
+    ? await admitPublishedConflict(config, selected)
+    : undefined;
   const terminalAdmission =
-    config.terminalAttemptAdmission?.issueKey === selected.key
+    !publishedAdmission && config.terminalAttemptAdmission?.issueKey === selected.key
       ? await admitTerminalAttempt(
           config,
           selected,
@@ -2324,7 +2818,7 @@ export async function queueConfigFromLoop(
         (await optionalRecord(stateRoot, integrationClaim)) === ABSENT,
         "integration-continuation-required",
       );
-    if (!terminalAdmission) {
+    if (!terminalAdmission && !publishedAdmission) {
       const reservation = await optionalRecord(
         stateRoot,
         `terminal-attempt-admission-${queueDigest({ repository: config.repository, issue: selected.key })}`,
@@ -2497,7 +2991,29 @@ export async function queueConfigFromLoop(
   let integration: QueueItem["integrationContinuation"];
   let integrationPrompt = "";
   let integrationDirectory: string | undefined;
-  if (integrationPacket) {
+  if (integrationPacket?.publishedConflict && publishedAdmission) {
+    const p = integrationPacket.publishedConflict;
+    sourceAttempt = integrationPacket.absoluteAttempt;
+    attemptBase = integrationPacket.candidateHead;
+    mainBase = p.originalBase;
+    initialHistory = publishedAdmission.initialHistory;
+    authorFailures = publishedAdmission.authorFailures;
+    reviewerRung = publishedAdmission.reviewerRung;
+    inheritedWorkerRetry = publishedAdmission.inheritedWorkerRetry;
+    integrationDirectory = publishedAdmission.directory;
+    integrationPrompt = `ISS-247 published-conflict integration, same absolute attempt ${sourceAttempt}, authorized by ${integrationPacket.authorityUrl}. Preserve both reviewed C ${attemptBase} and main M ${p.main}, all auto-merged behavior and direct callers/tests. K permits only literal marked-hunk edits under ${JSON.stringify(p.resolutions)}; immutable outside-hunk bytes and line endings remain unchanged. Only eligible seed-bound U paths under ${JSON.stringify(p.preservation)} permit preservation edits. Broader repairs are FAIL. Original source author/review, gate and execution records: ${p.sourceDirectory}; full prior attempt and traces: ${integrationPacket.attemptDirectory}. Claim and complete inherited history: ${resolve(stateRoot, `${integrationClaim}.json`)}. Historical PASS/green are provenance only; require independent exact-result-head DELTA and all final-head local, after-mirror and hosted gates. No source author, gate correction, additional implementation attempt or second resolution. Clean later main movement requires another DELTA within the same remaining launch bound. Inspect all auto-merged direct callers and tests for lost behavior, not just changed K/U.\n\n${promptContext}`;
+    integration = {
+      reviewId: integrationPacket.reviewId,
+      sourceDirectory: p.sourceDirectory,
+      main: p.main,
+      context: integrationPrompt,
+      published: {
+        resolutions: p.resolutions,
+        preservation: p.preservation,
+        launchLimit: publishedAdmission.launchLimit,
+      },
+    };
+  } else if (integrationPacket) {
     demand(issueUrl === integrationPacket.issueUrl, "integration-continuation-issue-mismatch");
     // The validated state root names the retained attempt, as the old records named it.
     const attemptDirectory = resolve(runState, basename(integrationPacket.attemptDirectory));
@@ -3128,7 +3644,12 @@ export async function queueConfigFromLoop(
                 ...integrationPacket.spentResolution.resolutions,
                 ...integrationPacket.spentResolution.preservation,
               ].map((rule) => rule.path)
-            : integrationPacket.allowedPaths,
+            : integrationPacket.publishedConflict
+              ? [
+                  ...integrationPacket.allowedPaths,
+                  ...integrationPacket.publishedConflict.preservation.map((rule) => rule.path),
+                ]
+              : integrationPacket.allowedPaths,
         }
       : {}),
     ...(config.acceptedReplan?.preReviewEvidence
@@ -3181,22 +3702,34 @@ export async function queueConfigFromLoop(
       ...(sourceBranch !== publishedBranch && !replan?.publication
         ? { localBranch: sourceBranch }
         : {}),
-      ...(replan?.publication
+      ...(integrationPacket?.publishedConflict
         ? {
             refresh: {
-              number: replan.publication.number,
-              url: replan.publication.url,
-              head: replan.publication.head,
+              number: integrationPacket.publishedConflict.hosted.publication.number,
+              url: integrationPacket.publishedConflict.hosted.publication.url,
+              head: integrationPacket.publishedConflict.hosted.publication.head,
               localBranch: sourceBranch,
             },
           }
-        : {}),
+        : replan?.publication
+          ? {
+              refresh: {
+                number: replan.publication.number,
+                url: replan.publication.url,
+                head: replan.publication.head,
+                localBranch: sourceBranch,
+              },
+            }
+          : {}),
       requiredChecks: [...source.requiredChecks],
       policy: {
         key: selected.key,
         number: selected.number,
         title: issueContext.title,
-        sourceBranch: replan?.publication?.sourceBranch ?? publishedBranch,
+        sourceBranch:
+          integrationPacket?.publishedConflict?.hosted.publication.sourceBranch ??
+          replan?.publication?.sourceBranch ??
+          publishedBranch,
       },
     },
   };
@@ -3414,6 +3947,7 @@ export function validateQueueConfig(config: QueueConfig) {
           "main",
           "context",
           ...(item.integrationContinuation.spent ? ["spent"] : []),
+          ...(item.integrationContinuation.published ? ["published"] : []),
         ]) &&
           /^[A-Za-z0-9._:-]{1,128}$/.test(item.integrationContinuation.reviewId) &&
           isAbsolute(item.integrationContinuation.sourceDirectory) &&
@@ -4226,7 +4760,9 @@ function initialAttempt(
       : {}),
     retries: item.verificationOnly
       ? item.verificationOnly.retries
-      : (item.integrationContinuation?.spent || item.terminalAttemptAdmission) &&
+      : (item.integrationContinuation?.spent ||
+            item.integrationContinuation?.published ||
+            item.terminalAttemptAdmission) &&
           item.source.inheritedWorkerRetry
         ? 1
         : 0,
@@ -5863,6 +6399,13 @@ export function repositoryQueueAdapter(
           item.integrationContinuation.spent.launchLimit
       )
         await admitRefreshReviewer(item, stage, role, current, priorHistory);
+      if (item.integrationContinuation?.published)
+        demand(
+          stage === "refresh" &&
+            priorHistory.slice(config.initialHistory.length).filter((p) => p.item === item.id)
+              .length < item.integrationContinuation.published.launchLimit,
+          "integration-continuation-launch-exhausted",
+        );
       const repairCompatiblePrompt =
         stage === "source" && role === "reviewer"
           ? `${prompt}\n\n${sourceReviewerReportPrompt(
@@ -7178,6 +7721,7 @@ export function repositoryQueueAdapter(
                   main: integrating.main,
                   inheritedDirectory: integrating.sourceDirectory,
                   ...(integrating.spent ? { spent: integrating.spent } : {}),
+                  ...(integrating.published ? { published: integrating.published } : {}),
                 }
               : undefined,
           !!item.conflictContinuation || !!integrating,

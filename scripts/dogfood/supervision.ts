@@ -199,6 +199,22 @@ async function completedItemStop(
     )
       throw new QueueBlocked(`malformed-supervision-record:cycle-${cycle}-stop-${stop}-complete`);
     // Old author-failed completions were run notes, not parking receipts.
+    if (
+      config?.integrationContinuation?.publishedConflict?.selected.cycle === cycle &&
+      config.integrationContinuation.stopMarker === intent.marker
+    ) {
+      const claim = await optionalRecord(
+        config.stateRoot,
+        `integration-continuation-${queue.queueDigest({ repository: config.repository, issue: selection.key })}`,
+      );
+      if (
+        claim !== ABSENT &&
+        queue.queueDigest(claim.packet) === queue.queueDigest(config.integrationContinuation)
+      )
+        // The old stop never supersedes this claim's later stop or completion.
+        // A terminal cursor still owes ordinary pending-note/cleanup reconciliation.
+        continue;
+    }
     if (await hostedStopContinuation(directory, selection, stop, intent, grant)) continue;
     if (config && config.verificationOnly?.issueKey !== selection.key) {
       for (let attempt = 1; attempt <= config.attemptCeiling; attempt++) {
@@ -569,6 +585,17 @@ export async function nextCycle(
         throw error;
       }
       const hosted = config.gateStopAuthorization?.hostedExecutedFailure;
+      const published = config.integrationContinuation?.publishedConflict;
+      if (
+        published?.selected.cycle === cycle &&
+        (await optionalRecord(
+          directory,
+          `cycle-${cycle}-stop-${config.integrationContinuation!.stopMarker.split(":")[3]}-complete`,
+        )) !== ABSENT
+      ) {
+        const { cycle: _cycle, routing: _routing, ...binding } = selected;
+        await queue.admitPublishedConflict(config, binding, hostedObservations);
+      }
       if (
         hosted?.cycle === cycle &&
         (await optionalRecord(directory, `cycle-${cycle}-stop-${hosted.stop}-complete`)) !== ABSENT
@@ -1131,6 +1158,14 @@ export async function reconcilePendingStop(
     // ISS-157: finish the old learning note, then let native delivery admit the grant.
     // Completed notes already follow that path. The saved stop itself remains untouched.
     const grant = config.gateStopAuthorization;
+    if (
+      config.integrationContinuation?.publishedConflict?.selected.cycle === cycle.selection.cycle &&
+      config.integrationContinuation.stopMarker === intent.marker
+    ) {
+      const { cycle: _cycle, routing: _routing, ...binding } = cycle.selection;
+      await queue.admitPublishedConflict(config, binding, hostedObservations);
+      return undefined;
+    }
     if (
       grant?.hostedExecutedFailure?.cycle === cycle.selection.cycle &&
       grant.hostedExecutedFailure.stop === stop

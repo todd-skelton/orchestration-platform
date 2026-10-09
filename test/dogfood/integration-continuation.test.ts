@@ -33,6 +33,7 @@ import type {
 import {
   ISS214_REFRESH_REVIEW_ALLOWANCE,
   admitExecutedHostedStop,
+  admitPublishedConflict,
   failedDeliveryDiagnostic,
   QueueBlocked,
   evaluateTerminalAttempt,
@@ -692,12 +693,35 @@ it.each([
   "unexecuted again",
   "refresh",
   "pending receipt",
-])("ISS-246 SYNTHETIC unchanged-head native continuation: %s", async (mode) => {
+  "published conflict",
+  "published CRLF conflict",
+  "published CRLF outside hunk",
+  "published pending receipt",
+  "published outside hunk",
+  "published semantic loss",
+  "published lost seed response",
+  "published lost publication response",
+  "published unsupported conflict",
+  "published unruled preservation",
+  "published auto-merge semantic loss",
+  "published later main conflict",
+])("ISS-247 / ISS-246 SYNTHETIC native continuation: %s", async (mode) => {
+  const publishedConflict = mode.startsWith("published");
+  const autoMergeConflict = mode === "published auto-merge semantic loss";
   const f = await conflictSuccessorFixture();
+  const crlf = mode.startsWith("published CRLF");
+  const outsideHunk = mode.endsWith("outside hunk");
+  // Reproduce the Windows checkout in a disposable repository on every OS.
+  if (crlf) await f.git(["config", "core.autocrlf", "true"]);
   await writeFile(
     resolve(f.repository, "unrelated.test.ts"),
     "// SYNTHETIC unchanged failed test\n",
   );
+  if (autoMergeConflict)
+    await writeFile(
+      resolve(f.repository, "auto.txt"),
+      `api=1\nfeatureCaller=1\n${"stable padding\n".repeat(10)}mainCaller=none\n`,
+    );
   await f.git(["add", "."]);
   await f.git(["commit", "-m", "synthetic unchanged test"]);
   await f.git(["push", "origin", "main"]);
@@ -722,6 +746,7 @@ it.each([
   const terminalBytes = mode === "ceiling" ? undefined : await readFile(f.reservation, "utf8");
   const launches: string[] = [];
   const effects: string[] = [];
+  const executedGateHeads: { name: string; head: string }[] = [];
   let publication: PublicationEvidence | undefined;
   let continued = false;
   let conflicting = false;
@@ -734,12 +759,36 @@ it.each([
     git: (cwd, args) => f.git(args, cwd),
     async launch(role, config) {
       launches.push(role);
-      if (role === "author") {
+      if (role === "author" && continued && publishedConflict) {
+        const path = resolve(config.worktree, "docs/loop.md");
+        const marked = await readFile(path, "utf8");
+        expect(marked).toContain("<<<<<<<");
+        if (crlf) expect(marked).toContain("\r\n");
+        let resolved = marked.replace(
+          /^<<<<<<< .*\r?\n([\s\S]*?)^=======\r?\n([\s\S]*?)^>>>>>>> .*\r?\n/gm,
+          mode === "published semantic loss" ? "$1" : "$1$2",
+        );
+        // Resolve the actual marker representation without normalizing fixed bytes.
+        // The outside-hunk control must fail for its edit, not leftover markers.
+        expect(resolved).not.toMatch(/^(?:<<<<<<< |=======\r?$|>>>>>>> )/m);
+        if (crlf) expect(resolved).toContain("\r\n");
+        if (outsideHunk) resolved = `unruled outside-hunk edit\n${resolved}`;
+        await writeFile(path, resolved);
+      } else if (role === "author") {
         await appendFile(
           resolve(config.worktree, "docs/loop.md"),
           "\nSYNTHETIC ISS-246 candidate.\n",
         );
         await writeFile(resolve(config.worktree, "changed.test.ts"), "// SYNTHETIC changed file\n");
+        if (autoMergeConflict) {
+          const path = resolve(config.worktree, "auto.txt");
+          await writeFile(
+            path,
+            (await readFile(path, "utf8"))
+              .replace("api=1", "api=2")
+              .replace("featureCaller=1", "featureCaller=2"),
+          );
+        }
       }
       const trace = resolve(config.stateDirectory, `${role}.jsonl`);
       await writeFile(trace, "SYNTHETIC execution\n");
@@ -754,9 +803,24 @@ it.each([
         return { id: attempt.id, status: "running" };
       const head =
         role === "author" ? config.base : await f.git(["rev-parse", "HEAD"], config.worktree);
+      const autoLoss =
+        continued &&
+        autoMergeConflict &&
+        role === "reviewer" &&
+        /api=2[\s\S]*mainCaller=1/.test(
+          await readFile(resolve(config.worktree, "auto.txt"), "utf8"),
+        );
+      const semanticLoss =
+        autoLoss ||
+        (continued &&
+          publishedConflict &&
+          role === "reviewer" &&
+          !(await readFile(resolve(config.worktree, "docs/loop.md"), "utf8")).includes(
+            "SYNTHETIC ISS-247 main behavior.",
+          ));
       return {
         id: attempt.id,
-        status: "passed",
+        status: semanticLoss ? "failed" : "passed",
         head,
         ...(role === "reviewer"
           ? {
@@ -764,8 +828,17 @@ it.each([
                 run: RUN,
                 role,
                 head,
-                verdict: "PASS",
-                findings: [],
+                verdict: semanticLoss ? "FAIL" : "PASS",
+                findings: semanticLoss
+                  ? [
+                      {
+                        severity: "blocking",
+                        file: autoLoss ? "auto.txt" : "docs/loop.md",
+                        line: 1,
+                        text: "Retain main behavior from the other parent.",
+                      },
+                    ]
+                  : [],
                 g0: "No; synthetic bounded implementation.",
               }),
             }
@@ -780,8 +853,9 @@ it.each([
   delivery.verifyWorkspace = async (config, head) =>
     (await f.git(["rev-parse", "HEAD"], config.worktree)) === head &&
     (await f.git(["status", "--porcelain"], config.worktree)) === "";
-  delivery.runGate = async (_config, name) => {
+  delivery.runGate = async (_config, name, head) => {
     effects.push(`gate:${name}`);
+    executedGateHeads.push({ name, head });
     return "passed";
   };
   delivery.conflictingPublication = async () => conflicting;
@@ -793,6 +867,17 @@ it.each([
       : { state: "needs-mutation", target: "absent" };
   delivery.publish = async (config, plan) => {
     effects.push("publish");
+    if (publishedConflict) {
+      if (continued) {
+        expect(
+          (await f.git(["ls-remote", "origin", `refs/heads/${plan.sourceBranch}`])).split("\t")[0],
+        ).toBe(publication!.head);
+        expect(await f.git(["merge-base", publication!.head, config.candidateHead])).toBe(
+          publication!.head,
+        );
+      }
+      await f.git(["push", "origin", `${config.candidateHead}:refs/heads/${plan.sourceBranch}`]);
+    }
     const saved = JSON.parse(
       await readFile(resolve(config.stateDirectory, "delivery-plan.json"), "utf8"),
     );
@@ -807,6 +892,8 @@ it.each([
       body: plan.body,
       planDigest: saved.digest,
     };
+    if (continued && mode === "published lost publication response")
+      throw new Error("SYNTHETIC lost completed push response");
   };
   delivery.checks = async (config) => {
     effects.push("checks");
@@ -876,7 +963,7 @@ it.each([
           return {
             gates: {
               beforeMirror: ["typecheck", "format:check", "planning:check", "test"],
-              afterMirror: [],
+              afterMirror: publishedConflict ? ["planning:board-check"] : [],
             },
             drafts: [],
             publication: {
@@ -908,15 +995,18 @@ it.each([
   };
   await persistCycle(loop, cycle);
   const comments: string[] = [];
+  let issueClosed = false;
   const supervisor: SupervisionAdapter = {
     async currentMain() {
       return f.selected.base;
     },
     async issue() {
-      return { state: "OPEN", key: KEY, labels: [], comments };
+      return { state: issueClosed ? "CLOSED" : "OPEN", key: KEY, labels: [], comments };
     },
     async removeReady() {},
-    async close() {},
+    async close() {
+      issueClosed = true;
+    },
     async comment(_config, _number, body) {
       comments.push(body);
     },
@@ -936,6 +1026,22 @@ it.each([
   expect(await readFile(attemptPath, "utf8")).toBe(failedBytes);
   const before = await snapshot(f.runState);
   await f.git(["commit", "--allow-empty", "-m", "SYNTHETIC reviewed executor repair"]);
+  if (publishedConflict) {
+    if (mode === "published unsupported conflict") await f.git(["rm", "docs/loop.md"]);
+    else
+      await appendFile(
+        resolve(f.repository, "docs/loop.md"),
+        "\nSYNTHETIC ISS-247 main behavior.\n",
+      );
+    if (autoMergeConflict) {
+      const path = resolve(f.repository, "auto.txt");
+      await writeFile(
+        path,
+        (await readFile(path, "utf8")).replace("mainCaller=none", "mainCaller=1"),
+      );
+    }
+    await f.git(["commit", "-am", "SYNTHETIC conflicting current main"]);
+  }
   await f.git(["push", "origin", "main"]);
   const repair = await f.git(["rev-parse", "HEAD"]);
   const log = await readFile(resolve(item.source.stateDirectory, "hosted-failure.log"));
@@ -980,6 +1086,533 @@ it.each([
     return;
   }
   const e = executedHostedFixture(publication!, item.base, NUMBER, comments[0]!);
+  if (publishedConflict) {
+    const sha = (bytes: string | Buffer) => createHash("sha256").update(bytes).digest("hex");
+    const packet: IntegrationContinuation = {
+      schemaVersion: "dogfood-integration-continuation/v1",
+      repository: loop.repository,
+      issueKey: KEY,
+      issueUrl: ISSUE,
+      run: RUN,
+      attemptDirectory: q.stateDirectory,
+      absoluteAttempt: 4,
+      stopMarker: `loop-stop:${RUN}:3:1`,
+      candidateHead: failed.head,
+      reviewId: failed.reviewId,
+      authorityUrl: `${ISSUE}#issuecomment-247`,
+      allowedPaths: ["docs/loop.md"],
+      publishedConflict: {
+        kind: "published-conflict",
+        sourceDirectory: item.source.stateDirectory,
+        authorId: JSON.parse(
+          await readFile(resolve(item.source.stateDirectory, "author-attempt.json"), "utf8"),
+        ).id,
+        originalBase: item.base,
+        main: repair,
+        originalConfig: JSON.stringify(loop),
+        originalConfigSha256: queueDigest(loop),
+        terminalReservationSha256: sha(terminalBytes!),
+        terminalBindingDigest: queueDigest(JSON.parse(terminalBytes!).binding),
+        terminalHistoryDigest: queueDigest(failed.history),
+        selected: cycle.selection as any,
+        receiptUrl: `${ISSUE}#issuecomment-2470`,
+        authority: { id: "247", author: "todd-skelton", body: "", sha256: "" },
+        hosted: {
+          actionsRun: 24601,
+          runAttempt: 1,
+          job: 24613,
+          greenRunAttempt: 2,
+          controlRun: 24602,
+          controlRunAttempt: 1,
+          controlJob: 24613,
+          evidenceSha256: sha(log),
+          failedTests: ["unrelated.test.ts"],
+          publication: grant.hostedExecutedFailure.publication,
+        },
+        resolutions: [
+          {
+            path: "docs/loop.md",
+            semantics: "Preserve feature and main behavior in literal marked hunks.",
+          },
+        ],
+        preservation:
+          mode === "published unruled preservation"
+            ? [
+                {
+                  path: "other.txt",
+                  semantics: "Synthetic requested preservation outside eligible U.",
+                },
+              ]
+            : [],
+      },
+    };
+    const p = packet.publishedConflict!;
+    p.authority.body = `SYNTHETIC independently interpreted recovery ${packet.stopMarker} ${p.sourceDirectory} ${p.originalConfigSha256} ${p.terminalReservationSha256} ${packet.candidateHead} ${p.main} ${p.terminalHistoryDigest} ${p.terminalBindingDigest} ${JSON.stringify(p.hosted)} ${JSON.stringify(p.resolutions)} ${JSON.stringify(p.preservation)} changedPathsExercised: yes`;
+    p.authority.sha256 = sha(p.authority.body);
+    const config = { ...loop, integrationContinuation: packet };
+    if (process.env.ISS247_BASELINE === "1") {
+      // Red at the recorded installed baseline: its closed config has no
+      // published-conflict/v2 coexistence. No API read or claim is attempted.
+      expect(() => validateLoopConfig(config)).not.toThrow();
+      return;
+    }
+    let liveAuthorityBody = p.authority.body;
+    const observations = {
+      commands: e.commands,
+      authority: async (url: string) => ({
+        id: url === p.receiptUrl ? "2470" : "247",
+        url,
+        author: "todd-skelton",
+        body: url === p.receiptUrl ? comments[0]! : liveAuthorityBody,
+        capturedAt: new Date().toISOString(),
+      }),
+    };
+    const claim = resolve(
+      loop.stateRoot,
+      `integration-continuation-${queueDigest({ repository: loop.repository, issue: KEY })}.json`,
+    );
+    const hef = resolve(item.source.stateDirectory, "gate-stop-continuation.json");
+    const admit = () => admitPublishedConflict(config, f.selected, observations);
+    for (const object of [
+      p,
+      p.selected,
+      p.authority,
+      p.hosted,
+      p.hosted.publication,
+      p.resolutions[0]!,
+    ]) {
+      (object as any).unknown = true;
+      await expect(admit()).rejects.toMatchObject({ reason: "invalid-integration-continuation" });
+      delete (object as any).unknown;
+    }
+    await expect(
+      admitPublishedConflict(
+        { ...config, providerOutageCeilingMs: 12345 },
+        f.selected,
+        observations,
+      ),
+    ).rejects.toMatchObject({
+      reason: "integration-continuation-history-unavailable",
+      diagnostics: "complete original configuration and recovery declaration",
+    });
+    await expect(
+      admitPublishedConflict(
+        config,
+        { ...f.selected, base: repair, planningRevision: repair },
+        observations,
+      ),
+    ).rejects.toMatchObject({
+      reason: "integration-continuation-history-unavailable",
+      diagnostics: "retained stop-cycle selection",
+    });
+    await f.put(item.source.stateDirectory, "gate-stop-continuation", {
+      synthetic: "already spent",
+    });
+    await expect(admit()).rejects.toMatchObject({
+      reason: "integration-continuation-already-consumed",
+    });
+    await rm(hef);
+    await writeFile(
+      claim,
+      JSON.stringify({ schemaVersion: "dogfood-integration-continuation/v1" }),
+    );
+    await expect(admit()).rejects.toMatchObject({
+      reason: "integration-continuation-already-consumed",
+    });
+    await rm(claim);
+    const originalReceipt = comments[0]!;
+    comments[0] += " ";
+    await expect(admit()).rejects.toMatchObject({
+      reason: "integration-continuation-history-unavailable",
+      diagnostics: "complete ISS-216 receipt",
+    });
+    comments[0] = originalReceipt;
+    await f.git(["push", "--force", "origin", `${repair}:refs/heads/${publication!.sourceBranch}`]);
+    await expect(admit()).rejects.toMatchObject({ reason: "publication-state-unknown" });
+    await f.git([
+      "push",
+      "--force",
+      "origin",
+      `${failed.head}:refs/heads/${publication!.sourceBranch}`,
+    ]);
+    liveAuthorityBody = "SYNTHETIC superseded decision";
+    await expect(admit()).rejects.toMatchObject({
+      reason: "integration-continuation-authority-mismatch",
+    });
+    liveAuthorityBody = p.authority.body;
+    const controls: [string, () => void, string, string?][] = [
+      [
+        "log hash",
+        () => {
+          p.hosted.evidenceSha256 = "e".repeat(64);
+        },
+        "integration-continuation-history-unavailable",
+        "failed log hash",
+      ],
+      [
+        "history digest",
+        () => {
+          p.terminalHistoryDigest = "e".repeat(64);
+        },
+        "integration-continuation-history-unavailable",
+        "failed hosted cursor and raw history",
+      ],
+      [
+        "reservation digest",
+        () => {
+          p.terminalReservationSha256 = "e".repeat(64);
+        },
+        "integration-continuation-history-unavailable",
+        "original reserved v2 and consumed resolution",
+      ],
+      [
+        "source author",
+        () => {
+          p.authorId = "different-author";
+        },
+        "integration-continuation-history-unavailable",
+        "source author and original base",
+      ],
+      [
+        "source PASS",
+        () => {
+          packet.reviewId = "different-review";
+        },
+        "integration-continuation-history-unavailable",
+        "failed hosted cursor and raw history",
+      ],
+      [
+        "base",
+        () => {
+          p.originalBase = repair;
+        },
+        "integration-continuation-history-unavailable",
+        "source author and original base",
+      ],
+      [
+        "owning issue",
+        () => {
+          e.data.issue.state = "CLOSED";
+        },
+        "integration-continuation-history-unavailable",
+        "open owning issue",
+      ],
+      [
+        "publication head",
+        () => {
+          e.data.pr.headRefOid = repair;
+        },
+        "gate-stop-authorization-mismatch",
+        "publication identity",
+      ],
+      [
+        "publication ref",
+        () => {
+          e.data.pr.headRefName = "different";
+        },
+        "gate-stop-authorization-mismatch",
+        "publication identity",
+      ],
+      [
+        "draft",
+        () => {
+          e.data.pr.isDraft = false;
+        },
+        "gate-stop-authorization-mismatch",
+        "publication identity",
+      ],
+      [
+        "green pending",
+        () => {
+          e.data.green.status = "in_progress";
+        },
+        "gate-stop-authorization-mismatch",
+        "failed/green workflow identity or result",
+      ],
+      [
+        "green cancelled",
+        () => {
+          e.data.greenJobs[3]!.conclusion = "cancelled";
+        },
+        "gate-stop-authorization-mismatch",
+        "green effective jobs must execute or retain failed-attempt successes",
+      ],
+      [
+        "green skipped",
+        () => {
+          e.data.greenJobs[3]!.conclusion = "skipped";
+        },
+        "gate-stop-authorization-mismatch",
+        "green effective jobs must execute or retain failed-attempt successes",
+      ],
+      [
+        "green unexecuted",
+        () => {
+          e.data.greenJobs[3]!.runner_id = 0;
+        },
+        "gate-stop-authorization-mismatch",
+        "green effective jobs must execute or retain failed-attempt successes",
+      ],
+      [
+        "green empty steps",
+        () => {
+          e.data.greenJobs[3]!.steps = [];
+        },
+        "gate-stop-authorization-mismatch",
+        "green effective jobs must execute or retain failed-attempt successes",
+      ],
+      [
+        "foreign workflow",
+        () => {
+          e.data.green.workflow_id++;
+        },
+        "gate-stop-authorization-mismatch",
+        "failed/green workflow identity or result",
+      ],
+      [
+        "control base",
+        () => {
+          e.data.control.head_sha = failed.head;
+        },
+        "gate-stop-authorization-mismatch",
+        "base control identity or result",
+      ],
+      [
+        "extra failed job",
+        () => {
+          e.data.jobs[0]!.conclusion = "failure";
+        },
+        "gate-stop-authorization-mismatch",
+        "failed attempt job Node 24 / ubuntu-latest",
+      ],
+    ];
+    for (const [label, change, reason, diagnostics] of controls) {
+      const oldPacket = structuredClone(packet),
+        oldData = structuredClone(e.data);
+      change();
+      await expect(admit(), label).rejects.toMatchObject({
+        reason,
+        ...(diagnostics ? { diagnostics } : {}),
+      });
+      await expect(readFile(claim), label).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await readFile(attemptPath, "utf8"), label).toBe(failedBytes);
+      Object.assign(packet, oldPacket);
+      // Keep the bound case reference used by this fixture's authority transport.
+      Object.assign(p, oldPacket.publishedConflict);
+      packet.publishedConflict = p;
+      Object.assign(e.data, oldData);
+    }
+    const later = resolve(f.runState, "cycle-4-complete.json");
+    const laterSelection = { ...cycle.selection, cycle: 4, key: "ISS-999", number: 999 };
+    await f.put(f.runState, "cycle-4-selected", laterSelection);
+    const nearCeiling = [...failed.history];
+    while (
+      nearCeiling.filter((row: QueueParticipant) => row.item.startsWith(`${KEY}:`)).length < 63
+    )
+      nearCeiling.push(
+        participant(nearCeiling.length + 1, `${KEY}:4`, "refresh", "reviewer", "passed"),
+      );
+    await writeFile(later, JSON.stringify({ selection: laterSelection, history: nearCeiling }));
+    await expect(admit()).rejects.toMatchObject({ reason: "native-launch-ceiling-exhausted" });
+    await rm(later);
+    // A later unrelated cycle remains charged and precedes the new integration pair.
+    const laterHistory = [
+      ...failed.history,
+      participant(failed.history.length + 1, "ISS-999:1", "source", "author", "failed"),
+    ];
+    await writeFile(later, JSON.stringify({ selection: laterSelection, history: laterHistory }));
+    await expect(readFile(claim)).rejects.toMatchObject({ code: "ENOENT" });
+    if (mode === "published unsupported conflict" || mode === "published unruled preservation") {
+      await expect(admit()).rejects.toMatchObject({
+        reason:
+          mode === "published unsupported conflict"
+            ? "conflict-resolution-unsupported"
+            : "conflict-resolution-scope-escape",
+      });
+      await expect(readFile(claim)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(launches).toEqual(["author", "reviewer"]);
+      expect(await readFile(attemptPath, "utf8")).toBe(failedBytes);
+      return;
+    }
+    if (mode === "published conflict") {
+      const write = filesystem.writeFile;
+      const spy = vi
+        .spyOn(filesystem, "writeFile")
+        .mockImplementation(async (path, bytes, options) => {
+          if (String(path) === claim) throw new Error("SYNTHETIC exclusive claim failure");
+          return write(path, bytes, options);
+        });
+      syncBuiltinESMExports();
+      await expect(admit()).rejects.toThrow("SYNTHETIC exclusive claim failure");
+      spy.mockRestore();
+      syncBuiltinESMExports();
+      expect(launches).toEqual(["author", "reviewer"]);
+      await expect(readdir(resolve(packet.attemptDirectory, "integration"))).rejects.toMatchObject({
+        code: "ENOENT",
+      });
+      await expect(readFile(claim)).rejects.toMatchObject({ code: "ENOENT" });
+    }
+    if (mode === "published pending receipt") {
+      await rm(resolve(f.runState, "cycle-3-stop-1-complete.json"));
+      expect(
+        await nextCycle(config, f.repository, supervisor, f.policy, undefined, observations),
+      ).toMatchObject({ selection: cycle.selection });
+      await expect(readFile(claim)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(
+        await reconcilePendingStop(config, cycle, supervisor, f.policy, observations),
+      ).toBeUndefined();
+    } else {
+      expect(
+        await nextCycle(config, f.repository, supervisor, f.policy, undefined, observations),
+      ).toMatchObject({ selection: cycle.selection });
+    }
+    const reserved = await readFile(claim, "utf8");
+    expect(JSON.parse(reserved)).toMatchObject({
+      failedAttemptBytes: failedBytes,
+      resolutionUsed: true,
+    });
+    expect(JSON.parse(reserved).initialHistory).toEqual(laterHistory);
+    expect(JSON.parse(reserved).charged).toBe(10);
+    expect(JSON.parse(reserved).conflict.census.k).toEqual(["docs/loop.md"]);
+    const reads = e.calls.length;
+    await admit();
+    expect(e.calls).toHaveLength(reads);
+    expect(await readFile(claim, "utf8")).toBe(reserved);
+    q = await f.compose(config);
+    expect(q.stateDirectory).toBe(resolve(packet.attemptDirectory, "integration"));
+    expect(q.items[0]!.implementationAttempt).toBe(4);
+    continued = true;
+    green = true;
+    if (mode === "published lost seed response") {
+      const rename = filesystem.rename;
+      let interrupted = false;
+      const spy = vi.spyOn(filesystem, "rename").mockImplementation(async (from, to) => {
+        if (
+          !interrupted &&
+          String(to).endsWith("native-refresh.json") &&
+          JSON.parse(await readFile(from, "utf8")).conflict?.seed
+        ) {
+          expect(await readFile(claim, "utf8")).toBe(reserved);
+          await rename(from, to);
+          interrupted = true;
+          throw new Error("SYNTHETIC seed save response lost");
+        }
+        return rename(from, to);
+      });
+      syncBuiltinESMExports();
+      await expect(queueStep(q, adapter())).rejects.toThrow("SYNTHETIC seed save response lost");
+      spy.mockRestore();
+      syncBuiltinESMExports();
+      expect(interrupted).toBe(true);
+      expect(launches).toHaveLength(2);
+      q = await f.compose(config);
+    }
+    if (outsideHunk) {
+      await expect(queueStep(q, adapter())).rejects.toMatchObject({
+        reason: "continuation-failed",
+        diagnostics: expect.stringContaining("conflict-resolution-scope-escape"),
+      });
+      expect(launches).toEqual(["author", "reviewer", "author"]);
+      const count = effects.length;
+      await expect(queueStep(q, adapter())).rejects.toMatchObject({
+        reason: "continuation-failed",
+      });
+      expect(effects).toHaveLength(count);
+      expect(await readFile(attemptPath, "utf8")).toBe(failedBytes);
+      return;
+    }
+    expect(await queueStep(q, adapter())).toMatchObject({ status: "observing-reviewer" });
+    expect(launches).toEqual(["author", "reviewer", "author", "reviewer"]);
+    const refreshed = JSON.parse(
+      await readFile(resolve(q.items[0]!.source.stateDirectory, "native-refresh.json"), "utf8"),
+    );
+    expect(await f.git(["rev-list", "--parents", "-n", "1", refreshed.conflict.seed])).toBe(
+      `${refreshed.conflict.seed} ${failed.head} ${repair}`,
+    );
+    expect(await queueStep(q, adapter())).toMatchObject({ status: "observing-reviewer" });
+    expect(launches).toHaveLength(4);
+    if (mode === "published later main conflict") {
+      await writeFile(
+        resolve(f.repository, "docs/loop.md"),
+        "Completely replaced later main behavior.\n",
+      );
+      await f.git(["commit", "-am", "SYNTHETIC later main conflict"]);
+      await f.git(["push", "origin", "main"]);
+      // Model remote main movement without upgrading the running executor.
+      await f.git(["checkout", "--detach", repair]);
+      deltaPending = false;
+      await expect(queueStep(q, adapter())).rejects.toMatchObject({ reason: "current-main-moved" });
+      await expect(queueStep(q, adapter())).rejects.toMatchObject({
+        reason: "continuation-failed",
+        diagnostics: expect.stringContaining("conflict-resolution-exhausted"),
+      });
+      expect(launches).toHaveLength(4);
+      expect(effects.filter((effect) => effect === "publish")).toHaveLength(1);
+      return;
+    }
+    deltaPending = false;
+    if (mode.endsWith("semantic loss")) {
+      if (autoMergeConflict) {
+        expect(refreshed.conflict.census.u).toContain("auto.txt");
+        expect(refreshed.conflict.census.k).toEqual(["docs/loop.md"]);
+        expect(await f.git(["show", `${failed.head}:auto.txt`])).toContain("mainCaller=none");
+        expect(await f.git(["show", `${repair}:auto.txt`])).toContain("api=1");
+      }
+      await expect(queueStep(q, adapter())).rejects.toMatchObject({
+        reason: "continuation-failed",
+        diagnostics: expect.stringContaining("refresh-review-failed"),
+      });
+      expect(effects.filter((effect) => effect === "publish")).toHaveLength(1);
+      expect(effects).not.toContain("merge");
+      const count = effects.length;
+      await expect(queueStep(q, adapter())).rejects.toMatchObject({
+        reason: "continuation-failed",
+      });
+      expect(effects).toHaveLength(count);
+      await stopCycle(config, cycle, "continuation-failed", 4, supervisor, f.policy);
+      await rm(resolve(f.runState, "cycle-3-stop-2-complete.json"));
+      expect(await nextCycle(config, f.repository, supervisor, f.policy)).toMatchObject({
+        selection: cycle.selection,
+      });
+      expect(await reconcilePendingStop(config, cycle, supervisor, f.policy)).toMatchObject({
+        scope: "item",
+        reason: "continuation-failed",
+      });
+      expect(comments).toHaveLength(2);
+      expect(launches).toHaveLength(4);
+      return;
+    }
+    expect(await queueStep(q, adapter())).toMatchObject({ status: "complete" });
+    const result = await readFile(resolve(q.items[0]!.source.worktree, "docs/loop.md"), "utf8");
+    expect(result).toContain("SYNTHETIC ISS-246 candidate.");
+    expect(result).toContain("SYNTHETIC ISS-247 main behavior.");
+    const finalHead = await f.git(["rev-parse", "HEAD"], q.items[0]!.source.worktree);
+    expect(executedGateHeads.slice(-5)).toEqual(
+      ["typecheck", "format:check", "planning:check", "test", "planning:board-check"].map(
+        (name) => ({ name, head: finalHead }),
+      ),
+    );
+    expect(finalHead).not.toBe(failed.head);
+    const count = effects.length;
+    expect(await queueStep(q, adapter())).toMatchObject({ status: "complete" });
+    expect(effects).toHaveLength(count);
+    expect(await nextCycle(config, f.repository, supervisor, f.policy)).toMatchObject({
+      selection: cycle.selection,
+    });
+    await completeCycle(config, cycle, await adapter().history(), supervisor);
+    const completedCycle = JSON.parse(
+      await readFile(resolve(f.runState, "cycle-3-complete.json"), "utf8"),
+    );
+    expect(completedCycle.history).toHaveLength(laterHistory.length + 2);
+    expect(await readFile(attemptPath, "utf8")).toBe(failedBytes);
+    expect(await readFile(f.reservation, "utf8")).toBe(terminalBytes);
+    expect(await readFile(claim, "utf8")).toBe(reserved);
+    await expect(readFile(hef)).rejects.toMatchObject({ code: "ENOENT" });
+    await expect(
+      readFile(resolve(f.runState, `${KEY.toLowerCase()}-attempt-5`, "attempt.json")),
+    ).rejects.toMatchObject({ code: "ENOENT" });
+    return;
+  }
   const authority = {
     id: "246",
     url: grant.authorityUrl,
