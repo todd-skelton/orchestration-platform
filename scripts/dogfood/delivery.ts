@@ -866,7 +866,16 @@ export async function hostedFailureEvidence(
   checks?: CheckEvidence[],
   jobs?: CheckEvidence[],
 ): Promise<string | null> {
-  const path = resolve(config.stateDirectory, "hosted-failure.log");
+  // ISS-246 retains the original failed log as admission evidence. A later
+  // executed red owns fresh evidence, never an overwrite or reuse of that log.
+  const continuation = (await optionalRecord(config.stateDirectory, "gate-stop-continuation")) as
+    { authorization?: { hostedExecutedFailure?: unknown } } | typeof ABSENT_RECORD;
+  const path = resolve(
+    config.stateDirectory,
+    continuation !== ABSENT_RECORD && continuation.authorization?.hostedExecutedFailure
+      ? "hosted-continuation-failure.log"
+      : "hosted-failure.log",
+  );
   try {
     const bytes = await readFile(path, "utf8");
     const saved = JSON.parse(bytes.split("\n")[0]!);

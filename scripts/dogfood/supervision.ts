@@ -132,6 +132,29 @@ async function hostedStopContinuation(
   intent: any,
   grant?: LoopConfig["gateStopAuthorization"],
 ) {
+  const executed = grant?.hostedExecutedFailure;
+  if (
+    executed &&
+    executed.cycle === selection.cycle &&
+    executed.stop === stop &&
+    ["continuation-failed", "implementation-attempt-ceiling-exhausted"].includes(intent.reason)
+  ) {
+    const reservation = await optionalRecord(grant!.stateDirectory, "gate-stop-continuation");
+    const path = resolve(grant!.stateDirectory, "..", "attempt.json");
+    const bytes = await readFile(path, "utf8");
+    const attempt = JSON.parse(bytes);
+    return (
+      reservation !== ABSENT &&
+      JSON.stringify(reservation.authorization) === JSON.stringify(grant) &&
+      attempt.run === basename(directory) &&
+      attempt.item === `${selection.key}:${intent.attempts}` &&
+      attempt.issue ===
+        `https://github.com/${reservation.publication.repository}/issues/${selection.number}` &&
+      attempt.candidateAttempt === intent.attempts &&
+      ((attempt.phase === "delivery" && attempt.stateDirectory === grant!.stateDirectory) ||
+        (attempt.phase === "failed" && bytes === reservation.failedAttemptBytes))
+    );
+  }
   if (
     !grant?.hostedNonExecution ||
     grant.hostedNonExecution.cycle !== selection.cycle ||
@@ -389,6 +412,7 @@ export async function nextCycle(
   adapter: SupervisionAdapter,
   repositoryAdapter: RepositoryAdapter,
   validateExecutor: () => Promise<unknown> = () => validateLoopExecutor(config, executingRoot),
+  hostedObservations: Parameters<typeof queue.admitExecutedHostedStop>[2] = {},
 ): Promise<SupervisedCycle | undefined> {
   const directory = stateDirectory(config);
   const accounting = await queue.retainedRunHistory(config);
@@ -543,6 +567,14 @@ export async function nextCycle(
           stop,
         );
         throw error;
+      }
+      const hosted = config.gateStopAuthorization?.hostedExecutedFailure;
+      if (
+        hosted?.cycle === cycle &&
+        (await optionalRecord(directory, `cycle-${cycle}-stop-${hosted.stop}-complete`)) !== ABSENT
+      ) {
+        const { cycle: _cycle, routing: _routing, ...binding } = selected;
+        await queue.admitExecutedHostedStop(config, binding, hostedObservations);
       }
       const stoppedHistory = await completedItemStop(
         directory,
@@ -1070,6 +1102,7 @@ export async function reconcilePendingStop(
   cycle: SupervisedCycle,
   adapter: SupervisionAdapter,
   repositoryAdapter: RepositoryAdapter,
+  hostedObservations: Parameters<typeof queue.admitExecutedHostedStop>[2] = {},
 ) {
   const directory = supervisionDirectory(config, cycle);
   for (let stop = 1; ; stop += 1) {
@@ -1098,6 +1131,13 @@ export async function reconcilePendingStop(
     // ISS-157: finish the old learning note, then let native delivery admit the grant.
     // Completed notes already follow that path. The saved stop itself remains untouched.
     const grant = config.gateStopAuthorization;
+    if (
+      grant?.hostedExecutedFailure?.cycle === cycle.selection.cycle &&
+      grant.hostedExecutedFailure.stop === stop
+    ) {
+      const { cycle: _cycle, routing: _routing, ...binding } = cycle.selection;
+      await queue.admitExecutedHostedStop(config, binding, hostedObservations);
+    }
     if (config.verificationOnly?.issueKey === cycle.selection.key) {
       const binding = await queue.verificationStop(config, cycle.selection);
       if (binding?.stop.marker === intent.marker) return undefined;

@@ -24,7 +24,8 @@ export { continuationSlug };
 import { resolveRouting, validateRoutingRow, type RoutingRow } from "./routing.mjs";
 import { assertControllerExecutor, githubDeliveryAdapter } from "./delivery-adapter.mjs";
 // @ts-expect-error Node 24 executes this private TypeScript composition directly.
-import { recognizeStoppedStructure } from "./delivery-adapter.ts";
+import { recognizeStoppedStructure, observeExecutedHostedFailure } from "./delivery-adapter.ts";
+import type { GithubDeliveryCommands } from "./delivery-adapter.js";
 import {
   DeliveryBlocked,
   LocalGateFailure,
@@ -246,6 +247,20 @@ export interface Prerequisite {
 
 export interface GateStopAuthorization {
   executorRepair?: { stoppedExecutorHead: string };
+  hostedExecutedFailure?: {
+    cycle: number;
+    stop: number;
+    actionsRun: number;
+    runAttempt: number;
+    job: number;
+    controlRun: number;
+    greenRunAttempt: number;
+    candidateHead: string;
+    stoppedExecutorHead: string;
+    evidenceSha256: string;
+    failedTests: string[];
+    publication: { number: number; url: string; head: string; sourceBranch: string };
+  };
   hostedNonExecution?: {
     cycle: number;
     stop: number;
@@ -269,7 +284,67 @@ function validateGateStopAuthorization(value: GateStopAuthorization) {
       "authorityUrl",
       ...(value?.executorRepair === undefined ? [] : ["executorRepair"]),
       ...(value?.hostedNonExecution === undefined ? [] : ["hostedNonExecution"]),
+      ...(value?.hostedExecutedFailure === undefined ? [] : ["hostedExecutedFailure"]),
     ]) &&
+      (value.hostedExecutedFailure === undefined ||
+        (value.executorRepair === undefined &&
+          value.hostedNonExecution === undefined &&
+          exactKeys(value.hostedExecutedFailure, [
+            "cycle",
+            "stop",
+            "actionsRun",
+            "runAttempt",
+            "job",
+            "controlRun",
+            "greenRunAttempt",
+            "candidateHead",
+            "stoppedExecutorHead",
+            "evidenceSha256",
+            "failedTests",
+            "publication",
+          ]) &&
+          [
+            "cycle",
+            "stop",
+            "actionsRun",
+            "runAttempt",
+            "job",
+            "controlRun",
+            "greenRunAttempt",
+          ].every(
+            (key) =>
+              Number.isSafeInteger((value.hostedExecutedFailure as any)[key]) &&
+              (value.hostedExecutedFailure as any)[key] > 0,
+          ) &&
+          value.hostedExecutedFailure.greenRunAttempt > value.hostedExecutedFailure.runAttempt &&
+          SHA.test(value.hostedExecutedFailure.candidateHead) &&
+          value.hostedExecutedFailure.candidateHead === value.candidateHead &&
+          SHA.test(value.hostedExecutedFailure.stoppedExecutorHead) &&
+          /^[a-f0-9]{64}$/.test(value.hostedExecutedFailure.evidenceSha256) &&
+          Array.isArray(value.hostedExecutedFailure.failedTests) &&
+          value.hostedExecutedFailure.failedTests.length > 0 &&
+          new Set(value.hostedExecutedFailure.failedTests).size ===
+            value.hostedExecutedFailure.failedTests.length &&
+          value.hostedExecutedFailure.failedTests.every(
+            (path) =>
+              typeof path === "string" &&
+              !path.includes("\\") &&
+              !path.includes("\0") &&
+              !posix.isAbsolute(path) &&
+              posix.normalize(path) === path &&
+              !path.split("/").some((part) => part === ".." || part === "."),
+          ) &&
+          exactKeys(value.hostedExecutedFailure.publication, [
+            "number",
+            "url",
+            "head",
+            "sourceBranch",
+          ]) &&
+          Number.isSafeInteger(value.hostedExecutedFailure.publication.number) &&
+          value.hostedExecutedFailure.publication.number > 0 &&
+          value.hostedExecutedFailure.publication.head === value.candidateHead &&
+          typeof value.hostedExecutedFailure.publication.url === "string" &&
+          typeof value.hostedExecutedFailure.publication.sourceBranch === "string")) &&
       (value.hostedNonExecution === undefined ||
         (value.executorRepair === undefined &&
           exactKeys(value.hostedNonExecution, [
@@ -385,8 +460,8 @@ export type QueueResult =
     }
   | { status: "complete"; run: string; cursor: number; items: number; participants: number };
 
-function demand(condition: unknown, reason: string): asserts condition {
-  if (!condition) throw new QueueBlocked(reason);
+function demand(condition: unknown, reason: string, diagnostics?: string): asserts condition {
+  if (!condition) throw new QueueBlocked(reason, diagnostics);
 }
 const object = (value: unknown): value is Record<string, any> =>
   value !== null && typeof value === "object" && !Array.isArray(value);
@@ -757,13 +832,30 @@ export function validateLoopConfig(config: LoopConfig) {
     );
   if (config.gateStopAuthorization !== undefined)
     validateGateStopAuthorization(config.gateStopAuthorization);
+  if (config.gateStopAuthorization?.hostedExecutedFailure)
+    demand(
+      !config.acceptedReplan &&
+        !config.integrationContinuation &&
+        !config.verificationOnly &&
+        config.adapter === "self",
+      "gate-stop-authorization-mismatch",
+    );
   if (config.terminalAttemptAdmission !== undefined) {
     const packet = config.terminalAttemptAdmission;
     validateTerminalAttemptAdmission(packet);
     demand(
       !config.integrationContinuation &&
         !config.acceptedReplan &&
-        !config.gateStopAuthorization &&
+        (!config.gateStopAuthorization ||
+          (packet.schemaVersion === "dogfood-terminal-attempt-admission/v2" &&
+            !!config.gateStopAuthorization.hostedExecutedFailure &&
+            config.gateStopAuthorization.stateDirectory ===
+              resolve(
+                config.stateRoot,
+                config.run,
+                `${packet.issueKey.toLowerCase()}-attempt-${packet.nextAbsoluteAttempt}`,
+                "source",
+              ))) &&
         config.adapter === "self" &&
         config.run === packet.run &&
         config.repository === packet.repository &&
@@ -1116,12 +1208,20 @@ async function terminalAttemptEvaluation(
   const runState = resolve(config.stateRoot, config.run);
   const claim = `integration-continuation-${queueDigest({ repository: config.repository, issue: selected.key })}`;
   const name = `terminal-attempt-admission-${queueDigest({ repository: config.repository, issue: selected.key })}`;
-  const binding = { packet, selected, configDigest: queueDigest(config) };
+  const { gateStopAuthorization, ...withoutGateGrant } = config;
+  const binding = {
+    packet,
+    selected,
+    configDigest: queueDigest(
+      gateStopAuthorization?.hostedExecutedFailure ? withoutGateGrant : config,
+    ),
+  };
   const saved = await optionalRecord(config.stateRoot, name);
   if (saved !== ABSENT) {
     check(queueDigest(saved.binding) === queueDigest(binding));
     return { reservation: saved, name, replay: true };
   }
+  check(!gateStopAuthorization?.hostedExecutedFailure);
   check(
     (successor || packet.claim === claim) &&
       packet.issueUrl === `https://github.com/${config.repository}/issues/${selected.number}`,
@@ -1813,6 +1913,269 @@ async function observeVerificationIssue(
   );
 }
 
+// ISS-246 admission shares the hosted-stop slot and saved-cycle resume. This
+// evaluator acquires no workers, worktrees, Git refs or Actions mutations.
+export async function admitExecutedHostedStop(
+  config: LoopConfig,
+  selected: SelectedLoopIssue,
+  observations: {
+    commands?: GithubDeliveryCommands;
+    authority?: typeof observeIntegrationAuthority;
+  } = {},
+) {
+  validateLoopConfig(config);
+  const grant = config.gateStopAuthorization;
+  const packet = grant?.hostedExecutedFailure;
+  if (!grant || !packet) return undefined;
+  const refused = "gate-stop-authorization-mismatch";
+  const check = (ok: unknown, detail: string) => demand(ok, refused, detail);
+  const directory = dirname(grant.stateDirectory);
+  const runDirectory = resolve(config.stateRoot, config.run);
+  const stopName = `cycle-${packet.cycle}-stop-${packet.stop}`;
+  const stop = await json(runDirectory, stopName);
+  const receipt = await json(runDirectory, `${stopName}-complete`);
+  check(
+    stop.selection?.key === selected.key &&
+      stop.selection.number === selected.number &&
+      stop.selection.base === selected.base &&
+      stop.selection.cycle === packet.cycle &&
+      stop.stop === packet.stop &&
+      stop.marker === `loop-stop:${config.run}:${packet.cycle}:${packet.stop}` &&
+      ["continuation-failed", "implementation-attempt-ceiling-exhausted"].includes(stop.reason) &&
+      receipt.stop === packet.stop &&
+      queueDigest(receipt.selection) === queueDigest(stop.selection) &&
+      queueDigest(receipt.history) === queueDigest(stop.history) &&
+      directory ===
+        resolve(runDirectory, `${selected.key.toLowerCase()}-attempt-${stop.attempts}`) &&
+      grant.stateDirectory === resolve(directory, "source"),
+    "completed implementation stop",
+  );
+  const terminalPath = `terminal-attempt-admission-${queueDigest({ repository: config.repository, issue: selected.key })}`;
+  const terminal = await optionalRecord(config.stateRoot, terminalPath);
+  if (terminal !== ABSENT || config.terminalAttemptAdmission) {
+    const { gateStopAuthorization: _grant, ...original } = config;
+    const p = config.terminalAttemptAdmission;
+    check(
+      p?.schemaVersion === "dogfood-terminal-attempt-admission/v2" &&
+        terminal !== ABSENT &&
+        p.run === config.run &&
+        p.issueKey === selected.key &&
+        p.nextAbsoluteAttempt === stop.attempts &&
+        queueDigest(terminal.binding.packet) === queueDigest(p) &&
+        terminal.binding.configDigest === queueDigest(original) &&
+        queueDigest(terminal.binding.selected) === queueDigest(selected),
+      "saved v2 admission binding",
+    );
+  } else check(stop.attempts === config.attemptCeiling, "ordinary attempt still has a successor");
+  const saved = await optionalRecord(grant.stateDirectory, "gate-stop-continuation");
+  const bytes =
+    saved === ABSENT
+      ? await readFile(resolve(directory, "attempt.json"), "utf8")
+      : saved.failedAttemptBytes;
+  check(typeof bytes === "string", "retained failed attempt bytes");
+  const digest = createHash("sha256").update(bytes).digest("hex");
+  const attempt = JSON.parse(bytes);
+  const path = resolve(grant.stateDirectory, "hosted-failure.log");
+  check(
+    attempt.phase === "failed" &&
+      attempt.run === config.run &&
+      attempt.item === `${selected.key}:${stop.attempts}` &&
+      attempt.candidateAttempt === stop.attempts &&
+      attempt.issue === `https://github.com/${config.repository}/issues/${selected.number}` &&
+      attempt.head === packet.candidateHead &&
+      attempt.reviewId &&
+      attempt.acceptedStage === null &&
+      attempt.stateDirectory === null &&
+      attempt.findings?.length === 1 &&
+      attempt.findings[0].text === hostedFailurePrompt(path),
+    "executed hosted-failure finding",
+  );
+  const source = (await json(grant.stateDirectory, "config")).config;
+  const delivery: DeliveryConfig = {
+    ...source,
+    controller: source.owner,
+    controllerRoot: config.stableExecutorRoot,
+    repositoryRoot: config.stableExecutorRoot,
+    controllerRevision: (
+      await exec(config.gitExecutable, ["-C", config.stableExecutorRoot, "rev-parse", "HEAD"])
+    ).stdout.trim(),
+    candidateHead: packet.candidateHead,
+    retries: attempt.retries,
+    policy: {},
+  };
+  const evidence = await githubDeliveryAdapter().source(delivery);
+  check(evidence.reviewId === attempt.reviewId, "source exact-head PASS");
+  const publication = await json(grant.stateDirectory, "publication");
+  check(
+    ["number", "url", "head", "sourceBranch"].every(
+      (key) => publication[key] === (packet.publication as any)[key],
+    ) && publication.repository === config.repository,
+    "retained publication",
+  );
+  const plan = await json(grant.stateDirectory, "delivery-plan");
+  const gates = [...plan.plan.gates.beforeMirror, ...plan.plan.gates.afterMirror];
+  check(gates.length > 0, "local gate plan");
+  for (const [index, name] of gates.entries()) {
+    const gate = await json(grant.stateDirectory, `gate-${index + 1}`);
+    check(gate.head === packet.candidateHead && gate.name === name, "local gate head/result");
+  }
+  const log = await readFile(path);
+  check(
+    createHash("sha256").update(log).digest("hex") === packet.evidenceSha256,
+    "hosted evidence hash",
+  );
+  const header = JSON.parse(log.toString("utf8").split("\n")[0]!);
+  check(
+    header.repository === config.repository &&
+      header.run === config.run &&
+      header.head === packet.candidateHead &&
+      header.issue === attempt.issue &&
+      queueDigest(header.publication) === queueDigest(publication) &&
+      (header.jobs ?? header.checks).some(
+        (job: CheckEvidence) =>
+          job.bucket === "fail" &&
+          job.actions?.run === packet.actionsRun &&
+          job.actions.attempt === packet.runAttempt &&
+          job.actions.job === packet.job,
+      ),
+    "retained failed job identity",
+  );
+  const git = async (root: string, args: string[]) =>
+    (await exec(config.gitExecutable, ["-C", root, ...args])).stdout.trim();
+  const base = source.mainBase ?? source.base;
+  const changed = (
+    await exec(config.gitExecutable, [
+      "-C",
+      config.stableExecutorRoot,
+      "diff",
+      "--name-only",
+      "--no-renames",
+      "-z",
+      `${base}...${packet.candidateHead}`,
+    ])
+  ).stdout.split("\0");
+  for (const test of packet.failedTests) {
+    const literal = test.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    check(
+      new RegExp(`(?:^|[\\s"'(\\[›❯])${literal}(?=$|[\\s:"')\\]›❯])`, "m").test(
+        log.toString("utf8"),
+      ),
+      "failed test absent from log",
+    );
+    check(!changed.includes(test), "failed test is in changed set");
+    check(
+      (await git(config.stableExecutorRoot, [
+        "cat-file",
+        "-t",
+        `${packet.candidateHead}:${test}`,
+      ])) === "blob",
+      "failed test file",
+    );
+  }
+  if (saved !== ABSENT) {
+    check(
+      queueDigest(saved.authorization) === queueDigest(grant) &&
+        saved.failedAttemptSha256 === digest &&
+        queueDigest(saved.stop) === queueDigest(stop) &&
+        queueDigest(saved.receipt) === queueDigest(receipt) &&
+        queueDigest(saved.publication) === queueDigest(publication) &&
+        saved.directory === grant.stateDirectory,
+      "hosted continuation already reserved",
+    );
+    return saved;
+  }
+  const setup = await json(resolve(directory, "setup"), "setup-plan");
+  check(
+    (await git(config.stableExecutorRoot, [
+      "merge-base",
+      setup.controllerRevision,
+      packet.stoppedExecutorHead,
+    ])) === setup.controllerRevision &&
+      (await git(config.stableExecutorRoot, [
+        "merge-base",
+        grant.repairSha,
+        delivery.controllerRevision,
+      ])) === grant.repairSha &&
+      (await git(config.stableExecutorRoot, [
+        "merge-base",
+        grant.repairSha,
+        "refs/remotes/origin/main",
+      ])) === grant.repairSha &&
+      (await git(config.stableExecutorRoot, [
+        "merge-base",
+        grant.repairSha,
+        packet.stoppedExecutorHead,
+      ])) !== grant.repairSha,
+    "executor repair witness",
+  );
+  const commands = observations.commands ?? {
+    async gh(_config: DeliveryConfig, args: string[]) {
+      return (await exec("gh", args)).stdout;
+    },
+    async ghJson(_config: DeliveryConfig, args: string[]) {
+      return JSON.parse((await exec("gh", args)).stdout);
+    },
+  };
+  let issue, authority, hosted;
+  const capturedAt = new Date().toISOString();
+  try {
+    issue = await commands.ghJson(delivery, [
+      "issue",
+      "view",
+      String(selected.number),
+      "--repo",
+      config.repository,
+      "--json",
+      "number,url,state,comments",
+    ]);
+    authority = await (observations.authority ?? observeIntegrationAuthority)(grant.authorityUrl);
+    hosted = await observeExecutedHostedFailure(delivery, publication, packet, base, commands);
+  } catch (error) {
+    if (error instanceof DeliveryBlocked) throw new QueueBlocked(error.reason, error.diagnostics);
+    throw new QueueBlocked("hosted-observation-unavailable");
+  }
+  check(
+    issue.number === selected.number &&
+      issue.url === attempt.issue &&
+      issue.state === "OPEN" &&
+      issue.comments?.some(
+        (comment: any) => comment.body === postedStopBody(stop.body, selfUnparkInstructions),
+      ),
+    "owning issue and complete receipt",
+  );
+  check(
+    authority.url === grant.authorityUrl &&
+      authority.id === grant.authorityUrl.split("issuecomment-")[1] &&
+      authority.author === "todd-skelton" &&
+      typeof authority.body === "string" &&
+      [stop.marker, grant.stateDirectory, grant.repairSha, JSON.stringify(packet)].every((value) =>
+        authority.body.includes(value),
+      ) &&
+      /changedPathsExercised: (yes|no)/.test(authority.body),
+    "host decision binding",
+  );
+  const reservation = {
+    authorization: grant,
+    stop,
+    receipt,
+    publication,
+    authority,
+    issue,
+    hosted,
+    hostedSha256: queueDigest(hosted),
+    capturedAt,
+    directory: grant.stateDirectory,
+    failedAttemptBytes: bytes,
+    failedAttemptSha256: digest,
+  };
+  await writeFile(
+    resolve(grant.stateDirectory, "gate-stop-continuation.json"),
+    `${JSON.stringify(reservation, null, 2)}\n`,
+    { flag: "wx", flush: true },
+  );
+  return reservation;
+}
+
 export async function queueConfigFromLoop(
   config: LoopConfig,
   executingRoot: string,
@@ -1849,6 +2212,13 @@ export async function queueConfigFromLoop(
     controllerRevision,
     repositoryRevision,
   } = validatedExecutor ?? (await validateLoopExecutor(config, executingRoot));
+  if (
+    config.gateStopAuthorization?.hostedExecutedFailure &&
+    new RegExp(`^${selected.key.toLowerCase()}-attempt-[1-4]$`).test(
+      basename(dirname(config.gateStopAuthorization.stateDirectory)),
+    )
+  )
+    await admitExecutedHostedStop(config, selected);
   if (config.verificationOnly?.issueKey === selected.key)
     return verificationQueue(
       config,
@@ -2528,7 +2898,18 @@ export async function queueConfigFromLoop(
       };
       await record(priorQueue, "attempt", attempt);
     }
-    if (attempt === ABSENT || attempt.phase !== "failed") {
+    const hostedReservation = await optionalRecord(
+      resolve(priorQueue, "source"),
+      "gate-stop-continuation",
+    );
+    if (
+      attempt === ABSENT ||
+      attempt.phase !== "failed" ||
+      (hostedReservation !== ABSENT &&
+        hostedReservation.authorization?.hostedExecutedFailure &&
+        config.gateStopAuthorization &&
+        queueDigest(hostedReservation.authorization) === queueDigest(config.gateStopAuthorization))
+    ) {
       if (attempt !== ABSENT) {
         // An existing queue keeps its original source/repair boundary. Later
         // run history is read at charging time, not made into its old seed.
@@ -2573,6 +2954,7 @@ export async function queueConfigFromLoop(
     demand(
       attempt.candidateAttempt < config.attemptCeiling,
       "implementation-attempt-ceiling-exhausted",
+      await failedDeliveryDiagnostic(priorQueue, attempt),
     );
     sourceAttempt = attempt.candidateAttempt + 1;
     rejectedHead = attempt.head;
@@ -3256,7 +3638,11 @@ export async function retainedPostMergeDelivery(config: LoopConfig, selected: Se
     for (;;) {
       const correction = await optionalRecord(origin, "gate-correction");
       const recovery = await optionalRecord(origin, "gate-stop-continuation");
-      if (recovery !== ABSENT && !recovery.authorization?.hostedNonExecution) {
+      if (
+        recovery !== ABSENT &&
+        !recovery.authorization?.hostedNonExecution &&
+        !recovery.authorization?.hostedExecutedFailure
+      ) {
         retainedConfig = recovery.delivery;
         retries = Math.max(retries, recovery.delivery.retries);
         origin = resolve(origin, "gate-stop-continuation");
@@ -4142,6 +4528,59 @@ function attemptFailureRecord(
   };
 }
 
+// ISS-246: keep identities and the closed route ahead of the (possibly long)
+// evidence path. Old findings and stop bodies are read, never rewritten.
+export async function failedDeliveryDiagnostic(
+  directory: string,
+  attempt: {
+    candidateAttempt: number;
+    head: string;
+    reviewId: string | null;
+    findings: ReviewFinding[];
+  },
+) {
+  const finding = attempt.findings[0];
+  const match = finding?.text.match(
+    /^Read the complete hosted failure evidence at ("(?:[^"\\]|\\.)*")\./,
+  );
+  const path: string | undefined = match ? JSON.parse(match[1]!) : undefined;
+  let ids = "";
+  if (path) {
+    try {
+      const header = JSON.parse((await readFile(path, "utf8")).split("\n")[0]!);
+      const job = (header.jobs ?? header.checks)?.find(
+        (row: CheckEvidence) => row.name === finding?.file,
+      );
+      if (job?.actions)
+        ids = ` run ${job.actions.run}/${job.actions.attempt} job ${job.actions.job}`;
+    } catch {
+      /* Missing evidence remains a planning stop, never admission. */
+    }
+  }
+  let retained: any;
+  for (const name of await readdir(dirname(directory))) {
+    if (!/^cycle-\d+-stop-\d+\.json$/.test(name)) continue;
+    const stop = await json(dirname(directory), name.slice(0, -5));
+    if (
+      stop.attempts === attempt.candidateAttempt &&
+      ["continuation-failed", "implementation-attempt-ceiling-exhausted"].includes(stop.reason) &&
+      stop.selection?.key?.toLowerCase() === basename(directory).split("-attempt-")[0] &&
+      (await optionalRecord(dirname(directory), `${name.slice(0, -5)}-complete`)) !== ABSENT &&
+      (!retained ||
+        stop.selection.cycle > retained.selection.cycle ||
+        (stop.selection.cycle === retained.selection.cycle && stop.stop > retained.stop))
+    )
+      retained = stop;
+  }
+  const route = finding?.text.includes("hostedExecutedFailure consumed;")
+    ? "planning (ISS-221; hostedExecutedFailure consumed)"
+    : path && attempt.reviewId
+      ? "hostedExecutedFailure (admission-checked; in-diff refuses)"
+      : "planning";
+  const prefix = `Attempt ${attempt.candidateAttempt} head ${attempt.head} review ${attempt.reviewId ?? "none"}; ${path ? "hosted-check-failed:" : ""}${finding?.file ?? "delivery-failed"}${ids}; stop ${retained?.marker ?? "not retained"} count ${retained?.attempts ?? attempt.candidateAttempt}; route ${route}; `;
+  return `${prefix}${path ?? finding?.text ?? ""}`.slice(0, 500);
+}
+
 export async function queueStep(config: QueueConfig, adapter: QueueAdapter): Promise<QueueResult> {
   if (!config.items[0]?.verificationOnly) return runQueueStep(config, adapter);
   const stopped = await optionalRecord(config.stateDirectory, "verification-stop");
@@ -4183,6 +4622,9 @@ async function runQueueStep(config: QueueConfig, adapter: QueueAdapter): Promise
   else validateAttempt(attempt, config);
 
   const finalStep = async <T>(item: QueueItem, operation: () => Promise<T>): Promise<T> => {
+    const executed =
+      config.gateStopAuthorization?.hostedExecutedFailure &&
+      config.gateStopAuthorization.stateDirectory === item.source.stateDirectory;
     try {
       return await operation();
     } catch (error) {
@@ -4190,8 +4632,9 @@ async function runQueueStep(config: QueueConfig, adapter: QueueAdapter): Promise
         (item.acceptedReplan ||
           item.conflictContinuation ||
           item.integrationContinuation ||
-          item.terminalAttemptAdmission) &&
-        error instanceof QueueBlocked &&
+          item.terminalAttemptAdmission ||
+          executed) &&
+        (error instanceof QueueBlocked || (executed && error instanceof DeliveryBlocked)) &&
         ([
           "author-failed",
           "author-malformed",
@@ -4218,6 +4661,7 @@ async function runQueueStep(config: QueueConfig, adapter: QueueAdapter): Promise
           "conflict-resolution-scope-escape",
           "conflict-resolution-unsupported",
           "deploy-not-verified",
+          ...(executed ? ["hosted-check-never-executed"] : []),
         ].includes(error.reason) ||
           error.reason.startsWith("gate-failed:") ||
           error.reason.startsWith("gate-base-failed:") ||
@@ -4242,10 +4686,18 @@ async function runQueueStep(config: QueueConfig, adapter: QueueAdapter): Promise
           {
             head: failedHead,
             reviewId: attempt.reviewId ?? "",
-            findings:
-              item.conflictContinuation ||
-              item.integrationContinuation ||
-              item.terminalAttemptAdmission
+            findings: executed
+              ? [
+                  {
+                    file: error.reason,
+                    line: 1,
+                    severity: "blocking",
+                    text: `hostedExecutedFailure consumed; planning (ISS-221). ${error.diagnostics ?? ""}`,
+                  },
+                ]
+              : item.conflictContinuation ||
+                  item.integrationContinuation ||
+                  item.terminalAttemptAdmission
                 ? attempt.findings
                 : [
                     {
@@ -4257,12 +4709,14 @@ async function runQueueStep(config: QueueConfig, adapter: QueueAdapter): Promise
                   ],
           },
           await adapter.history(),
-          Math.max(attempt.retries, error.retries),
+          Math.max(attempt.retries, error instanceof QueueBlocked ? error.retries : 0),
         );
         await record(directory, "attempt", failure);
         throw new QueueBlocked(
           error.reason === "operator-evidence-failed" ? error.reason : "continuation-failed",
-          error.message + (error.diagnostics ? `: ${error.diagnostics}` : ""),
+          executed
+            ? await failedDeliveryDiagnostic(directory, failure)
+            : error.message + (error.diagnostics ? `: ${error.diagnostics}` : ""),
         );
       }
       throw error;
@@ -4271,16 +4725,46 @@ async function runQueueStep(config: QueueConfig, adapter: QueueAdapter): Promise
 
   for (;;) {
     const item = config.items[attempt.index]!;
+    if (attempt.phase === "failed" && config.gateStopAuthorization?.hostedExecutedFailure) {
+      const grant = config.gateStopAuthorization;
+      const reservation = await optionalRecord(
+        item.source.stateDirectory,
+        "gate-stop-continuation",
+      );
+      if (
+        reservation !== ABSENT &&
+        queueDigest(reservation.authorization) === queueDigest(grant) &&
+        grant.stateDirectory === item.source.stateDirectory &&
+        (await readFile(resolve(directory, "attempt.json"), "utf8")) ===
+          reservation.failedAttemptBytes
+      ) {
+        demand(
+          createHash("sha256").update(reservation.failedAttemptBytes).digest("hex") ===
+            reservation.failedAttemptSha256,
+          "gate-stop-authorization-mismatch",
+        );
+        attempt = {
+          ...attempt,
+          phase: "delivery",
+          acceptedStage: "source",
+          stateDirectory: grant.stateDirectory,
+        };
+        await record(directory, "attempt", attempt);
+      }
+    }
     if (attempt.phase === "failed") {
+      const diagnostics = await failedDeliveryDiagnostic(directory, attempt);
       demand(
         !item.conflictContinuation &&
           !item.integrationContinuation &&
           !item.terminalAttemptAdmission,
         "continuation-failed",
+        diagnostics,
       );
       demand(
         attempt.candidateAttempt < item.implementationAttemptCeiling,
         "implementation-attempt-ceiling-exhausted",
+        diagnostics,
       );
       return {
         status: "advancing-attempt",
@@ -4484,6 +4968,15 @@ async function runQueueStep(config: QueueConfig, adapter: QueueAdapter): Promise
       };
     }
     if (delivery.status === "failed") {
+      const reservation = await optionalRecord(
+        item.source.stateDirectory,
+        "gate-stop-continuation",
+      );
+      if (reservation !== ABSENT && reservation.authorization?.hostedExecutedFailure)
+        delivery.findings = delivery.findings.map((finding) => ({
+          ...finding,
+          text: `${finding.text}hostedExecutedFailure consumed; return to planning (ISS-221).`,
+        }));
       await record(
         directory,
         "attempt",
@@ -4496,15 +4989,21 @@ async function runQueueStep(config: QueueConfig, adapter: QueueAdapter): Promise
           attempt.retries,
         ),
       );
+      const diagnostics = await failedDeliveryDiagnostic(directory, {
+        ...delivery,
+        candidateAttempt: attempt.candidateAttempt,
+      });
       demand(
         !item.conflictContinuation &&
           !item.integrationContinuation &&
           !item.terminalAttemptAdmission,
         "continuation-failed",
+        diagnostics,
       );
       demand(
         attempt.candidateAttempt < item.implementationAttemptCeiling,
         "implementation-attempt-ceiling-exhausted",
+        diagnostics,
       );
       return {
         status: "advancing-attempt",
@@ -5339,7 +5838,12 @@ export function repositoryQueueAdapter(
     },
     async launch(role: Role, current: SourceConfig, prompt: string): Promise<Attempt> {
       demand(
-        !item.acceptedReplan || stage === "source" || role !== "author",
+        (!item.acceptedReplan || stage === "source" || role !== "author") &&
+          !(
+            role === "author" &&
+            config.gateStopAuthorization?.hostedExecutedFailure &&
+            config.gateStopAuthorization.stateDirectory === item.source.stateDirectory
+          ),
         "continuation-repair-not-authorized",
       );
       const priorHistory = await readHistory();
@@ -6025,7 +6529,11 @@ export function repositoryQueueAdapter(
       const recoveryDirectory = resolve(accepted.stateDirectory, "gate-stop-continuation");
       const grant = config.gateStopAuthorization;
       let recovery = await optionalRecord(accepted.stateDirectory, "gate-stop-continuation");
-      if (recovery !== ABSENT && recovery.authorization?.hostedNonExecution)
+      if (
+        recovery !== ABSENT &&
+        (recovery.authorization?.hostedNonExecution ||
+          recovery.authorization?.hostedExecutedFailure)
+      )
         demand(
           JSON.stringify(recovery.authorization) === JSON.stringify(grant),
           "gate-stop-authorization-mismatch",
@@ -6035,6 +6543,7 @@ export function repositoryQueueAdapter(
         if (
           !grant ||
           grant.hostedNonExecution ||
+          grant.hostedExecutedFailure ||
           grant.stateDirectory !== accepted.stateDirectory ||
           item.acceptedReplan ||
           item.integrationContinuation ||
@@ -6344,6 +6853,14 @@ export function repositoryQueueAdapter(
           const worker = await optionalRecord(correctionRecord.directory, `${role}-attempt`);
           if (worker !== ABSENT && worker.retries === 1) inheritedRetries = 1;
         }
+      if (grant?.hostedExecutedFailure && grant.stateDirectory === accepted.stateDirectory) {
+        demand(
+          recovery !== ABSENT &&
+            recovery.authorization.hostedExecutedFailure &&
+            queueDigest(recovery.authorization) === queueDigest(grant),
+          "gate-stop-authorization-mismatch",
+        );
+      }
       if (grant?.hostedNonExecution && grant.stateDirectory === accepted.stateDirectory) {
         try {
           const refused = "gate-stop-authorization-mismatch";
@@ -6760,7 +7277,11 @@ export function repositoryQueueAdapter(
             item.conflictContinuation?.correctionUsed
           )
             return stopGate(`gate-correction-exhausted:${error.gate}`, failure.log);
-          if (item.acceptedReplan || integrating)
+          if (
+            item.acceptedReplan ||
+            integrating ||
+            (grant?.stateDirectory === accepted.stateDirectory && grant.hostedExecutedFailure)
+          )
             return stopGate("gate-correction-not-authorized", failure.log);
           const correctionRoot = recovering ? recoveryDirectory : accepted.stateDirectory;
           const directory = resolve(correctionRoot, "gate-correction");

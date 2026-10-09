@@ -21,6 +21,7 @@ import { promisify } from "node:util";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   currentCandidateAttempt,
+  failedDeliveryDiagnostic,
   QueueBlocked,
   queueConfigFromLoop,
   repositoryQueueAdapter,
@@ -62,7 +63,11 @@ import type { RepositoryAdapter } from "../../scripts/dogfood/repository-adapter
 import { gitSetupAdapter } from "../../scripts/dogfood/setup-adapter.js";
 import { setupStep } from "../../scripts/dogfood/setup.js";
 import { githubDeliveryAdapter } from "../../scripts/dogfood/delivery-adapter.mjs";
-import { DeliveryBlocked, type PublicationEvidence } from "../../scripts/dogfood/delivery.mjs";
+import {
+  DeliveryBlocked,
+  hostedFailurePrompt,
+  type PublicationEvidence,
+} from "../../scripts/dogfood/delivery.mjs";
 import {
   completeCycle,
   nextCycle,
@@ -6100,6 +6105,164 @@ it.each([
   ).toEqual(evidence);
   await expect(read("publication.json")).rejects.toMatchObject({ code: "ENOENT" });
   expect(await read("config.json")).toBe(pinnedConfig);
+});
+
+it("ISS-246 closed grant and maximal realistic diagnostic preserve identities before the evidence path", async () => {
+  const f = await loopFixture();
+  const directory = resolve(f.loop.stateRoot, f.loop.run, "iss-104-attempt-4");
+  const source = resolve(directory, "source");
+  await mkdir(source, { recursive: true });
+  const log = resolve(source, "hosted-failure.log");
+  const check = {
+    name: "Windows tests / remainder",
+    actions: { run: 99999999999, attempt: 99, job: 999999999999, workflow: 246 },
+  };
+  await writeFile(log, `${JSON.stringify({ jobs: [check] })}\nSYNTHETIC failed log\n`);
+  const grant = {
+    stateDirectory: source,
+    candidateHead: f.selected.base,
+    repairSha: "f".repeat(40),
+    authorityUrl: "https://github.com/fixture/repository/issues/246#issuecomment-246",
+    hostedExecutedFailure: {
+      cycle: 99,
+      stop: 99,
+      actionsRun: check.actions.run,
+      runAttempt: 99,
+      job: check.actions.job,
+      controlRun: 99999999998,
+      greenRunAttempt: 100,
+      candidateHead: f.selected.base,
+      stoppedExecutorHead: "b".repeat(40),
+      evidenceSha256: "c".repeat(64),
+      failedTests: ["test/dogfood/unrelated.test.ts"],
+      publication: {
+        number: 246,
+        url: "https://github.com/fixture/repository/pull/246",
+        head: f.selected.base,
+        sourceBranch: "codex/iss-104-attempt-4",
+      },
+    },
+  };
+  expect(() => validateLoopConfig({ ...f.loop, gateStopAuthorization: grant })).not.toThrow();
+  for (const bad of [
+    null,
+    {},
+    { ...grant.hostedExecutedFailure, extra: true },
+    { ...grant.hostedExecutedFailure, evidenceSha256: undefined },
+    { ...grant.hostedExecutedFailure, greenRunAttempt: 99 },
+    ...[
+      "../outside.test.ts",
+      "/outside.test.ts",
+      "test/../outside.test.ts",
+      "test\\outside.test.ts",
+    ].map((path) => ({ ...grant.hostedExecutedFailure, failedTests: [path] })),
+    ...["cycle", "stop", "actionsRun", "runAttempt", "job", "controlRun", "greenRunAttempt"].map(
+      (key) => ({ ...grant.hostedExecutedFailure, [key]: 0 }),
+    ),
+  ])
+    expect(() =>
+      validateLoopConfig({
+        ...f.loop,
+        gateStopAuthorization: { ...grant, hostedExecutedFailure: bad },
+      } as LoopConfig),
+    ).toThrow("invalid-gate-stop-authorization");
+  expect(() =>
+    validateLoopConfig({
+      ...f.loop,
+      gateStopAuthorization: { ...grant, executorRepair: { stoppedExecutorHead: "a".repeat(40) } },
+    }),
+  ).toThrow("invalid-gate-stop-authorization");
+  const marker = "loop-stop:synthetic-iss246-20261009T000000-native-reobservation:99:99";
+  const retained = {
+    selection: { key: "ISS-104", cycle: 99 },
+    marker,
+    stop: 99,
+    attempts: 4,
+    reason: "implementation-attempt-ceiling-exhausted",
+  };
+  await writeFile(resolve(directory, "..", "cycle-99-stop-99.json"), JSON.stringify(retained));
+  await writeFile(resolve(directory, "..", "cycle-99-stop-99-complete.json"), "{}");
+  await writeFile(
+    resolve(directory, "..", "cycle-99-stop-100.json"),
+    JSON.stringify({
+      ...retained,
+      marker: "synthetic-later-host-stop",
+      stop: 100,
+      reason: "hosted-observation-unavailable",
+    }),
+  );
+  await writeFile(resolve(directory, "..", "cycle-99-stop-100-complete.json"), "{}");
+  const head = "f".repeat(40),
+    reviewId = "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa";
+  const diagnostic = await failedDeliveryDiagnostic(directory, {
+    head,
+    reviewId,
+    candidateAttempt: 4,
+    findings: [{ file: check.name, line: 1, severity: "blocking", text: hostedFailurePrompt(log) }],
+  });
+  expect(diagnostic.length).toBeLessThanOrEqual(500);
+  for (const value of [
+    head,
+    reviewId,
+    marker,
+    "count 4",
+    "hosted-check-failed:Windows tests / remainder",
+    "99999999999/99",
+    "999999999999",
+    "hostedExecutedFailure (admission-checked; in-diff refuses)",
+  ])
+    expect(diagnostic).toContain(value);
+  expect(diagnostic.indexOf("hostedExecutedFailure")).toBeLessThan(diagnostic.indexOf(source));
+});
+
+it("ISS-246 ordinary hosted failure below the ceiling still advances without a grant", async () => {
+  const f = await fixture();
+  const history: QueueParticipant[] = [];
+  const adapter: QueueAdapter = {
+    async assertExecutor() {},
+    async history() {
+      return history;
+    },
+    async setup() {
+      return { status: "ready" };
+    },
+    async source(item) {
+      history.push(
+        participant(1, item.id, "source", "author", "passed"),
+        participant(2, item.id, "source", "reviewer", "passed"),
+      );
+      return {
+        status: "accepted",
+        head: item.base,
+        reviewId: history[1]!.id,
+        stateDirectory: item.source.stateDirectory,
+      };
+    },
+    async repair() {
+      throw new Error("no correction");
+    },
+    async delivery(item, accepted) {
+      return {
+        status: "failed",
+        head: accepted.head,
+        reviewId: accepted.reviewId,
+        findings: [
+          {
+            file: "Windows tests / remainder",
+            line: 1,
+            severity: "blocking",
+            text: hostedFailurePrompt(resolve(item.source.stateDirectory, "hosted-failure.log")),
+          },
+        ],
+      };
+    },
+  };
+  for (let replay = 0; replay < 2; replay++)
+    expect(await queueStep(f.config, adapter)).toMatchObject({
+      status: "advancing-attempt",
+      cursor: 1,
+    });
+  expect(history).toHaveLength(2);
 });
 
 it("composes a four-input saved-stop grant outside immutable source and delivery inputs", async () => {
