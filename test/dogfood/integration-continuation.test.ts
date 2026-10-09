@@ -694,6 +694,8 @@ it.each([
   "refresh",
   "pending receipt",
   "published conflict",
+  "published CRLF conflict",
+  "published CRLF outside hunk",
   "published pending receipt",
   "published outside hunk",
   "published semantic loss",
@@ -707,6 +709,10 @@ it.each([
   const publishedConflict = mode.startsWith("published");
   const autoMergeConflict = mode === "published auto-merge semantic loss";
   const f = await conflictSuccessorFixture();
+  const crlf = mode.startsWith("published CRLF");
+  const outsideHunk = mode.endsWith("outside hunk");
+  // Reproduce the Windows checkout in a disposable repository on every OS.
+  if (crlf) await f.git(["config", "core.autocrlf", "true"]);
   await writeFile(
     resolve(f.repository, "unrelated.test.ts"),
     "// SYNTHETIC unchanged failed test\n",
@@ -757,11 +763,16 @@ it.each([
         const path = resolve(config.worktree, "docs/loop.md");
         const marked = await readFile(path, "utf8");
         expect(marked).toContain("<<<<<<<");
+        if (crlf) expect(marked).toContain("\r\n");
         let resolved = marked.replace(
-          /^<<<<<<< .*\n([\s\S]*?)^=======\n([\s\S]*?)^>>>>>>> .*\n/gm,
+          /^<<<<<<< .*\r?\n([\s\S]*?)^=======\r?\n([\s\S]*?)^>>>>>>> .*\r?\n/gm,
           mode === "published semantic loss" ? "$1" : "$1$2",
         );
-        if (mode === "published outside hunk") resolved = `unruled outside-hunk edit\n${resolved}`;
+        // Resolve the actual marker representation without normalizing fixed bytes.
+        // The outside-hunk control must fail for its edit, not leftover markers.
+        expect(resolved).not.toMatch(/^(?:<<<<<<< |=======\r?$|>>>>>>> )/m);
+        if (crlf) expect(resolved).toContain("\r\n");
+        if (outsideHunk) resolved = `unruled outside-hunk edit\n${resolved}`;
         await writeFile(path, resolved);
       } else if (role === "author") {
         await appendFile(
@@ -1496,7 +1507,7 @@ it.each([
       expect(launches).toHaveLength(2);
       q = await f.compose(config);
     }
-    if (mode === "published outside hunk") {
+    if (outsideHunk) {
       await expect(queueStep(q, adapter())).rejects.toMatchObject({
         reason: "continuation-failed",
         diagnostics: expect.stringContaining("conflict-resolution-scope-escape"),
