@@ -926,7 +926,7 @@
       "title": "Refresh verification-only delivery again when main moves after a passing delta review",
       "summary": "Reuse native current-main refresh after verification PASS, including retained movement stops, without renewing the grant, reservation or implementation attempt.",
       "milestone": "M1",
-      "blockedBy": ["ISS-233", "ISS-243", "ISS-244", "ISS-245", "ISS-246", "ISS-247"]
+      "blockedBy": ["ISS-233", "ISS-243", "ISS-244", "ISS-245", "ISS-246", "ISS-251"]
     },
     {
       "key": "ISS-235",
@@ -942,7 +942,7 @@
       "title": "Record one defect class for every unsuccessful loop outcome",
       "summary": "Add causal classification beside ISS-225 fault ownership without changing recovery behavior or retained records.",
       "milestone": "M1",
-      "blockedBy": ["ISS-234", "ISS-235"]
+      "blockedBy": ["ISS-235"]
     },
     {
       "key": "ISS-237",
@@ -1028,9 +1028,9 @@
       "key": "ISS-247",
       "file": "planning/drafts/ISS-247.md",
       "title": "Continue one reviewed published attempt through a ruled current-main conflict",
-      "summary": "Bind one same-attempt published-conflict integration to the retained v2 admission and fresh authority, preserving spent allowances, exact-head review and forward PR delivery.",
+      "summary": "Track the retained published-conflict recovery outcome through ISS-251; the one-off grant design is superseded without closing the original or losing its history.",
       "milestone": "M1",
-      "blockedBy": []
+      "blockedBy": ["ISS-251"]
     },
     {
       "key": "ISS-248",
@@ -1055,6 +1055,14 @@
       "summary": "Install reviewed three-OS-green fast-forward main at an issue boundary under an executor-wide lock with a durable failure state, replacing per-landing host install scripts.",
       "milestone": "M1",
       "blockedBy": []
+    },
+    {
+      "key": "ISS-251",
+      "file": "planning/drafts/ISS-251.md",
+      "title": "Recover the retained published-conflict lineage through ordinary judged planning",
+      "summary": "Bridge the retained v2 published spent-resolution lineage into ordinary reviewed recovery after ISS-241, preserving every ISS-247 obligation, count and current-head delivery gate without a new grant.",
+      "milestone": "M1",
+      "blockedBy": ["ISS-241"]
     }
   ]
 }
