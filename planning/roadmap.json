@@ -1031,6 +1031,14 @@
       "summary": "Bind one same-attempt published-conflict integration to the retained v2 admission and fresh authority, preserving spent allowances, exact-head review and forward PR delivery.",
       "milestone": "M1",
       "blockedBy": []
+    },
+    {
+      "key": "ISS-248",
+      "file": "planning/drafts/ISS-248.md",
+      "title": "Retry classified transport failures during selected-issue observation",
+      "summary": "Extend the existing bounded transport-only issue-view retry to default supervision reads while preserving diagnostics, learning-note reconciliation and every mutation boundary.",
+      "milestone": "M1",
+      "blockedBy": []
     }
   ]
 }
