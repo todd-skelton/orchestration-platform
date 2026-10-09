@@ -7,6 +7,7 @@ import { RepairBlocked, parseReview } from "./repair-policy.mjs";
 import { loadBoardSnapshot, normalizeBody, planningKeyOf } from "../planning/board-check.mjs";
 import { checkCandidateBoard } from "../planning/candidate-board.mjs";
 import { resolvePnpmLauncher } from "../pnpm-launcher.mjs";
+import { shards as windowsShards } from "../verify/windows-aggregate.mjs";
 // @ts-expect-error Node 24 executes this private TypeScript module directly.
 import { GithubCommandFailure } from "./github-command-failure.ts";
 import {
@@ -575,19 +576,25 @@ export async function observeExecutedHostedFailure(
         executed(job),
       "failed executed job",
     );
-    // An aggregate may fail with its shard; every other required check must be green.
+    // Only the bound job and bootstrap's dependent Windows aggregate may fail.
+    // Inspect all jobs: another failed shard is not itself a required check.
+    for (const row of failedJobs.jobs) {
+      check(
+        success(row) ||
+          row.id === packet!.job ||
+          (failed.path === ".github/workflows/bootstrap.yml" &&
+            row.name === "Node 24 / windows-latest" &&
+            row.status === "completed" &&
+            row.conclusion === "failure" &&
+            Object.values(windowsShards).includes(job.name)),
+        `failed attempt job ${row.name}`,
+      );
+    }
     for (const name of config.requiredChecks) {
       const before = failedJobs.jobs.filter((row) => row.name === name);
       const after = greenJobs.jobs.filter((row) => row.name === name);
       check(
-        before.length === 1 &&
-          after.length === 1 &&
-          (success(before[0]) ||
-            before[0].name === job.name ||
-            (before[0].conclusion === "failure" &&
-              name === "Node 24 / windows-latest" &&
-              job.name.startsWith("Windows tests / "))) &&
-          success(after[0]),
+        before.length === 1 && after.length === 1 && success(after[0]),
         `required check ${name}`,
       );
     }

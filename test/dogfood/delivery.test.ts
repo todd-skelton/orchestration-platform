@@ -55,6 +55,11 @@ it.each([
   "runner",
   "steps",
   "other red",
+  "second failed shard",
+  "second pending shard",
+  "second cancelled shard",
+  "second skipped shard",
+  "unrelated aggregate",
   "control red",
   "control head",
   "not draft",
@@ -92,6 +97,40 @@ it.each([
     failedTests: ["unrelated.test.ts"],
     publication,
   };
+  const sibling = {
+    ...e.data.jobs[3]!,
+    id: 24614,
+    name: "Windows tests / queue",
+    html_url: `https://github.com/${publication.repository}/actions/runs/${packet.actionsRun}/job/24614`,
+    conclusion: "success",
+  };
+  if (mode.startsWith("second")) {
+    sibling.conclusion =
+      mode === "second cancelled shard"
+        ? "cancelled"
+        : mode === "second skipped shard"
+          ? "skipped"
+          : "failure";
+    if (mode === "second pending shard")
+      Object.assign(sibling, { status: "in_progress", conclusion: null });
+  }
+  e.data.jobs.push(sibling);
+  // Both shards and the aggregate rerun green: the refusal must come from
+  // the original census, not incomplete or failing later execution.
+  e.data.greenJobs.push({
+    ...sibling,
+    id: 24624,
+    run_attempt: 2,
+    html_url: `https://github.com/${publication.repository}/actions/runs/${packet.actionsRun}/job/24624`,
+    status: "completed",
+    conclusion: "success",
+  });
+  if (mode === "unrelated aggregate") {
+    for (const rows of [e.data.jobs, e.data.greenJobs, e.data.controlJobs]) {
+      rows.find((row) => row.name === "Windows tests / remainder")!.name =
+        "Windows tests / unrelated";
+    }
+  }
   if (mode === "head") e.data.green.head_sha = mergeCommit;
   if (mode === "pending") {
     e.data.green.status = "in_progress";
@@ -127,12 +166,16 @@ it.each([
         : ["pending job", "cancelled", "skipped"].includes(mode)
           ? "required check Node 24 / windows-latest"
           : mode === "other red"
-            ? "required check Node 24 / ubuntu-latest"
-            : ["runner", "steps", "old attempt"].includes(mode)
-              ? "green effective jobs must execute or retain failed-attempt successes"
-              : mode.startsWith("control")
-                ? "base control identity or result"
-                : "publication identity",
+            ? "failed attempt job Node 24 / ubuntu-latest"
+            : mode.startsWith("second")
+              ? "failed attempt job Windows tests / queue"
+              : mode === "unrelated aggregate"
+                ? "failed attempt job Node 24 / windows-latest"
+                : ["runner", "steps", "old attempt"].includes(mode)
+                  ? "green effective jobs must execute or retain failed-attempt successes"
+                  : mode.startsWith("control")
+                    ? "base control identity or result"
+                    : "publication identity",
     });
   expect(e.calls.every((args) => ["api", "pr"].includes(args[0]!))).toBe(true);
 });
