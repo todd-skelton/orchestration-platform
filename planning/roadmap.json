@@ -1033,6 +1033,14 @@
       "blockedBy": []
     },
     {
+      "key": "ISS-248",
+      "file": "planning/drafts/ISS-248.md",
+      "title": "Retry classified transport failures during selected-issue observation",
+      "summary": "Extend the existing bounded transport-only issue-view retry to default supervision reads while preserving diagnostics, learning-note reconciliation and every mutation boundary.",
+      "milestone": "M1",
+      "blockedBy": []
+    },
+    {
       "key": "ISS-249",
       "file": "planning/drafts/ISS-249.md",
       "title": "Resolve native ladder models from the shared model registry instead of literal selectors",
