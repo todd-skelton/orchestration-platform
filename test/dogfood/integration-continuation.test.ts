@@ -18,17 +18,22 @@ import { tmpdir } from "node:os";
 import { resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
-import { afterEach, expect, it } from "vitest";
+import { afterEach, expect, it, vi } from "vitest";
+import filesystem from "node:fs/promises";
+import { syncBuiltinESMExports } from "node:module";
 import { unparkInstructions } from "../../adapters/self.mjs";
 import type { Adapter } from "../../scripts/dogfood/flow.js";
 import { githubDeliveryAdapter } from "../../scripts/dogfood/delivery-adapter.mjs";
-import { DeliveryBlocked } from "../../scripts/dogfood/delivery.mjs";
+import { DeliveryBlocked, type PublicationEvidence } from "../../scripts/dogfood/delivery.mjs";
+import { executedHostedFixture } from "./fixtures/continuation.js";
 import type {
   IntegrationContinuation,
   TerminalAttemptAdmission,
 } from "../../scripts/dogfood/continuation.js";
 import {
   ISS214_REFRESH_REVIEW_ALLOWANCE,
+  admitExecutedHostedStop,
+  failedDeliveryDiagnostic,
   QueueBlocked,
   evaluateTerminalAttempt,
   retainedRunHistory,
@@ -58,6 +63,8 @@ const execute = promisify(execFile);
 let fixtureGit: Promise<string> | undefined;
 const roots: string[] = [];
 afterEach(async () => {
+  vi.restoreAllMocks();
+  syncBuiltinESMExports();
   await Promise.all(
     roots
       .splice(0)
@@ -676,6 +683,586 @@ async function conflictSuccessorFixture(prior: 2 | 3 = 3, prefix: QueueParticipa
     terminalSelection,
   };
 }
+
+it.each([
+  "v2",
+  "ceiling",
+  "red again",
+  "skipped again",
+  "unexecuted again",
+  "refresh",
+  "pending receipt",
+])("ISS-246 SYNTHETIC unchanged-head native continuation: %s", async (mode) => {
+  const f = await conflictSuccessorFixture();
+  await writeFile(
+    resolve(f.repository, "unrelated.test.ts"),
+    "// SYNTHETIC unchanged failed test\n",
+  );
+  await f.git(["add", "."]);
+  await f.git(["commit", "-m", "synthetic unchanged test"]);
+  await f.git(["push", "origin", "main"]);
+  f.selected.base = await f.git(["rev-parse", "HEAD"]);
+  f.selected.planningRevision = f.selected.base;
+  f.policy.requiredChecks = () => [
+    "Node 24 / ubuntu-latest",
+    "Node 24 / windows-latest",
+    "Node 24 / macos-latest",
+  ];
+  let q = await f.compose();
+  const item = q.items[0]!;
+  let loop = f.loop;
+  if (mode === "ceiling") {
+    // Synthetic ordinary attempt 4 uses the same native gates/delivery, without
+    // the v2 packet, reservation or terminal continuation item.
+    delete item.terminalAttemptAdmission;
+    const { terminalAttemptAdmission: _packet, ...ordinary } = loop;
+    loop = ordinary;
+    await rm(f.reservation);
+  }
+  const terminalBytes = mode === "ceiling" ? undefined : await readFile(f.reservation, "utf8");
+  const launches: string[] = [];
+  const effects: string[] = [];
+  let publication: PublicationEvidence | undefined;
+  let continued = false;
+  let conflicting = false;
+  let deltaPending = true;
+  let green = false,
+    merged = false,
+    cleaned = false;
+  const native: Adapter = {
+    async preflight() {},
+    git: (cwd, args) => f.git(args, cwd),
+    async launch(role, config) {
+      launches.push(role);
+      if (role === "author") {
+        await appendFile(
+          resolve(config.worktree, "docs/loop.md"),
+          "\nSYNTHETIC ISS-246 candidate.\n",
+        );
+        await writeFile(resolve(config.worktree, "changed.test.ts"), "// SYNTHETIC changed file\n");
+      }
+      const trace = resolve(config.stateDirectory, `${role}.jsonl`);
+      await writeFile(trace, "SYNTHETIC execution\n");
+      return { id: randomUUID(), pid: 246, trace, launchedAt: 1 };
+    },
+    async observe(role, config, attempt) {
+      if (
+        role === "reviewer" &&
+        config.stateDirectory !== item.source.stateDirectory &&
+        deltaPending
+      )
+        return { id: attempt.id, status: "running" };
+      const head =
+        role === "author" ? config.base : await f.git(["rev-parse", "HEAD"], config.worktree);
+      return {
+        id: attempt.id,
+        status: "passed",
+        head,
+        ...(role === "reviewer"
+          ? {
+              summary: JSON.stringify({
+                run: RUN,
+                role,
+                head,
+                verdict: "PASS",
+                findings: [],
+                g0: "No; synthetic bounded implementation.",
+              }),
+            }
+          : {}),
+      };
+    },
+    async checks() {
+      throw new Error("no source publication");
+    },
+  };
+  const delivery = githubDeliveryAdapter();
+  delivery.verifyWorkspace = async (config, head) =>
+    (await f.git(["rev-parse", "HEAD"], config.worktree)) === head &&
+    (await f.git(["status", "--porcelain"], config.worktree)) === "";
+  delivery.runGate = async (_config, name) => {
+    effects.push(`gate:${name}`);
+    return "passed";
+  };
+  delivery.conflictingPublication = async () => conflicting;
+  delivery.observePublication = async (config) =>
+    publication
+      ? config.candidateHead !== publication.head
+        ? { state: "needs-mutation", target: "synthetic-refresh" }
+        : { state: conflicting ? "conflicting" : "confirmed", value: publication }
+      : { state: "needs-mutation", target: "absent" };
+  delivery.publish = async (config, plan) => {
+    effects.push("publish");
+    const saved = JSON.parse(
+      await readFile(resolve(config.stateDirectory, "delivery-plan.json"), "utf8"),
+    );
+    publication = {
+      number: 246,
+      url: `https://github.com/${config.repository}/pull/246`,
+      head: config.candidateHead,
+      repository: config.repository,
+      sourceBranch: plan.sourceBranch,
+      baseBranch: "main",
+      title: plan.title,
+      body: plan.body,
+      planDigest: saved.digest,
+    };
+  };
+  delivery.checks = async (config) => {
+    effects.push("checks");
+    if (conflicting) throw new DeliveryBlocked("published-candidate-conflict");
+    if (continued && mode === "unexecuted again")
+      throw new DeliveryBlocked("hosted-check-never-executed");
+    const e = executedHostedFixture(publication!, item.base, NUMBER, "");
+    const rows = green ? e.data.greenJobs : e.data.jobs;
+    const jobs = rows.map((row) => ({
+      name: row.name,
+      bucket:
+        continued && mode === "skipped again" && row.name === "Node 24 / windows-latest"
+          ? ("skipping" as const)
+          : row.conclusion === "success"
+            ? ("pass" as const)
+            : ("fail" as const),
+      link: row.html_url,
+      actions: { run: 24601, attempt: green ? 2 : continued ? 3 : 1, job: row.id, workflow: 246 },
+    }));
+    // Put the failed shard first, as the complete census may legitimately do.
+    jobs.sort(
+      (a, b) =>
+        Number(b.name.startsWith("Windows tests")) - Number(a.name.startsWith("Windows tests")),
+    );
+    return {
+      head: config.candidateHead,
+      checks: jobs.filter((job) => config.requiredChecks.includes(job.name)),
+      jobs,
+    };
+  };
+  delivery.failedCheckLog = async () =>
+    "SYNTHETIC FAIL unrelated.test.ts:1 timed out; changed.test.ts passed\n";
+  delivery.observeMerge = async () =>
+    merged
+      ? {
+          state: "confirmed",
+          value: { number: 246, head: publication!.head, mergeCommit: "e".repeat(40) },
+        }
+      : { state: "needs-mutation" };
+  delivery.merge = async () => {
+    effects.push("merge");
+    merged = true;
+  };
+  delivery.observeCleanup = async (_config, plan) =>
+    cleaned ? { state: "confirmed", value: plan } : { state: "needs-mutation" };
+  delivery.cleanup = async () => {
+    effects.push("cleanup");
+    cleaned = true;
+  };
+  const adapter = () =>
+    repositoryQueueAdapter(q, f.repository, {
+      native,
+      delivery,
+      gitExecutable: f.gitExecutable,
+      repository: f.policy,
+      async assertExecutor() {},
+      setup: gitSetupAdapter({
+        gitExecutable: f.gitExecutable,
+        async install(_launcher, _args, cwd) {
+          await mkdir(resolve(cwd, "node_modules"), { recursive: true });
+          await writeFile(resolve(cwd, "node_modules/.modules.yaml"), "synthetic: true\n");
+          return "succeeded";
+        },
+      }),
+      deliveryPolicy: {
+        async plan(config) {
+          return {
+            gates: {
+              beforeMirror: ["typecheck", "format:check", "planning:check", "test"],
+              afterMirror: [],
+            },
+            drafts: [],
+            publication: {
+              sourceBranch: `codex/${KEY.toLowerCase()}-attempt-4`,
+              baseBranch: "main",
+              title: "SYNTHETIC",
+              body: "SYNTHETIC",
+              draft: true,
+            },
+            mergePolicy: {},
+            cleanup: {
+              worktrees: [config.worktree, config.reviewWorktree],
+              branch: config.localBranch!,
+            },
+          };
+        },
+      },
+    });
+  const reason =
+    mode === "ceiling" ? "implementation-attempt-ceiling-exhausted" : "continuation-failed";
+  const failure = await queueStep(q, adapter()).catch((error) => error);
+  expect(failure).toMatchObject({ reason });
+  const attemptPath = resolve(q.stateDirectory, "attempt.json");
+  const failedBytes = await readFile(attemptPath, "utf8");
+  const failed = JSON.parse(failedBytes);
+  const cycle = {
+    selection: { cycle: 3, ...f.selected },
+    initialHistory: await adapter().history(),
+  };
+  await persistCycle(loop, cycle);
+  const comments: string[] = [];
+  const supervisor: SupervisionAdapter = {
+    async currentMain() {
+      return f.selected.base;
+    },
+    async issue() {
+      return { state: "OPEN", key: KEY, labels: [], comments };
+    },
+    async removeReady() {},
+    async close() {},
+    async comment(_config, _number, body) {
+      comments.push(body);
+    },
+  };
+  await stopCycle(loop, cycle, reason, 4, supervisor, f.policy, failure.diagnostics);
+  const baseline = process.env.ISS246_BASELINE === "1";
+  if (baseline) {
+    expect(failure.diagnostics).toBeUndefined();
+    expect(comments[0]).not.toContain("Diagnostic:");
+  } else {
+    expect(comments[0]).toContain("Diagnostic:");
+    expect(failure.diagnostics).toContain("hostedExecutedFailure");
+    expect(failure.diagnostics).toContain("run 24601/1 job 24613");
+    expect(failure.diagnostics.length).toBeLessThanOrEqual(500);
+  }
+  await expect(queueStep(q, adapter())).rejects.toMatchObject({ reason });
+  expect(await readFile(attemptPath, "utf8")).toBe(failedBytes);
+  const before = await snapshot(f.runState);
+  await f.git(["commit", "--allow-empty", "-m", "SYNTHETIC reviewed executor repair"]);
+  await f.git(["push", "origin", "main"]);
+  const repair = await f.git(["rev-parse", "HEAD"]);
+  const log = await readFile(resolve(item.source.stateDirectory, "hosted-failure.log"));
+  const grant = {
+    stateDirectory: item.source.stateDirectory,
+    candidateHead: failed.head,
+    repairSha: repair,
+    authorityUrl: `${ISSUE}#issuecomment-246`,
+    hostedExecutedFailure: {
+      cycle: 3,
+      stop: 1,
+      actionsRun: 24601,
+      runAttempt: 1,
+      job: 24613,
+      controlRun: 24602,
+      greenRunAttempt: 2,
+      candidateHead: failed.head,
+      stoppedExecutorHead: f.selected.base,
+      evidenceSha256: createHash("sha256").update(log).digest("hex"),
+      failedTests: ["unrelated.test.ts"],
+      publication: {
+        number: 246,
+        url: publication!.url,
+        head: failed.head,
+        sourceBranch: publication!.sourceBranch,
+      },
+    },
+  };
+  const granted = { ...loop, gateStopAuthorization: grant };
+  if (baseline) {
+    q = { ...q, controllerRevision: repair };
+    item.setup.controllerRevision = repair;
+    await expect(queueStep(q, adapter())).rejects.toMatchObject({ reason });
+    expect(await readFile(attemptPath, "utf8")).toBe(failedBytes);
+    if (mode !== "ceiling") {
+      const { hostedExecutedFailure: _kind, ...oldGrant } = grant;
+      expect(() => validateLoopConfig({ ...loop, gateStopAuthorization: oldGrant })).toThrow(
+        "terminal-attempt-admission-mismatch",
+      );
+    }
+    expect(launches).toEqual(["author", "reviewer"]);
+    return;
+  }
+  const e = executedHostedFixture(publication!, item.base, NUMBER, comments[0]!);
+  const authority = {
+    id: "246",
+    url: grant.authorityUrl,
+    author: "todd-skelton",
+    capturedAt: new Date().toISOString(),
+    body: `SYNTHETIC host interpreted decision loop-stop:${RUN}:3:1 ${grant.stateDirectory} ${repair} ${JSON.stringify(grant.hostedExecutedFailure)} changedPathsExercised: no`,
+  };
+  const admit = (config = granted) =>
+    admitExecutedHostedStop(config, f.selected, {
+      commands: e.commands,
+      authority: async () => authority,
+    });
+  const slot = resolve(item.source.stateDirectory, "gate-stop-continuation.json");
+  if (mode === "v2") {
+    // Every rejection changes one authority input, then restores it. No slot or
+    // failed-to-delivery write may happen before all observations agree.
+    for (const [label, change] of [
+      [
+        "hash",
+        () => {
+          grant.hostedExecutedFailure.evidenceSha256 = "e".repeat(64);
+        },
+      ],
+      [
+        "changed set",
+        () => {
+          grant.hostedExecutedFailure.failedTests = ["changed.test.ts"];
+        },
+      ],
+      [
+        "log path",
+        () => {
+          grant.hostedExecutedFailure.failedTests = ["absent.test.ts"];
+        },
+      ],
+      [
+        "closed issue",
+        () => {
+          e.data.issue.state = "CLOSED";
+        },
+      ],
+      [
+        "authority body",
+        () => {
+          authority.body = "SYNTHETIC changed body";
+        },
+      ],
+      [
+        "green pending",
+        () => {
+          e.data.green.status = "in_progress";
+        },
+      ],
+      [
+        "PR moved",
+        () => {
+          e.data.pr.headRefOid = "e".repeat(40);
+        },
+      ],
+    ] as const) {
+      const oldGrant = structuredClone(grant),
+        oldData = structuredClone(e.data),
+        oldAuthority = { ...authority };
+      change();
+      if (label !== "authority body")
+        authority.body = `SYNTHETIC host interpreted decision loop-stop:${RUN}:3:1 ${grant.stateDirectory} ${repair} ${JSON.stringify(grant.hostedExecutedFailure)} changedPathsExercised: no`;
+      await expect(admit(), label).rejects.toMatchObject({
+        reason: "gate-stop-authorization-mismatch",
+        diagnostics: (
+          {
+            hash: "hosted evidence hash",
+            "changed set": "failed test is in changed set",
+            "log path": "failed test absent from log",
+            "closed issue": "owning issue and complete receipt",
+            "authority body": "host decision binding",
+            "green pending": "failed/green workflow identity or result",
+            "PR moved": "publication identity",
+          } as const
+        )[label],
+      });
+      await expect(readFile(slot), label).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await readFile(attemptPath, "utf8"), label).toBe(failedBytes);
+      Object.assign(grant, oldGrant);
+      Object.assign(e.data, oldData);
+      Object.assign(authority, oldAuthority);
+    }
+    const { terminalAttemptAdmission: _packet, ...missing } = granted;
+    await expect(admit(missing)).rejects.toMatchObject({
+      reason: "gate-stop-authorization-mismatch",
+    });
+    await expect(admit({ ...granted, providerOutageCeilingMs: 12345 })).rejects.toMatchObject({
+      reason: "gate-stop-authorization-mismatch",
+    });
+    for (const [field, value] of [
+      ["run", "synthetic-other-run"],
+      ["issueKey", "ISS-999"],
+      ["nextAbsoluteAttempt", 3],
+    ] as const) {
+      const different = JSON.parse(terminalBytes!);
+      different.binding.packet[field] = value;
+      await writeFile(f.reservation, JSON.stringify(different));
+      await expect(admit(), `reserved ${field}`).rejects.toMatchObject({
+        reason: "gate-stop-authorization-mismatch",
+        diagnostics: "saved v2 admission binding",
+      });
+      await expect(readFile(slot)).rejects.toMatchObject({ code: "ENOENT" });
+      expect(await readFile(attemptPath, "utf8")).toBe(failedBytes);
+      await writeFile(f.reservation, terminalBytes!);
+    }
+    const { hostedExecutedFailure: _kind, ...plain } = grant;
+    for (const other of [
+      { ...plain, executorRepair: { stoppedExecutorHead: f.selected.base } },
+      {
+        ...plain,
+        hostedNonExecution: {
+          cycle: 3,
+          stop: 1,
+          actionsRun: 24601,
+          runAttempt: 1,
+          job: 24613,
+          stoppedExecutorHead: f.selected.base,
+        },
+      },
+    ])
+      expect(() => validateLoopConfig({ ...loop, gateStopAuthorization: other })).toThrow(
+        "terminal-attempt-admission-mismatch",
+      );
+    for (const label of ["author FAIL", "blocking DELTA", "local gate", "conflict"]) {
+      await writeFile(attemptPath, JSON.stringify({ ...failed, findings: [] }));
+      await expect(admit(), label).rejects.toMatchObject({
+        reason: "gate-stop-authorization-mismatch",
+        diagnostics: "executed hosted-failure finding",
+      });
+      await expect(readFile(slot)).rejects.toMatchObject({ code: "ENOENT" });
+      await writeFile(attemptPath, failedBytes);
+    }
+  }
+  const observations = { commands: e.commands, authority: async () => authority };
+  if (mode === "pending receipt") await rm(resolve(f.runState, "cycle-3-stop-1-complete.json"));
+  expect(
+    await nextCycle(granted, f.repository, supervisor, f.policy, undefined, observations),
+  ).toMatchObject({ selection: cycle.selection });
+  if (mode === "pending receipt") {
+    await expect(readFile(slot)).rejects.toMatchObject({ code: "ENOENT" });
+    expect(
+      await reconcilePendingStop(granted, cycle, supervisor, f.policy, observations),
+    ).toBeUndefined();
+    expect(comments).toHaveLength(1);
+  }
+  const reservation = await admit();
+  expect(reservation.failedAttemptBytes).toBe(failedBytes);
+  expect(reservation.failedAttemptSha256).toBe(
+    createHash("sha256").update(failedBytes).digest("hex"),
+  );
+  expect(await readFile(attemptPath, "utf8")).toBe(failedBytes);
+  const reserved = await readFile(slot, "utf8");
+  const reads = e.calls.length;
+  await admit();
+  expect(e.calls).toHaveLength(reads);
+  expect(await readFile(slot, "utf8")).toBe(reserved);
+  if (mode === "refresh") {
+    await writeFile(resolve(f.repository, "synthetic-later-main.txt"), "SYNTHETIC later main\n");
+    await f.git(["add", "."]);
+    await f.git(["commit", "-m", "SYNTHETIC native refresh main"]);
+    await f.git(["push", "origin", "main"]);
+    conflicting = true;
+  }
+  expect(await nextCycle(granted, f.repository, supervisor, f.policy)).toMatchObject({
+    selection: cycle.selection,
+  });
+  if (mode !== "ceiling") q = await f.compose(granted);
+  else {
+    q = { ...q, controllerRevision: repair, gateStopAuthorization: grant };
+    item.setup.controllerRevision = repair;
+  }
+  green = !mode.endsWith("again");
+  continued = true;
+  const checkpoint = effects.length;
+  let reopens = 0;
+  const originalRename = filesystem.rename;
+  const renameSpy = vi.spyOn(filesystem, "rename").mockImplementation(async (from, to) => {
+    if (String(to) === attemptPath) {
+      const next = JSON.parse(await readFile(from, "utf8"));
+      const current = JSON.parse(await readFile(to, "utf8"));
+      if (current.phase === "failed" && next.phase === "delivery") {
+        reopens++;
+        expect(await readFile(slot, "utf8")).toBe(reserved);
+        expect(next).toEqual({
+          ...failed,
+          phase: "delivery",
+          acceptedStage: "source",
+          stateDirectory: grant.stateDirectory,
+        });
+      }
+    }
+    return originalRename(from, to);
+  });
+  syncBuiltinESMExports();
+  if (green) {
+    if (mode === "refresh") {
+      expect(await queueStep(q, adapter())).toMatchObject({ status: "observing-hosted-checks" });
+      expect(await queueStep(q, adapter())).toMatchObject({ status: "observing-reviewer" });
+      expect(launches).toEqual(["author", "reviewer", "reviewer"]);
+      deltaPending = false;
+      conflicting = false;
+    }
+    expect(await queueStep(q, adapter())).toMatchObject({ status: "complete" });
+    expect(effects.slice(checkpoint)).toEqual(
+      mode === "refresh"
+        ? [
+            "checks",
+            "gate:typecheck",
+            "gate:format:check",
+            "gate:planning:check",
+            "gate:test",
+            "publish",
+            "checks",
+            "merge",
+            "cleanup",
+          ]
+        : ["checks", "merge", "cleanup"],
+    );
+    for (const keep of [true, false]) {
+      if (!keep) delete q.gateStopAuthorization;
+      expect(await queueStep(q, adapter())).toMatchObject({ status: "complete" });
+    }
+    // Replay admission validates its immutable failed copy after the live cursor completed.
+    await admit();
+  } else {
+    await expect(queueStep(q, adapter())).rejects.toMatchObject({ reason });
+    const terminal = await readFile(attemptPath, "utf8");
+    expect(terminal).not.toBe(failedBytes);
+    expect(await failedDeliveryDiagnostic(q.stateDirectory, JSON.parse(terminal))).toContain(
+      "planning (ISS-221; hostedExecutedFailure consumed)",
+    );
+    if (mode === "red again")
+      expect(
+        await readFile(
+          resolve(item.source.stateDirectory, "hosted-continuation-failure.log"),
+          "utf8",
+        ),
+      ).toContain('"attempt":3');
+    await expect(queueStep(q, adapter())).rejects.toMatchObject({ reason });
+    expect(await readFile(attemptPath, "utf8")).toBe(terminal);
+    const withGrant = q;
+    const { gateStopAuthorization: _grant, ...withoutGrant } = q;
+    q = withoutGrant;
+    await expect(queueStep(q, adapter())).rejects.toMatchObject({ reason });
+    expect(await readFile(attemptPath, "utf8")).toBe(terminal);
+    q = withGrant;
+    const changedGrant = {
+      ...granted,
+      gateStopAuthorization: { ...grant, authorityUrl: `${ISSUE}#issuecomment-247` },
+    };
+    await expect(admit(changedGrant)).rejects.toMatchObject({
+      reason: "gate-stop-authorization-mismatch",
+    });
+    await expect(
+      admit({
+        ...granted,
+        gateStopAuthorization: {
+          ...grant,
+          stateDirectory: resolve(grant.stateDirectory, `refresh-${repair}`),
+        },
+      }),
+    ).rejects.toThrow();
+  }
+  renameSpy.mockRestore();
+  syncBuiltinESMExports();
+  expect(reopens).toBe(1);
+  expect(launches).toEqual(
+    mode === "refresh" ? ["author", "reviewer", "reviewer"] : ["author", "reviewer"],
+  );
+  for (const [path, bytes] of before)
+    if (path !== attemptPath) expect(await readFile(path, "utf8"), path).toBe(bytes);
+  if (terminalBytes) expect(await readFile(f.reservation, "utf8")).toBe(terminalBytes);
+  const diagnostic = await failedDeliveryDiagnostic(q.stateDirectory, failed);
+  expect(diagnostic.length).toBeLessThanOrEqual(500);
+  expect(diagnostic).toContain(`loop-stop:${RUN}:3:1`);
+  expect(diagnostic.indexOf("hostedExecutedFailure")).toBeLessThan(
+    diagnostic.indexOf(item.source.stateDirectory),
+  );
+});
 
 async function historyForkFixture(hostedCharges = 3, unrelatedPrefix = 0) {
   const key = "ISS-901";

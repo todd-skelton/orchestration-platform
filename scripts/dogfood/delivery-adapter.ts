@@ -7,6 +7,7 @@ import { RepairBlocked, parseReview } from "./repair-policy.mjs";
 import { loadBoardSnapshot, normalizeBody, planningKeyOf } from "../planning/board-check.mjs";
 import { checkCandidateBoard } from "../planning/candidate-board.mjs";
 import { resolvePnpmLauncher } from "../pnpm-launcher.mjs";
+import { shards as windowsShards } from "../verify/windows-aggregate.mjs";
 // @ts-expect-error Node 24 executes this private TypeScript module directly.
 import { GithubCommandFailure } from "./github-command-failure.ts";
 import {
@@ -444,6 +445,189 @@ async function publicationRuns(
   return { workflows, complete };
 }
 
+async function workflowJobs(
+  commands: GithubDeliveryCommands,
+  config: DeliveryConfig,
+  run: any,
+  endpoint = `${run.id}/jobs?filter=latest&per_page=100`,
+) {
+  const pages = await commands.ghJson(config, [
+    "api",
+    `repos/${config.repository}/actions/runs/${endpoint}`,
+    "--paginate",
+    "--slurp",
+  ]);
+  if (!Array.isArray(pages) || !pages.length || pages.some((page) => !Array.isArray(page?.jobs)))
+    throw new Error(`malformed workflow jobs: ${run.id}`);
+  const jobs = pages.flatMap((page) => page.jobs);
+  const complete = pages.every(
+    (page) => Number.isSafeInteger(page.total_count) && page.total_count === jobs.length,
+  );
+  if (pages.some((page) => Object.hasOwn(page, "total_count")) && !complete)
+    throw new Error(`incomplete workflow jobs: ${run.id}`);
+  const ids = new Set<number>();
+  for (const job of jobs) {
+    if (
+      !positive(job.id) ||
+      ids.has(job.id) ||
+      job.run_id !== run.id ||
+      job.head_sha !== run.head_sha ||
+      !positive(job.run_attempt) ||
+      job.run_attempt > run.run_attempt ||
+      (job.run_attempt < run.run_attempt && job.conclusion !== "success") ||
+      typeof job.name !== "string" ||
+      job.html_url !==
+        `https://github.com/${config.repository}/actions/runs/${run.id}/job/${job.id}`
+    )
+      throw new Error(`contradictory workflow job: ${run.id}/${job.id}`);
+    ids.add(job.id);
+  }
+  return { jobs, complete };
+}
+
+// ISS-246 uses the same complete, attributed effective-job census as checks().
+// This is read-only; the host must have already executed the later attempt.
+export async function observeExecutedHostedFailure(
+  config: DeliveryConfig,
+  publication: PublicationEvidence,
+  packet: import("./queue.js").GateStopAuthorization["hostedExecutedFailure"],
+  base: string,
+  commands: GithubDeliveryCommands = { gh, ghJson },
+) {
+  const check = (ok: unknown, detail: string) => {
+    if (!ok) throw new DeliveryBlocked("gate-stop-authorization-mismatch", detail);
+  };
+  const read = (endpoint: string) =>
+    commands.ghJson(config, ["api", `repos/${config.repository}/${endpoint}`]);
+  const readAll = async () => {
+    const pr = await commands.ghJson(config, [
+      "pr",
+      "view",
+      String(publication.number),
+      "--repo",
+      config.repository,
+      "--json",
+      "number,url,state,isDraft,headRefOid,headRefName,baseRefName",
+    ]);
+    check(
+      pr.number === publication.number &&
+        pr.url === publication.url &&
+        pr.state === "OPEN" &&
+        pr.isDraft === true &&
+        pr.headRefOid === publication.head &&
+        pr.headRefName === publication.sourceBranch &&
+        pr.baseRefName === publication.baseBranch,
+      "publication identity",
+    );
+    const failed = await read(`actions/runs/${packet!.actionsRun}/attempts/${packet!.runAttempt}`);
+    const green = await read(
+      `actions/runs/${packet!.actionsRun}/attempts/${packet!.greenRunAttempt}`,
+    );
+    const control = await read(`actions/runs/${packet!.controlRun}`);
+    check(
+      associatedRun(failed, config, publication) &&
+        associatedRun(green, config, publication) &&
+        failed.id === packet!.actionsRun &&
+        green.id === failed.id &&
+        failed.run_attempt === packet!.runAttempt &&
+        green.run_attempt === packet!.greenRunAttempt &&
+        green.workflow_id === failed.workflow_id &&
+        green.path === failed.path &&
+        failed.status === "completed" &&
+        green.status === "completed" &&
+        green.conclusion === "success",
+      "failed/green workflow identity or result",
+    );
+    check(
+      control.id === packet!.controlRun &&
+        control.event === "push" &&
+        control.head_branch === "main" &&
+        control.head_sha === base &&
+        control.repository?.full_name === config.repository &&
+        control.head_repository?.full_name === config.repository &&
+        control.workflow_id === failed.workflow_id &&
+        control.path === failed.path &&
+        control.status === "completed" &&
+        control.conclusion === "success" &&
+        positive(control.run_attempt),
+      "base control identity or result",
+    );
+    const failedJobs = await workflowJobs(
+      commands,
+      config,
+      failed,
+      `${failed.id}/attempts/${failed.run_attempt}/jobs?per_page=100`,
+    );
+    const greenJobs = await workflowJobs(commands, config, green);
+    const controlJobs = await workflowJobs(commands, config, control);
+    check(
+      failedJobs.complete && greenJobs.complete && controlJobs.complete,
+      "incomplete job census",
+    );
+    const executed = (job: any) =>
+      positive(job.runner_id) && Array.isArray(job.steps) && job.steps.length > 0;
+    const success = (job: any) => job.status === "completed" && job.conclusion === "success";
+    const job = failedJobs.jobs.find((row) => row.id === packet!.job);
+    check(
+      job &&
+        job.run_attempt === failed.run_attempt &&
+        job.status === "completed" &&
+        ["failure", "timed_out"].includes(job.conclusion) &&
+        executed(job),
+      "failed executed job",
+    );
+    // Only the bound job and bootstrap's dependent Windows aggregate may fail.
+    // Inspect all jobs: another failed shard is not itself a required check.
+    for (const row of failedJobs.jobs) {
+      check(
+        success(row) ||
+          row.id === packet!.job ||
+          (failed.path === ".github/workflows/bootstrap.yml" &&
+            row.name === "Node 24 / windows-latest" &&
+            row.status === "completed" &&
+            row.conclusion === "failure" &&
+            Object.values(windowsShards).includes(job.name)),
+        `failed attempt job ${row.name}`,
+      );
+    }
+    for (const name of config.requiredChecks) {
+      const before = failedJobs.jobs.filter((row) => row.name === name);
+      const after = greenJobs.jobs.filter((row) => row.name === name);
+      check(
+        before.length === 1 && after.length === 1 && success(after[0]),
+        `required check ${name}`,
+      );
+    }
+    check(
+      greenJobs.jobs.length > 0 &&
+        greenJobs.jobs.every(
+          (row) =>
+            success(row) &&
+            ((row.run_attempt === green.run_attempt && executed(row)) ||
+              (row.run_attempt === failed.run_attempt &&
+                failedJobs.jobs.some((old) => old.id === row.id && success(old)))),
+        ) &&
+        greenJobs.jobs.some(
+          (row) => row.name === job.name && row.run_attempt === green.run_attempt && executed(row),
+        ),
+      "green effective jobs must execute or retain failed-attempt successes",
+    );
+    const controls = controlJobs.jobs.filter((row) => row.name === job.name);
+    check(
+      controls.length === 1 && success(controls[0]) && executed(controls[0]),
+      "base shard control",
+    );
+    return { pr, failed, green, control, failedJobs, greenJobs, controlJobs };
+  };
+  const observationStart = new Date().toISOString();
+  const observed = await readAll();
+  check(
+    JSON.stringify(observed) === JSON.stringify(await readAll()),
+    "hosted evidence changed during acquisition",
+  );
+  return { observationStart, ...observed, observationEnd: new Date().toISOString() };
+}
+
 async function attributedChecks(
   commands: GithubDeliveryCommands,
   config: DeliveryConfig,
@@ -456,40 +640,8 @@ async function attributedChecks(
   let workflowPending = false;
   for (const run of workflows.values()) {
     workflowPending ||= run.status !== "completed";
-    const jobPages = await commands.ghJson(config, [
-      "api",
-      `repos/${config.repository}/actions/runs/${run.id}/jobs?filter=latest&per_page=100`,
-      "--paginate",
-      "--slurp",
-    ]);
-    if (
-      !Array.isArray(jobPages) ||
-      jobPages.length === 0 ||
-      jobPages.some((page) => !Array.isArray(page?.jobs))
-    )
-      throw new Error(`malformed workflow jobs: ${run.id}`);
-    const jobs = jobPages.flatMap((page) => page.jobs);
-    const complete = jobPages.every(
-      (page) => Number.isSafeInteger(page.total_count) && page.total_count === jobs.length,
-    );
-    if (jobPages.some((page) => Object.hasOwn(page, "total_count")) && !complete)
-      throw new Error(`incomplete workflow jobs: ${run.id}`);
-    const jobIds = new Set<number>();
+    const { jobs, complete } = await workflowJobs(commands, config, run);
     for (const job of jobs) {
-      if (
-        !positive(job.id) ||
-        jobIds.has(job.id) ||
-        job.run_id !== run.id ||
-        job.head_sha !== current.head ||
-        !positive(job.run_attempt) ||
-        job.run_attempt > run.run_attempt ||
-        (job.run_attempt < run.run_attempt && job.conclusion !== "success") ||
-        typeof job.name !== "string" ||
-        job.html_url !==
-          `https://github.com/${config.repository}/actions/runs/${run.id}/job/${job.id}`
-      )
-        throw new Error(`contradictory workflow job: ${run.id}/${job.id}`);
-      jobIds.add(job.id);
       let bucket: CheckEvidence["bucket"];
       if (
         ["queued", "in_progress", "waiting", "pending"].includes(job.status) &&

@@ -523,6 +523,15 @@ the absolute evidence path rather than raw logs in prompts or terminal reports.
 They inspect underlying diagnostics independently; this supplies neither a
 verdict nor a waiver, and all ordinary delivery gates remain mandatory (ISS-141).
 
+ISS-246 addresses HOSTED-FLAKE-PARK-1 on #750: when executed hosted failure
+has no next implementation attempt, both first failure and replay include a
+bounded diagnostic naming attempt, head, review, failed stage, Actions run,
+attempt and job, and a retained completed stop marker/count when present.
+The closed candidate route `hostedExecutedFailure` (admission-checked, refusing
+in-diff failures) precedes the absolute evidence path within 500 characters;
+other failures point to planning. Reasons, historical bodies, unpark text and
+ISS-216 receipt bytes remain unchanged. This diagnostic classifies no flake.
+
 ISS-230 partitions the complete attributed effective-job census before requiring
 logs when a required check is non-pass. Advisory failures and cancellations do
 not widen the required-check merge gate. Only a current-attempt completed
@@ -1902,6 +1911,12 @@ installation. Synthetic tests establish no live delegation, readiness, preserved
 run start or observed ISS-234 recovery. ISS-179/181/195 ordinary FAIL projections,
 fault classes, the four/64 ceilings and planning readiness are unchanged.
 
+ISS-246 permits only the already-reserved v2 packet to coexist with the
+`hostedExecutedFailure` gate-stop grant for that same run, issue and admitted
+attempt. Its saved config digest compares the config with only that grant
+omitted. All other changes refuse; a missing v2 packet cannot bypass its
+reservation. This replays existing attempt admission and creates none.
+
 Accepted replans retain the original main base and participant history;
 published continuations use forward-only refresh from a new local branch to
 the existing published branch. Historical records, branches and worktrees stay
@@ -2051,12 +2066,78 @@ The existing `gate-stop-continuation.json` slot retains the grant, stop, receipt
 authority and publication observation without creating a gate failure or a new
 delivery directory. Its next step observes the existing publication before any
 refresh, worker or publication. Executed failures return to ordinary queue
-attempt advancement; they do not enter the local-gate continuation's terminal
-hosted-failure branch. Replay retains the reservation and completed log evidence.
+attempt advancement when an ordinary next attempt exists. Otherwise they retain
+the terminal stop and ISS-246 diagnostic; only the separately granted route
+below can re-observe them. They do not enter the local-gate continuation's
+terminal hosted-failure branch. Replay retains the reservation and completed log evidence.
 Old records, histories, attempts and spent allowances remain unchanged. A changed
 grant or later unrelated stop cannot renew it. Host installation, the specific
 grant and a same-run start require separate authority; shipping this observer
 repair supplies no ISS-221 readiness, recount, refund or recovery execution.
+
+ISS-246 adds one mutually exclusive `hostedExecutedFailure` object to that
+same four-field grant. Its closed fields are positive safe integers `cycle`,
+`stop`, `actionsRun`, `runAttempt`, `job`, `controlRun`, `greenRunAttempt`;
+lowercase 40-hex `candidateHead` and `stoppedExecutorHead`; `evidenceSha256`;
+nonempty unique repository-relative `failedTests`; and `publication` exactly
+`{number, url, head, sourceBranch}`. The later green attempt belongs to the
+same Actions run, never a separate green run. It cannot coexist with
+`executorRepair`, `hostedNonExecution`, `acceptedReplan`,
+`integrationContinuation` or `verificationOnly`; the preceding already-reserved
+v2 carve-out is the only terminal-admission exception.
+
+Immediately before the sole reservation, admission matches the completed
+`continuation-failed` or `implementation-attempt-ceiling-exhausted` item stop,
+its ISS-216 receipt, failed attempt and hosted-log finding, source exact-head
+PASS, all local gates and publication. It reads the live OPEN draft PR and
+owning OPEN issue, failed and later green attempt censuses, base push control
+and complete host authority comment. The retained log must match its SHA-256
+and name every failed test; no such path may occur in the recorded base's
+three-dot changed set. This is a necessary filter, never causal attribution.
+The same workflow must have executed green on the exact unchanged head and
+executed the same shard green on the recorded base. Every rerun job must be
+completed success with a positive runner and nonempty steps. Only successes
+from the failed attempt may carry forward; all required checks must be green,
+and pending, cancelled or skipped effective jobs refuse. Other required checks
+in the failed attempt must be green (the Windows aggregate may fail with its
+failed Windows shard). No duration, error text or passing subset supplies this
+control. Complete observations and their UTC bounds stay in the reservation.
+
+The host interprets the evidence before issuing the grant. Its authority
+comment includes the complete JSON `hostedExecutedFailure` object, stop marker,
+source directory, repair SHA and `changedPathsExercised: yes` or
+`changedPathsExercised: no`, with its explanation of whether the failed test
+exercises changed paths. Text matching binds the capture; it establishes no
+approval. The existing `gate-stop-continuation.json` at the accepted source
+directory retains the exact failed `attempt.json` bytes and SHA-256 alongside
+the stop, receipt, authority, publication and hosted observations. Only then
+may one write restore that same cursor to `delivery`, re-deriving its source
+stage/directory and preserving every other field. Replay rechecks the saved
+failed copy, never the progressed cursor. A later failure cannot reopen it.
+The original log stays byte-identical; a later executed red in that source
+retains its ordinary complete evidence in `hosted-continuation-failure.log`.
+
+The first continued operation freshly observes the existing publication's
+required checks. Ordinary native refresh, independent DELTA, final-head gates,
+hosted checks, merge and cleanup still apply. Admission charges no launch,
+creates no author or attempt, refunds no counts and changes no ceilings. Refresh can require a DELTA reviewer,
+but no conflict author or gate-correction author is authorized by this grant.
+A later red, skipped or never-executed result returns to planning with
+ISS-221 named; another comment, changed packet, refresh sibling or `ready` label
+cannot buy another reservation. Completed replay is inert with or without
+the grant. This grant family has no preflight: ISS-245's read-only preflight
+evaluates terminal-attempt admission, not gate-stop grants; it is not a second
+admission evaluator or evidence for this grant.
+
+This remains candidate behavior until independent exact-head implementation
+PASS, normal local gates and executed final-head Ubuntu/Windows/macOS bootstrap
+green precede a separately authorized quiescent host installation. Landing
+grants no ISS-234 re-entry, rerun, grant or start. The host separately executes
+and records the exact-head green rerun, interprets the controls, posts authority,
+places the grant in the SAME run config and resumes with `-Resume`. If the
+fresh observation or any later continuation check is red, ISS-234 returns to
+planning with ISS-221, never another grant. No timeout, shard, workflow, budget
+or ISS-234 feature change is part of this repair.
 
 ## Milestones
 

@@ -9,6 +9,8 @@ import {
   githubDeliveryAdapter,
   type GithubDeliveryCommands,
 } from "../../scripts/dogfood/delivery-adapter.mjs";
+import { observeExecutedHostedFailure } from "../../scripts/dogfood/delivery-adapter.js";
+import { executedHostedFixture } from "./fixtures/continuation.js";
 import {
   aggregate as windowsAggregate,
   shards as windowsShards,
@@ -41,6 +43,142 @@ const mergeCommit = "b".repeat(40);
 const roots: string[] = [];
 let aggregateCommands: GithubDeliveryCommands;
 const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
+
+it.each([
+  "green",
+  "head",
+  "pending",
+  "pending job",
+  "cancelled",
+  "skipped",
+  "workflow",
+  "runner",
+  "steps",
+  "other red",
+  "second failed shard",
+  "second pending shard",
+  "second cancelled shard",
+  "second skipped shard",
+  "unrelated aggregate",
+  "control red",
+  "control head",
+  "not draft",
+  "closed",
+  "merged",
+  "repointed",
+  "old attempt",
+])("ISS-246 SYNTHETIC executed census control: %s", async (mode) => {
+  const f = await fixture();
+  const publication: PublicationEvidence = {
+    number: 246,
+    url: "https://github.com/fixture/repository/pull/246",
+    head,
+    repository: "fixture/repository",
+    sourceBranch: "codex/synthetic-246",
+    baseBranch: "main",
+    title: "SYNTHETIC",
+    body: "SYNTHETIC",
+    planDigest: "a".repeat(64),
+  };
+  const e = executedHostedFixture(publication, mergeCommit, 246, "SYNTHETIC receipt");
+  f.config.repository = publication.repository;
+  f.config.requiredChecks = e.names.slice(0, 3);
+  const packet = {
+    cycle: 1,
+    stop: 1,
+    actionsRun: 24601,
+    runAttempt: 1,
+    job: 24613,
+    controlRun: 24602,
+    greenRunAttempt: 2,
+    candidateHead: head,
+    stoppedExecutorHead: mergeCommit,
+    evidenceSha256: "b".repeat(64),
+    failedTests: ["unrelated.test.ts"],
+    publication,
+  };
+  const sibling = {
+    ...e.data.jobs[3]!,
+    id: 24614,
+    name: "Windows tests / queue",
+    html_url: `https://github.com/${publication.repository}/actions/runs/${packet.actionsRun}/job/24614`,
+    conclusion: "success",
+  };
+  if (mode.startsWith("second")) {
+    sibling.conclusion =
+      mode === "second cancelled shard"
+        ? "cancelled"
+        : mode === "second skipped shard"
+          ? "skipped"
+          : "failure";
+    if (mode === "second pending shard")
+      Object.assign(sibling, { status: "in_progress", conclusion: null });
+  }
+  e.data.jobs.push(sibling);
+  // Both shards and the aggregate rerun green: the refusal must come from
+  // the original census, not incomplete or failing later execution.
+  e.data.greenJobs.push({
+    ...sibling,
+    id: 24624,
+    run_attempt: 2,
+    html_url: `https://github.com/${publication.repository}/actions/runs/${packet.actionsRun}/job/24624`,
+    status: "completed",
+    conclusion: "success",
+  });
+  if (mode === "unrelated aggregate") {
+    for (const rows of [e.data.jobs, e.data.greenJobs, e.data.controlJobs]) {
+      rows.find((row) => row.name === "Windows tests / remainder")!.name =
+        "Windows tests / unrelated";
+    }
+  }
+  if (mode === "head") e.data.green.head_sha = mergeCommit;
+  if (mode === "pending") {
+    e.data.green.status = "in_progress";
+  }
+  if (mode === "pending job") e.data.greenJobs[1]!.status = "in_progress";
+  if (["cancelled", "skipped"].includes(mode)) e.data.greenJobs[1]!.conclusion = mode;
+  if (mode === "workflow") e.data.green.workflow_id++;
+  if (mode === "runner") e.data.greenJobs[1]!.runner_id = 0;
+  if (mode === "steps") e.data.greenJobs[1]!.steps = [];
+  if (mode === "other red") e.data.jobs[0]!.conclusion = "failure";
+  if (mode === "control red") e.data.control.conclusion = "failure";
+  if (mode === "control head") e.data.control.head_sha = head;
+  if (mode === "not draft") e.data.pr.isDraft = false;
+  if (["closed", "merged"].includes(mode)) e.data.pr.state = mode.toUpperCase();
+  if (mode === "repointed") e.data.pr.headRefOid = mergeCommit;
+  if (mode === "old attempt") e.data.greenJobs[1]!.run_attempt = 1;
+  const observe = observeExecutedHostedFailure(
+    f.config,
+    publication,
+    packet,
+    mergeCommit,
+    e.commands,
+  );
+  if (mode === "green") {
+    expect(await observe).toMatchObject({ green: { run_attempt: 2 }, failed: { run_attempt: 1 } });
+    expect(e.calls.filter((args) => args[0] === "pr")).toHaveLength(2);
+  } else if (mode === "head") await expect(observe).rejects.toThrow("unknown workflow association");
+  else
+    await expect(observe).rejects.toMatchObject({
+      reason: "gate-stop-authorization-mismatch",
+      diagnostics: ["pending", "workflow"].includes(mode)
+        ? "failed/green workflow identity or result"
+        : ["pending job", "cancelled", "skipped"].includes(mode)
+          ? "required check Node 24 / windows-latest"
+          : mode === "other red"
+            ? "failed attempt job Node 24 / ubuntu-latest"
+            : mode.startsWith("second")
+              ? "failed attempt job Windows tests / queue"
+              : mode === "unrelated aggregate"
+                ? "failed attempt job Node 24 / windows-latest"
+                : ["runner", "steps", "old attempt"].includes(mode)
+                  ? "green effective jobs must execute or retain failed-attempt successes"
+                  : mode.startsWith("control")
+                    ? "base control identity or result"
+                    : "publication identity",
+    });
+  expect(e.calls.every((args) => ["api", "pr"].includes(args[0]!))).toBe(true);
+});
 
 it.each(["before", "after", "lost-edit", "no-op", "exhaust-before", "exhaust-after"])(
   "ISS-211 delivery reconciles primary draft %s using real observation retries",
