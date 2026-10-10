@@ -108,6 +108,84 @@ terminals, prompts, configuration fingerprints or posted bodies. Classification
 adds no launches, diagnostic gates, retries, charges or recovery authority;
 the five fault classes, parking and all acceptance checks remain unchanged.
 
+### Unapplied planning repairs
+
+ISS-237 addresses JR-2's manual brief authorship. An established ISS-236
+`brief`, `slice` or `design` worker failure enters ISSUE, SET or EPIC planning
+at the queue boundary before implementation repair or delivery. The original
+failure record and implementation cursor remain unchanged. The attempt's
+`planning-recovery.json` links that exact outcome and retains pending author,
+proposal, pending reviewer, rejected and accepted states. It is a recovery
+companion to the immutable outcome, not a migration of old records or a new
+dispatch ledger. Native author/reviewer launches and terminal observation use
+explicit planning purpose and the existing issue-local launch allowance.
+
+The author can write only the proposed `proposal.json` artifact in an isolated
+drafts workspace (with the native launcher's scratch directory); the reviewer
+uses the same workspace read-only. No product checkout, code, tests, runtime
+records, configuration or GitHub state is writable by the planning worker.
+The controller validates the virtual self planning snapshot with the same
+validator used by `planning:check`, and uses shared acceptance extraction;
+planning never invokes product gates. Malformed/dead workers retain partial
+drafts, native identities, terminals, traces and charges. The existing shared
+mechanical retry is not renewed. Refused reviewer seats try only the admitted
+reviewer ladder. Exhausted or uncertain dispatch returns
+`planning-pending-host-review` (`PENDING_HOST_REVIEW`), without parking or a
+CLI fallback.
+
+The finite `planning-repair/v1` proposal permits at most sixteen briefs and
+one MiB of serialized bytes. `REPAIR_IN_PLACE` preserves outcome, decisions
+and acceptance; new requirements require `REPLACED` fixed-scope successors.
+`RECOMMEND_NOT_COMPLETING` contains evidence and no briefs or closure.
+Every brief includes acceptance, G0, not-built reasons, dependency intent,
+current-main and sibling don't-rebuild evidence, overlapping constraints and
+branch/exact-head salvage with forbidden reuse. Each stopped lineage has one
+ordered `### recoveryHypothesis` section: `lastFailure:`, `priorHypotheses:`,
+`newHypothesis:`, `level:`. SET answers all sibling findings; EPIC re-derives
+the approach or one bounded design spike. Only a demonstrated conflict with
+accepted product scope becomes one EPIC product question. The independent
+reviewer must reject wording, model, effort, time or willingness changes that
+leave the work hypothesis unchanged, prescribing repair or the higher level.
+
+Input acquisition reads current main, native dependencies, complete sibling
+and epic context, issue bodies/update identities, comments/decisions and
+retained failure/history artifacts. Both adapters use their existing context
+readers and a paginated read-only GitHub census. The binding covers the selected
+issue, stopped lineages, siblings/epic, their decisions and native dependencies,
+proposed dependency targets and main; unrelated census edits do not invalidate
+it. External authority is observed again after author completion, before review
+and after its terminal. Drift retains the old inputs, drafts, workers, verdicts
+and charges, then acquires a fresh pending author at the same planning level in
+a separate drafts workspace. It does not reject the work hypothesis, escalate
+the level or renew the shared retry or launch allowance. In-flight workers are
+observed and charged before re-derivation; their verdicts cannot accept the new
+inputs.
+Review binds the complete proposal digest, individual body hashes and
+dependencies to the native author and reviewer dispatch/terminal identities.
+All native and declared in-body repair participation remains visible. Selection
+prefers full-history independence, including unused author ladder rungs; its
+fallback discloses earlier participation and always excludes exact-byte
+authors/repairers. Effort and known successor selector spellings do not erase
+participation. Prior-run lineage histories inform that choice and hypotheses;
+they do not alter this run's charged ordinals or allowance. No distinct admitted
+reviewer means an availability blocker.
+
+`planning-accepted` means exact independent planning PASS only. Repeated reads
+recheck proposal bytes, external authority and independent review without
+launching another worker. Changed bytes invalidate PASS; artifact presence
+alone never suffices. `planning-rejected` retains prescribed findings and the
+next planning level. These terminal planning statuses stop this supervisor
+without issue writes, publication, parking, cycle completion or implementation
+readmission. ISS-238 owns application and readmission; neither is implemented
+here. The attached parent receives its existing terminal `blocked` protocol
+after the planning result, with non-parking `planning-application-pending`,
+`planning-repair-rejected` or `planning-review-required` and the recovery path;
+this invokes no learning-note mutation. Disposable tests establish queue,
+adapter and replay behavior, not live semantic approval. Before live use the
+host must separately capture actual
+lifecycle observations on the independently reviewed, hosted-green installed
+executor. This slice grants no installation or live-start authority.
+
 ### Review and corrective authors
 
 ISS-243 makes review locations severity-sensitive after LOC-NOTE-1 stopped

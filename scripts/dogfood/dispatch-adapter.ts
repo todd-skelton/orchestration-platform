@@ -209,7 +209,7 @@ const artifact = (config: Config, role: Role, launch: string, suffix: string) =>
 const attemptArtifact = (attempt: Attempt, suffix: string) =>
   `${attempt.trace.slice(0, -"jsonl".length)}${suffix}`;
 export const authorTemporaryRoot = (config: Config) =>
-  resolve(config.stateDirectory, "author-temp");
+  resolve(config.purpose === "planning" ? config.worktree : config.stateDirectory, "author-temp");
 const toml = (value: string) => JSON.stringify(value);
 // POSIX copies only these exact spellings. Windows environment names are
 // case-insensitive, so an allowed alias is copied once under this canonical spelling.
@@ -295,6 +295,7 @@ export function launchArguments(
     "exec",
     "--json",
     "--ignore-rules",
+    ...(config.purpose === "planning" ? ["--skip-git-repo-check"] : []),
     "-C",
     role === "author" ? config.worktree : config.reviewWorktree,
     "-m",
@@ -681,10 +682,13 @@ export function codexAdapter(gitExecutable = "git", now = Date.now): Adapter {
           return {
             id: attempt.id,
             status: "malformed",
-            head: await git(role === "author" ? config.worktree : config.reviewWorktree, [
-              "rev-parse",
-              "HEAD",
-            ]),
+            head:
+              config.purpose === "planning"
+                ? config.base
+                : await git(role === "author" ? config.worktree : config.reviewWorktree, [
+                    "rev-parse",
+                    "HEAD",
+                  ]),
             usage: events(trace, true).find((row) => row.type === "turn.completed")?.usage,
             ...(summary ? { summary } : {}),
           };

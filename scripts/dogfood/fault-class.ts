@@ -57,6 +57,7 @@ export const stopRules: readonly StopRule[] = [
     legacyParking: false,
     reasons: [
       "issue-observation-unavailable",
+      "planning-context-unavailable",
       "current-main-unavailable",
       "current-main-moved",
       "verification-only-refresh-conflict",
@@ -83,6 +84,10 @@ export const stopRules: readonly StopRule[] = [
     legacyParking: false,
     reasons: [
       "provider-model-refused",
+      "planning-proposal-invalid",
+      "planning-application-pending",
+      "planning-repair-rejected",
+      "planning-review-required",
       "executor-busy",
       "upgrade-requires-restart",
       "operator-evidence-required",
