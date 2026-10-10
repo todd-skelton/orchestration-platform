@@ -1087,7 +1087,7 @@ it("retains exact reviewer reports and rejects oversized or obsolete output", ()
 });
 it("requests the exact verdict, findings and G0 reviewer shape", () => {
   const schema = outputSchema(config, "reviewer");
-  expect(schema.required).toEqual(["run", "role", "head", "verdict", "findings", "g0"]);
+  expect(schema.required).toEqual(["run", "role", "head", "verdict", "findings", "g0", "defect"]);
   expect(schema.properties.findings).toMatchObject({ type: "array" });
   expect(schema.properties.g0).toEqual({ type: "string" });
   expect(schema.additionalProperties).toBe(false);
@@ -1276,6 +1276,130 @@ it("parses the recorded 2560-character author message through the real observer"
 });
 
 const authorVerdict = { run: config.run, role: "author", head, verdict: "PASS", summary: "" };
+const causalDefect = {
+  defectClass: "brief",
+  explanation: "The two acceptance items require incompatible observable results.",
+  rootCause: "contradictory-acceptance-items",
+  evidenceStatus: "established",
+  evidence: ["planning/drafts/ISS-236.md:35", "planning/drafts/ISS-236.md:42"],
+};
+
+it.each(["author", "reviewer"] as const)(
+  "ingests closed causal data for new %s launches and keeps old reports readable",
+  async (role) => {
+    const root = await realpath(await mkdtemp(resolve(tmpdir(), "outcome-ingestion-")));
+    cleanup.push(root);
+    const current = {
+      ...config,
+      worktree: resolve(import.meta.dirname, "../.."),
+      reviewWorktree: resolve(import.meta.dirname, "../.."),
+    };
+    const attempt = { id, pid: process.pid, trace: resolve(root, "worker.jsonl"), launchedAt: 1 };
+    const report: Record<string, any> = {
+      run: config.run,
+      role,
+      head,
+      verdict: "FAIL",
+      defect: causalDefect,
+      ...(role === "author"
+        ? { summary: "Contradictory brief." }
+        : {
+            findings: [
+              {
+                file: "planning/drafts/ISS-236.md",
+                line: 35,
+                severity: "blocking",
+                text: "Contradictory brief.",
+              },
+            ],
+            g0: "No. The acceptance items require a ruling.",
+          }),
+    };
+    const writeReport = async (value: object) => {
+      const bytes = trace([
+        rows[0],
+        { type: "item.completed", item: { type: "agent_message", text: JSON.stringify(value) } },
+        rows[2],
+      ]);
+      await writeFile(attempt.trace, bytes);
+      return bytes;
+    };
+    await writeFile(resolve(root, "worker.exit.json"), JSON.stringify({ code: 0 }));
+    await writeFile(
+      resolve(root, "worker.output-schema.json"),
+      JSON.stringify(outputSchema(current, role)),
+    );
+    await writeReport(report);
+    expect(await codexAdapter().observe(role, current, attempt)).toMatchObject({
+      status: "failed",
+      defect: causalDefect,
+    });
+    if (role === "reviewer")
+      expect(parseReview(JSON.stringify(report), config.run, head).defect).toEqual(causalDefect);
+
+    // NC-class-absent and NC-two-classes, plus closed nested data controls.
+    for (const defect of [
+      undefined,
+      null,
+      { ...causalDefect, defectClass: ["brief", "design"] },
+      { ...causalDefect, evidence: [{ file: "brief.md" }] },
+      { ...causalDefect, rootCause: {} },
+      { ...causalDefect, extra: true },
+      { ...causalDefect, explanation: "x".repeat(1001) },
+    ]) {
+      const invalid = { ...report, defect };
+      const bytes = await writeReport(invalid);
+      expect(await codexAdapter().observe(role, current, attempt)).toMatchObject({
+        status: "malformed",
+        summary: expect.stringContaining("malformed-worker-defect"),
+      });
+      expect(await readFile(attempt.trace, "utf8")).toBe(bytes);
+      if (role === "reviewer" && defect !== undefined)
+        expect(() => parseReview(JSON.stringify(invalid), config.run, head)).toThrow(
+          "malformed-source-review-report",
+        );
+    }
+    await writeReport({ ...report, verdict: "PASS" });
+    expect(await codexAdapter().observe(role, current, attempt)).toMatchObject({
+      status: "malformed",
+    });
+    await writeReport({
+      ...report,
+      verdict: "PASS",
+      defect: null,
+      ...(role === "reviewer" ? { findings: [] } : {}),
+    });
+    expect(await codexAdapter().observe(role, current, attempt)).toMatchObject({
+      status: "passed",
+    });
+
+    const { defect: _defect, ...legacy } = report;
+    await writeReport(legacy);
+    await writeFile(
+      resolve(root, "worker.output-schema.json"),
+      JSON.stringify({
+        required:
+          role === "author"
+            ? ["run", "role", "head", "verdict", "summary"]
+            : ["run", "role", "head", "verdict", "findings", "g0"],
+      }),
+    );
+    expect(await codexAdapter().observe(role, current, attempt)).toMatchObject({
+      status: "failed",
+    });
+    await writeReport(report);
+    // New code cannot broaden a saved launch's pinned protocol.
+    expect(await codexAdapter().observe(role, current, attempt)).toMatchObject({
+      status: "malformed",
+    });
+    for (const word of [
+      "primary cause",
+      "unresolved",
+      "neither candidate exoneration nor retry authority",
+    ])
+      expect(workerPrompt(current, role, head, "brief")).toContain(word);
+  },
+);
 // Minimal verbatim events from author-dc931f49 in ISS-182, trace SHA-256
 // 54596454139b7ffe47f52d9459c9f0a6a4e3c71e0f31ef46745abe3f6c307d5e.
 // ISS-198 raised the shared bound, so the recorded 2079-character summary now
@@ -1491,7 +1615,7 @@ it.skipIf(process.env.GITHUB_ACTIONS !== "true")(
       ],
       { cwd: resolve(import.meta.dirname, "../.."), windowsHide: true },
     );
-    expect(JSON.parse(stdout)).toEqual(["run", "role", "head", "verdict", "summary"]);
+    expect(JSON.parse(stdout)).toEqual(["run", "role", "head", "verdict", "summary", "defect"]);
   },
 );
 it("rejects missing/duplicate identities, missing completion, changed session, wrong role and prose verdicts", () => {
@@ -2926,7 +3050,8 @@ it("drives every length consumer and reviewer prompt from the one exported const
   // plus the queue's suffix; every stated length in it is the constant.
   const assembled = `${workerPrompt(config, "reviewer", head, "brief")}\n\n${sourceReviewerReportPrompt(["a.ts"])}\n`;
   const stated = [...assembled.matchAll(/(\d+) characters/g)].map((match) => Number(match[1]));
-  expect(stated).toEqual([bound, bound]);
+  // The causal object has bounded subfields; the complete report cap is unchanged.
+  expect(stated).toEqual([bound, 1000, 200, 1024, bound]);
   const review = JSON.parse(rows[1]!.item!.text);
   const fitted = {
     ...review,

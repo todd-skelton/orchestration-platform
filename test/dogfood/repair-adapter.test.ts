@@ -106,10 +106,13 @@ it("ISS-243 keeps repair notes as context and checks the repository pilot worktr
         // Both workerPrompt and the launch-only corrective report suffix ask G0.
         expect(prompt.split(g0Question)).toHaveLength(3);
         // ISS-198: both halves state the one shared bound.
-        expect([...prompt.matchAll(/(\d+) characters/g)].map((match) => Number(match[1]))).toEqual([
-          MAX_TERMINAL_SUMMARY_LENGTH,
-          MAX_TERMINAL_SUMMARY_LENGTH,
-        ]);
+        expect(
+          [
+            ...prompt.matchAll(
+              /(?:serialized length \(JSON.stringify\) must be at most|Keep the complete JSON report within) (\d+) characters/g,
+            ),
+          ].map((match) => Number(match[1])),
+        ).toEqual([MAX_TERMINAL_SUMMARY_LENGTH, MAX_TERMINAL_SUMMARY_LENGTH]);
         return {
           id: "repair-reviewer",
           pid: 2,

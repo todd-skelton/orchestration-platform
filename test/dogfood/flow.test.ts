@@ -1,4 +1,4 @@
-import { mkdtemp, realpath, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, realpath, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { PassThrough } from "node:stream";
@@ -51,6 +51,7 @@ import fencedReview from "./fixtures/iss-198-fenced-review.json" with { type: "j
 import longReview from "./fixtures/iss-198-overlength-review.json" with { type: "json" };
 import { resolveConflict } from "../../scripts/dogfood/conflict.js";
 import { evidenceDescriptor, writeEvidence } from "./fixtures/continuation.js";
+import { defectPrompt } from "../../scripts/dogfood/outcome.js";
 
 const base = "a".repeat(40),
   head = "b".repeat(40),
@@ -72,6 +73,71 @@ const conflictSeed = {
   },
 };
 const cleanup: string[] = [];
+
+it.each(["author", "reviewer"] as const)(
+  "ISS-236 persists one %s FAIL cause across legacy/new replay without another launch",
+  async (role) => {
+    for (const legacy of [false, true]) {
+      const f = await fixture();
+      if (role === "reviewer") f.authorDone();
+      await f.run();
+      const defect = {
+        defectClass: "brief" as const,
+        explanation: "The selected acceptance items require contradictory behavior.",
+        rootCause: "contradictory-selected-criteria",
+        evidenceStatus: "established" as const,
+        evidence: ["planning/drafts/ISS-236.md:35"],
+      };
+      f.statuses[role] = "failed";
+      f.summarize(
+        role,
+        role === "reviewer"
+          ? JSON.stringify({
+              run: f.config.run,
+              role,
+              head,
+              verdict: "FAIL",
+              findings: [
+                {
+                  file: "scripts/repair.mjs",
+                  line: 1,
+                  severity: "blocking",
+                  text: "The candidate cannot meet both criteria.",
+                },
+              ],
+              g0: "No. The contradictory criteria require clarification.",
+              ...(legacy ? {} : { defect }),
+            })
+          : "Contradictory acceptance criteria.",
+      );
+      if (!legacy && role === "author") {
+        const observe = f.adapter.observe;
+        f.adapter.observe = async (...args) => ({ ...(await observe(...args)), defect });
+      }
+      await expect(f.run()).rejects.toMatchObject({ reason: `${role}-failed`, retries: 0 });
+      const terminalPath = resolve(f.config.stateDirectory, `${role}-terminal.json`);
+      const before = await readFile(terminalPath, "utf8");
+      const launches = [...f.launches];
+      await expect(f.run()).rejects.toMatchObject({ reason: `${role}-failed`, retries: 0 });
+      expect(f.launches).toEqual(launches);
+      expect(await readFile(terminalPath, "utf8")).toBe(before);
+      const names = (await readdir(f.config.stateDirectory)).filter((name) =>
+        name.startsWith("outcome-"),
+      );
+      expect(names).toHaveLength(1);
+      expect(
+        JSON.parse(await readFile(resolve(f.config.stateDirectory, names[0]!), "utf8")),
+      ).toMatchObject({
+        kind: "worker",
+        identity: `${role}:${role}`,
+        head: role === "author" ? base : head,
+        defectClass: legacy ? "environment-tooling" : "brief",
+        evidenceStatus: legacy ? "unresolved" : "established",
+      });
+      expect(JSON.parse(before).defect === undefined).toBe(legacy);
+    }
+  },
+);
 
 it.each(["source", "repair", "gate", "conflict-boundary"])(
   "retains malformed-author retry context and continuation fences for %s",
@@ -142,6 +208,19 @@ it.each(["source", "repair", "gate", "conflict-boundary"])(
       saved,
     );
     expect(f.launches).toEqual(["author", "author"]);
+    const outcomes = (await readdir(f.config.stateDirectory)).filter((name) =>
+      name.startsWith("outcome-"),
+    );
+    expect(outcomes).toHaveLength(1);
+    expect(
+      JSON.parse(await readFile(resolve(f.config.stateDirectory, outcomes[0]!), "utf8")),
+    ).toMatchObject({
+      kind: "worker",
+      identity: "author:author",
+      defectClass: "mechanical",
+      evidenceStatus: "established",
+      rootCause: "worker-report-protocol",
+    });
     expect(f.resets).toEqual([]);
     expect(f.cleans).toEqual([]);
     expect(f.launchPrompts[1]).toContain(`${MAX_TERMINAL_SUMMARY_LENGTH + 79}`);
@@ -1740,12 +1819,22 @@ describe("supervised sequential pilot (fake attempts, never live acceptance)", (
   });
   it("preserves the author prompt and states the reviewer's total serialized length cap", async () => {
     const f = await fixture();
-    expect(workerPrompt(f.config, "author", base, "Improve the selected issue.")).toBe(
+    expect(
+      workerPrompt(f.config, "author", base, "Improve the selected issue.").replace(
+        `${defectPrompt}\n`,
+        "",
+      ),
+    ).toBe(
       `Improve the selected issue.\n\nPilot run one-trial; role author; exact base: ${base}.\n` +
         'Allowed author paths: ["scripts/repair.mjs"]. Author may edit source only: do not stage, commit, or change Git metadata; leave HEAD at the exact base. Reviewer must leave its worktree unchanged. Never push, publish, merge, or change credentials.\n' +
         `Explain substantive findings in progress messages before the final response; these remain in the captured trace. Final response must be ONLY JSON: {"run":"one-trial","role":"author","head":"${base}","verdict":"PASS","summary":""} (or verdict FAIL), with a short "summary" string of at most ${MAX_TERMINAL_SUMMARY_LENGTH} characters; use an empty string when there are no findings. Review every changed assertion independently. Before reporting, run \`pnpm typecheck\`, \`pnpm format:check\` and \`pnpm test\` in this worktree, and fix what fails.\n`,
     );
-    expect(workerPrompt(f.config, "reviewer", head, "Improve the selected issue.")).toBe(
+    expect(
+      workerPrompt(f.config, "reviewer", head, "Improve the selected issue.").replace(
+        `${defectPrompt}\n`,
+        "",
+      ),
+    ).toBe(
       `Improve the selected issue.\n\nPilot run one-trial; role reviewer; exact review head: ${head}.\n` +
         'Allowed author paths: ["scripts/repair.mjs"]. Author may edit source only: do not stage, commit, or change Git metadata; leave HEAD at the exact base. Reviewer must leave its worktree unchanged. Never push, publish, merge, or change credentials.\n' +
         `Explain substantive findings in progress messages before the final response; these remain in the captured trace. Final response must be ONLY JSON: {"run":"one-trial","role":"reviewer","head":"${head}","verdict":"PASS","findings":[],"g0":"<answer>"} (or verdict FAIL). Answer G0 with a string: "Is there a simpler shape that still satisfies every acceptance criterion and every stated not-built reason? Answer No with one reason, or name the shape and the constraint you checked it against." Return the JSON object alone; its serialized length (JSON.stringify) must be at most ${MAX_TERMINAL_SUMMARY_LENGTH} characters. Write findings and G0 to fit within that total. Each finding is exactly {"file":"<repository path>","line":1,"severity":"blocking"|"note","text":"<finding>"}. Blocking findings must use changed candidate files. Advisory notes may cite existing unchanged files at the exact reviewed head. Both require a file, not a directory, and a valid one-based line at that head. A blocking finding requires FAIL; notes never block and grant no edit, repair or landing authority. Review every changed assertion independently.\n`,
