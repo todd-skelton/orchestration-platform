@@ -2,6 +2,8 @@ import { createHash } from "node:crypto";
 import { readFile, realpath, rename, writeFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import type { ReviewFinding } from "./repair-policy.mjs";
+// @ts-expect-error Node 24 executes this private TypeScript module directly.
+import { retainGateOutcome, retainOutcome, unresolved } from "./outcome.ts";
 
 const SHA = /^[a-f0-9]{40}$/;
 const ABSENT_RECORD = Symbol("absent-record");
@@ -876,6 +878,37 @@ export async function hostedFailureEvidence(
       ? "hosted-continuation-failure.log"
       : "hosted-failure.log",
   );
+  const retainFailure = async (checks: CheckEvidence[], jobs?: CheckEvidence[]) => {
+    const affected = (jobs ?? checks).filter(
+      (check) =>
+        ["fail", "cancel"].includes(check.bucket) &&
+        !provesNonExecution(check, config.candidateHead),
+    );
+    if (affected.length === 0) return;
+    await retainOutcome(config, {
+      kind: "hosted-gate",
+      identity: JSON.stringify(
+        affected
+          .map((check) =>
+            JSON.stringify([
+              check.name,
+              check.link,
+              check.actions?.run,
+              check.actions?.attempt,
+              check.actions?.job,
+            ]),
+          )
+          .sort(),
+      ),
+      head: config.candidateHead,
+      terminal: { publication, checks, jobs: jobs ?? null, log: path },
+      defect: unresolved(
+        "hosted-gate-cause-unresolved",
+        "Required hosted evidence was non-pass. Captured metadata and any available logs retain the execution evidence; no immutable-base causal control establishes a remedy or exonerates the candidate.",
+        [path, ...affected.slice(0, 15).map((check) => check.link)],
+      ),
+    });
+  };
   try {
     const bytes = await readFile(path, "utf8");
     const saved = JSON.parse(bytes.split("\n")[0]!);
@@ -911,6 +944,7 @@ export async function hostedFailureEvidence(
             JSON.stringify(checks.filter((check) => ["fail", "cancel"].includes(check.bucket)))),
       "hosted-observation-unavailable",
     );
+    await retainFailure(saved.checks, saved.jobs);
     return path;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT")
@@ -931,6 +965,7 @@ export async function hostedFailureEvidence(
   const failedJobs = (jobs ?? checks).filter((check) => ["fail", "cancel"].includes(check.bucket));
   demand(failedJobs.length > 0, "hosted-failure-evidence-unavailable");
   if (workflowPending) return null;
+  await retainFailure(checks, jobs);
   const nonExecution = failedJobs
     .filter((check) => provesNonExecution(check, config.candidateHead))
     .map((check) => ({ actions: check.actions, witness: check.nonExecution }));
@@ -1238,6 +1273,8 @@ export async function deliveryStep(
             evidence?: GateFailureEvidence;
           };
           demand(failed.head === config.candidateHead, "gate-failure-head-drift");
+          if (failed.evidence?.cause !== "diagnostic" || !adapter.attributeGate)
+            await retainGateOutcome(config, gate, config.candidateHead, failed.evidence);
           throw new LocalGateFailure(gate, failed.evidence, failed.output);
         }
         demand(
@@ -1264,6 +1301,8 @@ export async function deliveryStep(
           output,
           ...(evidence ? { evidence } : {}),
         });
+        if (evidence?.cause !== "diagnostic" || !adapter.attributeGate)
+          await retainGateOutcome(config, gate, config.candidateHead, evidence);
         throw new LocalGateFailure(gate, evidence, output);
       }
     };

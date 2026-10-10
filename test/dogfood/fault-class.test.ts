@@ -11,6 +11,16 @@ import {
   type FaultClass,
 } from "../../scripts/dogfood/fault-class.js";
 import { isItemStopReason } from "../../scripts/dogfood/supervision.js";
+import {
+  validDefect,
+  retainWorkerOutcome,
+  retainGateOutcome,
+} from "../../scripts/dogfood/outcome.js";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { pathToFileURL } from "node:url";
 
 const root = fileURLToPath(new URL("../../", import.meta.url));
 const fixture = resolve(root, "test/dogfood/fault-class.fixture.mjs");
@@ -83,6 +93,490 @@ function walk(node: any, visit: (node: any) => void) {
     else if (value && typeof value === "object") walk(value, visit);
   }
 }
+
+// Enumerate executable object producers, including conditional worker verdicts,
+// separately from the stop-reason inventory. Types are not executable producers.
+function outcomeProducers(tree: any, dynamic = false) {
+  const found: Record<string, string[]> = {};
+  const visit = (node: any, parents: any[]) => {
+    if (!node || typeof node !== "object") return;
+    const assigned = node.type === "AssignmentExpression" && node.left?.type === "MemberExpression";
+    const key = assigned ? node.left.property : node.key;
+    if (
+      (assigned || (node.type === "Property" && parents.at(-1)?.type === "ObjectExpression")) &&
+      ["status", "outcome", "bucket", "verdict", "phase"].includes(key.name ?? key.value)
+    ) {
+      const values: string[] = [];
+      const collect = (value: any) => {
+        if (value?.type === "Literal" && typeof value.value === "string") values.push(value.value);
+        else if (value?.type === "ConditionalExpression") {
+          collect(value.consequent);
+          collect(value.alternate);
+        } else if (dynamic) values.push("<dynamic>");
+      };
+      // Enumerate every spelling: a newly named failure must fail the ratchet.
+      collect(assigned ? node.right : node.value);
+      if (values.length && (!dynamic || values.includes("<dynamic>"))) {
+        const owner = [...parents]
+          .reverse()
+          .find(
+            (parent) =>
+              [
+                "FunctionDeclaration",
+                "MethodDefinition",
+                "Property",
+                "VariableDeclarator",
+              ].includes(parent.type) &&
+              (parent.id?.name || parent.key?.name),
+          );
+        const name = owner?.id?.name ?? owner?.key?.name ?? "<module>";
+        (found[name] ??= []).push(`${key.name ?? key.value}=${values.join("|")}`);
+      }
+    }
+    for (const [key, value] of Object.entries(node)) {
+      if (key === "loc") continue;
+      if (Array.isArray(value)) value.forEach((child) => visit(child, [...parents, node]));
+      else if (value && typeof value === "object") visit(value, [...parents, node]);
+    }
+  };
+  visit(tree, []);
+  return found;
+}
+
+it("ISS-236 derives the non-PASS producer ratchet from implementation sources", async () => {
+  const observed: Record<string, string[]> = {};
+  const dynamic: Record<string, string[]> = {};
+  const callsByFile = new Map<string, string[]>();
+  for (const file of await sourceFiles()) {
+    const tree = await parse(await readFile(file, "utf8"), file);
+    const short = file.split(/[\\/]/).at(-1)!;
+    expect(callsByFile.has(short), "inventory file identities must be distinct").toBe(false);
+    const calls: string[] = [];
+    walk(tree, (node) => {
+      if (node.type === "CallExpression" && node.callee?.type === "Identifier")
+        calls.push(node.callee.name);
+    });
+    callsByFile.set(short, calls);
+    const producers = outcomeProducers(tree);
+    for (const [owner, values] of Object.entries(producers))
+      observed[`${file.split(/[\\/]/).at(-1)}:${owner}`] = values;
+    for (const [owner, values] of Object.entries(outcomeProducers(tree, true)))
+      dynamic[`${file.split(/[\\/]/).at(-1)}:${owner}`] = values;
+  }
+  // Every entry names its class-producing boundary or a non-execution exclusion.
+  // Counts retain distinct producers in the same function: adding one is a ratchet failure.
+  const coverage: Record<string, { values: string[]; boundary: string }> = {
+    "chase-sets.mjs:candidatesFromAuthority": {
+      values: ["status=not-runnable"],
+      boundary: "excluded: pre-selection eligibility",
+    },
+    "chase-sets.mjs:deployObservation": {
+      values: [
+        "status=pending",
+        "status=pending",
+        "status=failed",
+        "status=pending",
+        "status=verified|failed",
+        "status=failed",
+        "status=not-required",
+      ],
+      boundary: "supervision.ts:retainStopOutcome",
+    },
+    "delivery-adapter.ts:runGate": {
+      values: ["status=failed", "status=passed", "status=passed", "status=failed"],
+      boundary: "queue.ts:retainGateOutcome",
+    },
+    "delivery.ts:failedResult": {
+      values: ["status=failed"],
+      boundary: "delivery.ts:retainOutcome",
+    },
+    "dispatch-adapter.ts:parseTrace": {
+      values: ["status=dead", "status=running", "status=passed|failed"],
+      boundary: "flow.ts:retainWorkerOutcome",
+    },
+    "dispatch-adapter.ts:observe": {
+      values: ["status=malformed", "status=running", "status=dead", "status=running"],
+      boundary: "flow.ts:retainWorkerOutcome",
+    },
+    "flow.ts:runStep": {
+      values: ["status=malformed", "status=malformed"],
+      boundary: "flow.ts:retainWorkerOutcome",
+    },
+    "queue.ts:queueConfigFromLoop": {
+      values: Array(4).fill("phase=failed"),
+      boundary: "supervision.ts:retainStopOutcome",
+    },
+    "queue.ts:attemptFailureRecord": {
+      values: ["phase=failed"],
+      boundary: "supervision.ts:retainStopOutcome",
+    },
+    "queue.ts:observed": { values: ["status=malformed"], boundary: "flow.ts:retainWorkerOutcome" },
+    "queue.ts:syncParticipants": {
+      values: ["status=malformed"],
+      boundary: "queue.ts:retainWorkerOutcome",
+    },
+    "queue.ts:source": {
+      values: ["status=accepted", "status=accepted", "status=fixable-review"],
+      boundary: "flow.ts:retainWorkerOutcome",
+    },
+    "queue.ts:repair": {
+      values: ["status=accepted", "status=failed"],
+      boundary: "flow.ts:retainWorkerOutcome",
+    },
+    "status.mjs:observeSupervisor": {
+      values: ["status=paused|running", "status=unavailable|exited", "status=unavailable"],
+      boundary: "excluded: read-only status observation, not an unsuccessful execution",
+    },
+    "control.mjs:controlLoop": {
+      values: ["status=pause-requested"],
+      boundary: "excluded: operator intent",
+    },
+    "delivery.ts:deliveryStep": {
+      values: [
+        "status=complete",
+        "status=observing-hosted-checks",
+        "status=observing-hosted-checks",
+        "status=observing-hosted-checks",
+        "status=complete",
+      ],
+      boundary: "excluded: completion or pending hosted observation",
+    },
+    "delivery.ts:cleanup": {
+      values: ["status=confirmed", "status=confirmed"],
+      boundary: "excluded: confirmed cleanup",
+    },
+    "dispatch-adapter.ts:waitForProvider": {
+      values: ["status=waiting-provider"],
+      boundary: "excluded: pending provider admission",
+    },
+    "process-ownership.mjs:unavailable": {
+      values: ["status=unavailable"],
+      boundary: "excluded: read-only ownership observation",
+    },
+    "process-ownership.mjs:observeProcessOwnership": {
+      values: ["status=observed"],
+      boundary: "excluded: read-only ownership observation",
+    },
+    "queue.ts:initialAttempt": {
+      values: ["phase=setup"],
+      boundary: "excluded: reserved initial phase",
+    },
+    "queue.ts:runQueueStep": {
+      values: [
+        "phase=delivery",
+        "status=advancing-attempt",
+        "status=complete",
+        "phase=source",
+        "phase=delivery",
+        "phase=repair",
+        "phase=delivery",
+        "status=advancing-attempt",
+        "phase=delivery",
+        "status=advancing-attempt",
+        "phase=complete",
+        "status=complete",
+      ],
+      boundary:
+        "excluded: cursor transitions; failures belong to their source, repair or delivery producers",
+    },
+    "queue.ts:unavailable": {
+      values: ["status=unavailable"],
+      boundary: "excluded: advisory usage accounting",
+    },
+    "queue.ts:measured": {
+      values: ["status=known"],
+      boundary: "excluded: advisory usage accounting",
+    },
+    "queue.ts:delivery": {
+      values: ["status=observing-author", "status=observing-hosted-checks"],
+      boundary: "excluded: pending worker and hosted observation",
+    },
+    "refresh.ts:refreshDelivery": {
+      values: ["status=ready", "status=awaiting-publication", "status=ready"],
+      boundary:
+        "excluded: accepted or pending refresh; thrown refusals participate in the stop inventory",
+    },
+    "setup.ts:dependencyRecord": {
+      values: ["status=complete"],
+      boundary: "excluded: completed dependency setup",
+    },
+    "status.mjs:publicationObservation": {
+      values: ["status=observed"],
+      boundary: "excluded: read-only publication observation",
+    },
+    "status.mjs:observeStatus": {
+      values: [
+        "status=unavailable",
+        "status=observed",
+        "status=unavailable",
+        "status=observed",
+        "status=unavailable",
+      ],
+      boundary: "excluded: read-only status observation",
+    },
+    "status.mjs:links": {
+      values: ["status=unavailable"],
+      boundary: "excluded: read-only link observation",
+    },
+    "status.mjs:value": {
+      values: ["status=unavailable"],
+      boundary: "excluded: read-only observation",
+    },
+    "supervise.mjs:row": {
+      values: ["status=upgrade-deferred"],
+      boundary: "excluded: deferred upgrade, existing executor continues",
+    },
+    "supervise.mjs:line": {
+      values: ["status=blocked"],
+      boundary: "supervision.ts:retainStopOutcome",
+    },
+    "supervise.mjs:main": {
+      values: ["status=supervisor-started", "status=idle", "status=upgrade-ready", "status=paused"],
+      boundary: "excluded: supervisor lifecycle, not a failed selected execution",
+    },
+  };
+  expect(observed).toEqual(
+    Object.fromEntries(Object.entries(coverage).map(([key, row]) => [key, row.values])),
+  );
+  // Dynamic reports, adapter results and continuation forwarding are inventoried
+  // as expressions too; a variable-valued new producer cannot evade the ratchet.
+  const dynamicCoverage: Record<string, { values: string[]; boundary: string }> = {
+    "control.mjs:controlLoop": {
+      values: ["status=<dynamic>"],
+      boundary: "excluded: operator intent",
+    },
+    "delivery-adapter.ts:check": {
+      values: ["bucket=<dynamic>"],
+      boundary: "delivery.ts:retainOutcome",
+    },
+    "delivery.ts:validateChecks": {
+      values: ["bucket=<dynamic>"],
+      boundary: "delivery.ts:retainOutcome",
+    },
+    "dispatch-adapter.ts:properties": {
+      values: ["verdict=<dynamic>", "verdict=<dynamic>"],
+      boundary: "excluded: output schemas are not executions",
+    },
+    "flow.ts:finish": { values: ["status=<dynamic>"], boundary: "flow.ts:retainWorkerOutcome" },
+    "queue.ts:participantWithoutUsage": {
+      values: ["outcome=<dynamic>"],
+      boundary: "excluded: retained accounting projection",
+    },
+    "queue.ts:runQueueStep": {
+      values: Array(4).fill("status=<dynamic>"),
+      boundary: "supervision.ts:retainStopOutcome",
+    },
+    "queue.ts:participant": {
+      values: ["outcome=<dynamic>"],
+      boundary: "queue.ts:retainWorkerOutcome",
+    },
+    "queue.ts:source": { values: ["status=<dynamic>"], boundary: "flow.ts:retainWorkerOutcome" },
+    "queue.ts:repair": { values: ["status=<dynamic>"], boundary: "flow.ts:retainWorkerOutcome" },
+    "queue.ts:delivery": {
+      values: ["status=<dynamic>", "status=<dynamic>"],
+      boundary: "delivery.ts:retainOutcome",
+    },
+    "refresh.ts:refreshDelivery": {
+      values: ["status=<dynamic>", "status=<dynamic>"],
+      boundary: "flow.ts:retainWorkerOutcome",
+    },
+    "setup-adapter.ts:defaultInstall": {
+      values: ["status=<dynamic>", "status=<dynamic>"],
+      boundary: "supervision.ts:retainStopOutcome",
+    },
+    "setup.ts:result": {
+      values: ["status=<dynamic>", "phase=<dynamic>"],
+      boundary: "supervision.ts:retainStopOutcome",
+    },
+    "status.mjs:checks": {
+      values: ["status=<dynamic>"],
+      boundary: "excluded: read-only check observation",
+    },
+    "status.mjs:observeStatus": {
+      values: ["status=<dynamic>", "status=<dynamic>", "phase=<dynamic>"],
+      boundary: "excluded: read-only status observation",
+    },
+    "status.mjs:lastLogObservation": {
+      values: ["status=<dynamic>"],
+      boundary: "excluded: read-only log observation",
+    },
+    "supervise.mjs:result": {
+      values: ["status=<dynamic>"],
+      boundary: "excluded: native DB request lifecycle, not execution verdict",
+    },
+    "supervise.mjs:receive": {
+      values: ["status=<dynamic>"],
+      boundary: "excluded: native DB reply lifecycle, not execution verdict",
+    },
+    "supervision.ts:startCycle": {
+      values: ["status=<dynamic>", "status=<dynamic>"],
+      boundary: "excluded: scheduling lifecycle",
+    },
+    "supervision.ts:placements": {
+      values: ["outcome=<dynamic>"],
+      boundary: "excluded: retained placement history",
+    },
+  };
+  expect(dynamic).toEqual(
+    Object.fromEntries(Object.entries(dynamicCoverage).map(([key, row]) => [key, row.values])),
+  );
+  for (const { boundary } of [...Object.values(coverage), ...Object.values(dynamicCoverage)]) {
+    if (boundary.startsWith("excluded:")) continue;
+    const [file, name] = boundary.split(":");
+    expect(callsByFile.get(file!), boundary).toContain(name);
+  }
+  // NC-new-producer: unlike a hand-picked enum fixture, an executable new site
+  // changes the inventory even inside an already covered function.
+  expect(
+    outcomeProducers(await parse('function newProducer() { return {status: "failed"}; }')),
+  ).toEqual({ newProducer: ["status=failed"] });
+  expect(
+    outcomeProducers(await parse('function newProducer(result) { result.status = "failed"; }')),
+  ).toEqual({ newProducer: ["status=failed"] });
+});
+
+it("ISS-236 refuses absent or multiple primary classes and excludes pending, PASS and exit 73", async () => {
+  const directory = await mkdtemp(resolve(tmpdir(), "outcome-record-"));
+  try {
+    const context = {
+      repository: "owner/repo",
+      run: "run",
+      issue: "ISS-236:1",
+      stateDirectory: directory,
+    };
+    const defect = {
+      defectClass: "brief" as const,
+      explanation: "Incompatible criteria.",
+      rootCause: "criteria-conflict",
+      evidenceStatus: "established" as const,
+      evidence: ["brief.md:1"],
+    };
+    expect(validDefect(defect)).toBe(true);
+    for (const invalid of [
+      { ...defect, defectClass: undefined },
+      { ...defect, defectClass: ["brief", "design"] },
+      { ...defect, evidence: [{ nested: ["brief.md"] }] },
+    ])
+      expect(validDefect(invalid)).toBe(false);
+    for (const status of ["running", "passed"])
+      await retainWorkerOutcome(
+        context,
+        "author",
+        { id: "worker", trace: "/trace" },
+        { status, defect },
+      );
+    expect(await readdir(directory)).toEqual([]); // NC-pending-as-failure
+    const terminal = { status: "failed", head: "a".repeat(40), defect };
+    const path = await retainWorkerOutcome(
+      context,
+      "author",
+      { id: "worker", trace: "/trace" },
+      terminal,
+    );
+    const before = await readFile(path!, "utf8");
+    expect(JSON.parse(before)).toMatchObject({ defectClass: "brief", stage: directory, terminal }); // NC-persistence-field-omitted
+    expect(
+      await retainWorkerOutcome(context, "author", { id: "worker", trace: "/trace" }, terminal),
+    ).toBe(path);
+    expect(await readFile(path!, "utf8")).toBe(before);
+    expect((await readdir(directory)).filter((file) => file.startsWith("outcome-"))).toHaveLength(
+      1,
+    );
+    const gate = resolve(directory, "gate");
+    await mkdir(gate);
+    await writeFile(resolve(gate, "candidate-terminal.json"), JSON.stringify({ code: 73 }));
+    expect(
+      await retainGateOutcome(context, "test", "a".repeat(40), {
+        log: resolve(gate, "candidate.log"),
+        diagnostics: [],
+      }),
+    ).toBeUndefined();
+    expect((await readdir(directory)).filter((file) => file.startsWith("outcome-"))).toHaveLength(
+      1,
+    );
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+it("ISS-236 named one-variable mutants fail their classification and persistence assertions", async () => {
+  const directory = await mkdtemp(resolve(tmpdir(), "outcome-mutants-"));
+  try {
+    const original = await readFile(resolve(root, "scripts/dogfood/outcome.ts"), "utf8");
+    const cases = [
+      {
+        name: "NC-producer-class-removed",
+        pattern: /return retainOutcome\(context, \{\r?\n    kind: "worker",[\s\S]*?\r?\n  \}\);/,
+        replacement: "return undefined;",
+        assertion: "persisted",
+      },
+      {
+        name: "NC-two-classes-accepted",
+        pattern: /defectClasses\.includes\(row\.defectClass as DefectClass\)/,
+        replacement:
+          "(Array.isArray(row.defectClass) || defectClasses.includes(row.defectClass as DefectClass))",
+        assertion: "two",
+      },
+      {
+        name: "NC-pending-as-failure",
+        pattern: /\["failed", "malformed", "dead"\]\.includes\(terminal\.status\)/,
+        replacement: '["failed", "malformed", "dead", "running"].includes(terminal.status)',
+        assertion: "pending",
+      },
+      {
+        name: "NC-persistence-field-omitted",
+        pattern: /\.\.\.outcome\.defect,/,
+        replacement: "...{},",
+        assertion: "persisted",
+      },
+    ];
+    for (const [index, control] of cases.entries()) {
+      expect(original.match(new RegExp(control.pattern.source, "g")), control.name).toHaveLength(1);
+      expect(
+        original.replace(/\r?\n/g, "\r\n").match(new RegExp(control.pattern.source, "g")),
+        `${control.name}: Windows checkout`,
+      ).toHaveLength(1);
+      for (const mutant of [false, true]) {
+        const path = resolve(directory, `${index}-${mutant}.ts`);
+        const state = resolve(directory, `${index}-${mutant}`);
+        await mkdir(state);
+        await writeFile(
+          path,
+          mutant ? original.replace(control.pattern, control.replacement) : original,
+        );
+        const program = `
+          import assert from 'node:assert/strict';
+          import {readdir, readFile} from 'node:fs/promises';
+          import {resolve} from 'node:path';
+          const {validDefect, retainWorkerOutcome} = await import(${JSON.stringify(pathToFileURL(path).href)});
+          const state = ${JSON.stringify(state)};
+          const defect = {defectClass:'brief', explanation:'Conflicting criteria.', rootCause:'criteria', evidenceStatus:'established', evidence:['brief.md:1']};
+          const mode = ${JSON.stringify(control.assertion)};
+          if (mode === 'two') assert.equal(validDefect({...defect, defectClass:['brief','design']}), false);
+          else {
+            await retainWorkerOutcome({repository:'owner/repo',run:'run',issue:'ISS-236',stateDirectory:state}, 'author', {id:'worker',trace:'/trace'}, {status:mode==='pending'?'running':'failed',defect});
+            const files = await readdir(state);
+            assert.equal(files.length, mode==='pending'?0:1);
+            if(mode!=='pending') assert.equal(JSON.parse(await readFile(resolve(state,files[0]),'utf8')).defectClass,'brief');
+          }
+        `;
+        const execute = promisify(execFile)(
+          process.execPath,
+          ["--input-type=module", "--eval", program],
+          { windowsHide: true },
+        );
+        if (mutant)
+          await expect(execute, control.name).rejects.toMatchObject({
+            code: 1,
+            stderr: expect.stringContaining("AssertionError"),
+          });
+        else await expect(execute, control.name).resolves.toMatchObject({ stderr: "" });
+      }
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 function parse(source: string, filepath = "fixture.ts") {
   // Use the parser shipped by pinned Prettier, also for .mjs; no new dependency.

@@ -1,4 +1,7 @@
 import { MAX_TERMINAL_SUMMARY_LENGTH } from "./terminal-summary.mjs";
+// @ts-expect-error Node 24 executes this private TypeScript module directly.
+import { validReportDefect } from "./outcome.ts";
+import type { Defect } from "./outcome.js";
 
 const REPORT_KEYS = ["run", "role", "head", "verdict", "findings", "g0"];
 
@@ -40,6 +43,7 @@ export interface ReviewFinding {
 }
 
 export interface ValidatedReview {
+  defect?: Defect | null;
   run: string;
   role: "reviewer";
   head: string;
@@ -65,7 +69,11 @@ export function parseReview(
   }
   const parsed = report as Record<string, any>;
   demand(
-    exactKeys(parsed, REPORT_KEYS) &&
+    exactKeys(parsed, [
+      ...REPORT_KEYS,
+      ...(object(parsed) && Object.hasOwn(parsed, "defect") ? ["defect"] : []),
+    ]) &&
+      validReportDefect(parsed) &&
       parsed.run === expectedRun &&
       parsed.role === "reviewer" &&
       parsed.head === expectedHead &&

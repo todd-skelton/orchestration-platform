@@ -2956,6 +2956,22 @@ it.each(["red", "wrong-head", "missing"])(
         checks: [{ actions: { run: 9003, attempt: 1, job: 9004, workflow: 9005 } }],
       });
       expect(failureLog).toContain("Synthetic exact-head candidate assertion failed");
+      const outcomes = (await readdir(refresh.directory)).filter((name) =>
+        name.startsWith("outcome-"),
+      );
+      const records = await Promise.all(
+        outcomes.map(async (name) =>
+          JSON.parse(await readFile(resolve(refresh.directory, name), "utf8")),
+        ),
+      );
+      expect(records.filter((row) => row.kind === "hosted-gate")).toMatchObject([
+        {
+          head: refresh.head,
+          defectClass: "environment-tooling",
+          evidenceStatus: "unresolved",
+          terminal: { checks: [{ actions: { run: 9003, attempt: 1, job: 9004, workflow: 9005 } }] },
+        },
+      ]);
     }
     expect(f.effects).toEqual(["publish"]);
     expect(f.launches).toEqual(["reviewer"]);
@@ -3410,6 +3426,39 @@ it("ISS-231 attributes native candidate failure without authoring or review", as
   expect(f.launches).toEqual([]);
   expect(f.effects).toEqual([]);
   expect(await currentCandidateAttempt(q)).toBe(4);
+  const savedOutcomes = [...(await snapshot(q.stateDirectory)).entries()]
+    .filter(([path]) => /[/\\]outcome-[a-f0-9]+\.json$/.test(path))
+    .map(([, bytes]) => JSON.parse(bytes));
+  expect(savedOutcomes.filter((row) => row.kind === "local-gate")).toMatchObject([
+    {
+      defectClass: "implementation-known-remedy",
+      evidenceStatus: "established",
+      identity: "typecheck",
+    },
+  ]);
+});
+
+it("ISS-236 native exit 73 retains the host stop without failure classification or attempt charge", async () => {
+  const f = await verificationOnlyFixture();
+  await writeFile(
+    f.launcher,
+    `if (process.argv[3] === 'typecheck') process.exit(73); console.log('[VERIFY_STATIC_RUN] check:structure');`,
+  );
+  const q = await f.compose();
+  const before = q.initialHistory;
+  const adapter = f.adapter(q);
+  for (let replay = 0; replay < 2; replay++)
+    await expect(queueStep(q, adapter)).rejects.toMatchObject({
+      reason: "gate-attribution-unknown:typecheck",
+    });
+  expect(await adapter.history()).toEqual(before);
+  expect(await currentCandidateAttempt(q)).toBe(4);
+  expect(f.launches).toEqual([]);
+  expect(f.effects).toEqual([]);
+  const outcomes = [...(await snapshot(q.stateDirectory)).entries()]
+    .filter(([path]) => /[/\\]outcome-[a-f0-9]+\.json$/.test(path))
+    .map(([, bytes]) => JSON.parse(bytes));
+  expect(outcomes.filter((row) => row.kind === "local-gate")).toEqual([]);
 });
 
 it.each(["unavailable", "author", "body"])(
@@ -4454,7 +4503,19 @@ it("ISS-235 resumes the baseline-exhausted attempt-2 candidate with only reviewe
   expect(await real.git(item.source.worktree, ["rev-parse", "HEAD"])).toBe(head);
   for (const [path, bytes] of preserved) expect(await readFile(path, "utf8"), path).toBe(bytes);
   expect(await snapshot(item.setup.stateDirectory)).toEqual(setupBytes);
-  expect(await snapshot(priorDirectory)).toEqual(priorBytes);
+  const observedPrior = await snapshot(priorDirectory);
+  for (const [path, bytes] of priorBytes) expect(observedPrior.get(path), path).toBe(bytes);
+  const additions = [...observedPrior].filter(([path]) => !priorBytes.has(path));
+  expect(additions).toHaveLength(1);
+  expect(additions[0]![0]).toMatch(/[/\\]outcome-[a-f0-9]{64}\.json$/);
+  expect(JSON.parse(additions[0]![1])).toMatchObject({
+    kind: "hosted-gate",
+    run: prior.run,
+    issue: prior.issue,
+    head: prior.head,
+    defectClass: "environment-tooling",
+    evidenceStatus: "unresolved",
+  });
   expect(await readFile(resolve(runState, "cycle-1-stop-1-complete.json"))).toEqual(stopBytes);
   expect(comments).toHaveLength(1);
   console.info(
@@ -4579,6 +4640,62 @@ async function fixture(itemCount = 1) {
   };
   return { root, stateDirectory, config, items };
 }
+
+it("ISS-236 binds a bounded queue's configured source directory before continuation wrapping", async () => {
+  const phase = "source";
+  const f = await fixture();
+  const item = f.items[0]!;
+  item.implementationAttempt = 3;
+  item.terminalAttemptAdmission = { correctionUsed: false, resolutionUsed: false };
+  await writeFile(
+    resolve(f.stateDirectory, "attempt.json"),
+    JSON.stringify({
+      schemaVersion: "dogfood-bounded-queue-attempt/v1",
+      run: f.config.run,
+      index: 0,
+      item: item.id,
+      issue: item.issue,
+      base: item.base,
+      head: item.base,
+      candidateAttempt: 3,
+      phase,
+      reviewId: null,
+      findings: [],
+      history: [],
+      retries: 0,
+      acceptedStage: null,
+      stateDirectory: null,
+    }),
+  );
+  const fail = async (): Promise<never> => {
+    throw new QueueBlocked("outside-footprint");
+  };
+  const adapter: QueueAdapter = {
+    assertExecutor: async () => {},
+    setup: async () => ({ status: "ready" }),
+    source: fail,
+    repair: fail,
+    delivery: fail,
+    history: async () => [],
+  };
+  await expect(queueStep(f.config, adapter)).rejects.toMatchObject({
+    reason: "continuation-failed",
+  });
+  const outcomes = [...(await snapshot(f.root))].filter(([path]) =>
+    /outcome-[a-f0-9]{64}\.json$/.test(path),
+  );
+  expect(outcomes).toHaveLength(1);
+  expect(JSON.parse(outcomes[0]![1])).toMatchObject({
+    defectClass: "mechanical",
+    rootCause: "outside-footprint",
+    evidenceStatus: "established",
+    stage: item[phase].stateDirectory,
+    head: item.base,
+    terminal: { attempt: { path: resolve(f.stateDirectory, "attempt.json") } },
+  });
+  expect(await adapter.history()).toEqual([]);
+  expect(await currentCandidateAttempt(f.config)).toBe(3);
+});
 
 describe.each([
   [false, false, "candidate"],
@@ -5316,6 +5433,23 @@ See docs/architecture/bounded-context-structure.md#rules-the-structure-gate-enfo
         ...(executorRecovery ? [...retainedStages, "refresh-reviewer"] : ["author", "reviewer"]),
       ]);
       expect(effects).not.toContain("publish");
+      const outcomes = [...(await snapshot(q.stateDirectory)).entries()]
+        .filter(([path]) => /[/\\]outcome-[a-f0-9]+\.json$/.test(path))
+        .map(([, bytes]) => JSON.parse(bytes))
+        .filter((row) => row.kind === "local-gate");
+      expect(outcomes.length).toBeGreaterThan(0);
+      // A resumed executor recovery retains the original unresolved outcome
+      // beside the fresh control's cause in its own evidence directory.
+      expect(outcomes).toContainEqual(
+        expect.objectContaining({
+          defectClass: ["spent", "corrected source"].includes(mode)
+            ? "implementation-known-remedy"
+            : "environment-tooling",
+          evidenceStatus: ["spent", "corrected source"].includes(mode)
+            ? "established"
+            : "unresolved",
+        }),
+      );
       await expect(readFile(resolve(correctionRoot, "gate-correction.json"))).rejects.toMatchObject(
         { code: "ENOENT" },
       );
@@ -5345,6 +5479,17 @@ See docs/architecture/bounded-context-structure.md#rules-the-structure-gate-enfo
       await readFile(resolve(correctionRoot, "gate-correction.json"), "utf8"),
     );
     expect(capture.gate).toBe("verify:static:scoped");
+    const outcomes = [...(await snapshot(q.stateDirectory)).entries()]
+      .filter(([path]) => /[/\\]outcome-[a-f0-9]+\.json$/.test(path))
+      .map(([, bytes]) => JSON.parse(bytes))
+      .filter((row) => row.kind === "local-gate");
+    expect(outcomes).toContainEqual(
+      expect.objectContaining({
+        defectClass: "implementation-known-remedy",
+        evidenceStatus: "established",
+        head: capture.failedHead,
+      }),
+    );
     authorRunning = true;
     for (let replay = 0; replay < 2; replay++)
       await expect(run()).resolves.toMatchObject({ status: "observing-author" });
@@ -7261,6 +7406,73 @@ async function unpublishedReplanFixture() {
   const compose = (config = loop) => queueConfigFromLoop(config, f.repository, selected, policy);
   return { ...f, loop, selected, head, history, prior, priorSource, file, compose, policy };
 }
+
+it("ISS-236 preserves a typed continuation cause through queue wrapping and supervision replay", async () => {
+  const f = await unpublishedReplanFixture();
+  const q = await f.compose();
+  const source = q.items[0]!.source.stateDirectory;
+  const refresh = resolve(source, `refresh-${"c".repeat(40)}`);
+  await mkdir(refresh);
+  await writeFile(
+    resolve(source, "native-refresh.json"),
+    JSON.stringify({
+      directory: refresh,
+      previousHead: f.head,
+      main: "c".repeat(40),
+      conflict: { seed: "d".repeat(40) },
+      resolutionUsed: true,
+    }),
+  );
+  const adapter = repositoryQueueAdapter(q, f.repository, {
+    setup: f.setup,
+    gitExecutable: f.gitExecutable,
+  });
+  adapter.source = async () => {
+    throw new QueueBlocked("conflict-resolution-scope-escape", f.file);
+  };
+  await expect(queueStep(q, adapter)).rejects.toMatchObject({ reason: "continuation-failed" });
+  const before = await snapshot(q.stateDirectory);
+  const outcomes = [...before].filter(([path]) => /outcome-[a-f0-9]{64}\.json$/.test(path));
+  expect(outcomes).toHaveLength(1);
+  expect(JSON.parse(outcomes[0]![1])).toMatchObject({
+    kind: "stop",
+    stage: refresh,
+    head: "d".repeat(40),
+    defectClass: "mechanical",
+    rootCause: "conflict-resolution-boundary",
+    evidenceStatus: "established",
+  });
+  const comments: string[] = [];
+  const cycle = { selection: { ...f.selected, cycle: 1 }, initialHistory: await adapter.history() };
+  const host: SupervisionAdapter = {
+    currentMain: async () => f.head,
+    issue: async () => ({ state: "OPEN", key: f.selected.key, labels: [], comments }),
+    removeReady: async () => {},
+    close: async () => {},
+    comment: async (_config, _number, body) => {
+      comments.push(body);
+    },
+  };
+  const park = vi.fn(async () => "restore readiness after repair");
+  for (let replay = 0; replay < 2; replay++) {
+    expect(
+      await stopCycle(
+        f.loop,
+        cycle,
+        "continuation-failed",
+        5,
+        host,
+        { ...f.policy, park },
+        undefined,
+        replay ? 1 : undefined,
+      ),
+    ).toBe("item");
+    expect(await snapshot(q.stateDirectory)).toEqual(before);
+  }
+  expect(comments).toHaveLength(1);
+  expect(await adapter.history()).toEqual(f.history);
+  expect(await currentCandidateAttempt(q)).toBe(5);
+});
 
 it("ISS-235 a granted replan's custom slug cannot renew its inherited issue allowance", async () => {
   const f = await acceptedReplanFixture();
