@@ -166,6 +166,20 @@ it("ISS-236 derives the non-PASS producer ratchet from implementation sources", 
   // Every entry names its class-producing boundary or a non-execution exclusion.
   // Counts retain distinct producers in the same function: adding one is a ratchet failure.
   const coverage: Record<string, { values: string[]; boundary: string }> = {
+    "planning-repair.ts:planningStep": {
+      values: ["status=planning-pending-host-review", "status=malformed"],
+      boundary: "planning-repair.ts:retainWorkerOutcome",
+    },
+    "planning-repair.ts:unavailable": {
+      values: ["status=planning-pending-host-review"],
+      boundary: "excluded: unavailable external planning authority, no new execution",
+    },
+    "planning-repair.ts:result": {
+      values: [
+        "status=planning-accepted|planning-rejected|planning-pending-host-review|observing-planning-reviewer|observing-planning-author",
+      ],
+      boundary: "excluded: unapplied planning handoff, retaining native worker outcomes",
+    },
     "chase-sets.mjs:candidatesFromAuthority": {
       values: ["status=not-runnable"],
       boundary: "excluded: pre-selection eligibility",
@@ -341,6 +355,22 @@ it("ISS-236 derives the non-PASS producer ratchet from implementation sources", 
   // Dynamic reports, adapter results and continuation forwarding are inventoried
   // as expressions too; a variable-valued new producer cannot evade the ratchet.
   const dynamicCoverage: Record<string, { values: string[]; boundary: string }> = {
+    "planning-repair.ts:planningStep": {
+      values: ["outcome=<dynamic>"],
+      boundary: "excluded: retained causal input, not another failure",
+    },
+    "queue.ts:acquire": {
+      values: ["outcome=<dynamic>"],
+      boundary: "excluded: retained causal input, not another failure",
+    },
+    "queue.ts:stopped": {
+      values: ["outcome=<dynamic>", "outcome=<dynamic>"],
+      boundary: "excluded: retained sibling lineage causes, not another failure",
+    },
+    "queue.ts:planning": {
+      values: ["outcome=<dynamic>"],
+      boundary: "excluded: retained causal input, not another failure",
+    },
     "control.mjs:controlLoop": {
       values: ["status=<dynamic>"],
       boundary: "excluded: operator intent",

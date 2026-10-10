@@ -5,6 +5,8 @@ export function previewWork(
   input: Parameters<RepositoryAdapter["selectCandidates"]>[0],
 ): Promise<import("../scripts/dogfood/status.mjs").WorkPreview>;
 export const issueContext: RepositoryAdapter["issueContext"];
+export function bodyCriteria(body: string): string[];
+export const planningContext: NonNullable<RepositoryAdapter["planningContext"]>;
 export const verificationBrief: NonNullable<RepositoryAdapter["verificationBrief"]>;
 export const branchName: RepositoryAdapter["branchName"];
 export const pullRequest: RepositoryAdapter["pullRequest"];

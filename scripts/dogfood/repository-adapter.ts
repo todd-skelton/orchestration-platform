@@ -64,6 +64,18 @@ export function validateOpsAdmission(input: {
 }
 
 export interface RepositoryAdapter {
+  planningContext?(input: {
+    repository: string;
+    key: string;
+    number: number;
+    executorRoot: string;
+    gitExecutable: string;
+    main: string;
+  }): Promise<{
+    context: RepositoryIssueContext;
+    planning: any;
+    issues: any[];
+  }>;
   verificationBrief?(input: { repository: string; number: number; executorRoot: string }): Promise<{
     number: number;
     url: string;

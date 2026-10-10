@@ -825,7 +825,7 @@ type RecoveryAction = (context: RecoveryContext) => string;
 
 const stopRecoveryActions: Record<ActionableStopReason, RecoveryAction> = {
   "author-failed": ({ evidence }) =>
-    `inspect the failed source author's terminal and trace under ${evidence}, resolve the reported blocker, and explicitly restore planning readiness before selecting this issue again`,
+    `inspect the failed source author's terminal and trace under ${evidence}; established brief/slice/design failures use the native planning handoff and retain an unapplied proposal pending ISS-238, while other blockers require explicit readiness restoration after correction`,
   "completed-issue-state-unknown": ({ issue }) =>
     `check PR delivery for issue #${issue} on GitHub; if the PR merged, close the issue by hand and restart so the cycle reconciles`,
   "issue-observation-unavailable": () =>

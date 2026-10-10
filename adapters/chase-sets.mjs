@@ -7,6 +7,7 @@ import { DeliveryBlocked } from "../scripts/dogfood/delivery.mjs";
 import { acceptedReviewG0 } from "../scripts/dogfood/delivery-adapter.mjs";
 import { parseRoutingMarker } from "../scripts/dogfood/routing.mjs";
 import { validateOpsAdmission } from "../scripts/dogfood/repository-adapter.mjs";
+import { planningAuthority } from "../scripts/dogfood/planning-context.mjs";
 
 const EXPECTED_REPOSITORY = "chase-sets/chase-sets";
 const runFile = promisify(execFile);
@@ -285,7 +286,7 @@ function listItems(section) {
   return items;
 }
 
-function bodyCriteria(body) {
+export function bodyCriteria(body) {
   const heading = /^#{1,6}\s+Acceptance(?: Criteria)?\s*$/im.exec(body);
   const section = heading
     ? body
@@ -379,6 +380,17 @@ export async function issueContext({
     acceptanceCriteria: acceptanceCriteria.length > 0 ? acceptanceCriteria : [row.body],
     rules: `${LANE_RULES}\n\n${productRules.trimEnd()}\n\n${deliverySkill}`,
   };
+}
+
+export async function planningContext(input) {
+  const [context, issues] = await Promise.all([
+    issueContext(input),
+    planningAuthority(input.repository),
+  ]);
+  const selected = issues.find((row) => row.number === input.number);
+  if (!selected || selected.body !== context.body)
+    throw new Error("planning authority moved during acquisition");
+  return { context, planning: null, issues };
 }
 
 // ISS-232: one live snapshot for the explicit verification-only brief pin.
