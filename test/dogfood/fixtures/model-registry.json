@@ -1,0 +1,13 @@
+{
+  "format": "model-registry/v2",
+  "generation": 7,
+  "authorityDigest": "synthetic-registry",
+  "families": {
+    "astra": { "current": "gpt-6-astra" },
+    "sol": { "current": "gpt-6.1-sol" },
+    "luna": { "current": "gpt-6-luna" },
+    "opus": { "current": "claude-opus-5-5" },
+    "sonnet": { "current": "claude-sonnet-5-5" },
+    "fable": { "current": "claude-fable-5-1" }
+  }
+}

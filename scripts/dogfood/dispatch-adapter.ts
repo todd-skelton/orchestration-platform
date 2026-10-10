@@ -183,7 +183,14 @@ export async function admitLaunch(
     config,
     async (signal, deadline) => {
       const poolReady = statusUrl
-        ? await probePoolModel(statusUrl, config[role].model, signal, deadline, request, clock?.now)
+        ? await probePoolModel(
+            statusUrl,
+            config[role].model!,
+            signal,
+            deadline,
+            request,
+            clock?.now,
+          )
         : false;
       await probeProvider(baseUrl, authCommand, signal, request, config[role].model, poolReady);
     },
@@ -298,7 +305,7 @@ export function launchArguments(
     "-C",
     role === "author" ? config.worktree : config.reviewWorktree,
     "-m",
-    config[role].model,
+    config[role].model!,
     "-c",
     `model_reasoning_effort=${config[role].effort}`,
     "-c",

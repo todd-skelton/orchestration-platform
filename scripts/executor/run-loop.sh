@@ -46,6 +46,7 @@ export CODEX_PROVIDER_BASE_URL="http://$HOST:8317/v1"
 export CODEX_PROVIDER_AUTH_COMMAND="$TASK_ROOT/pool-key.sh"
 # ISS-162: read-only pool status consulted before each worker launch.
 export CODEX_POOL_STATUS_URL="http://$HOST:8318/api/status"
+export DOGFOOD_MODEL_REGISTRY="${DOGFOOD_MODEL_REGISTRY:-/mnt/d/Users/ToddS/AgentPools/state/model-registry.json}"
 sed -i "s#http://[0-9.]*:8317/v1#$CODEX_PROVIDER_BASE_URL#" "$TASK_ROOT/codex-home/config.toml"
 export PATH="$TASK_ROOT/tools/git/bin:$TASK_ROOT/tools/node-v24.15.0-linux-x64/bin:$TASK_ROOT/tools/cli/node_modules/.bin:$TASK_ROOT/tools/gh_2.93.0_linux_amd64/bin:/usr/local/bin:/usr/bin:/bin"
 export CODEX_HOME="$TASK_ROOT/codex-home"

@@ -30,7 +30,7 @@ import {
 } from "../../../scripts/dogfood/supervision.js";
 import type { RepositoryAdapter } from "../../../scripts/dogfood/repository-adapter.js";
 import type { Adapter } from "../../../scripts/dogfood/flow.js";
-import { SELF_ROUTING } from "../../../scripts/dogfood/routing.mjs";
+import { SELF_ROUTING } from "./literal-routing.js";
 import type { PhaseTiming } from "./iss212-timing.js";
 
 const execute = promisify(execFile);
@@ -90,8 +90,9 @@ export async function sourceFailureFixture(
     gitExecutable,
     nativeLaunchCeiling: 16,
     attemptCeiling: 4,
-    author: SELF_ROUTING.author[0]!,
-    reviewer: SELF_ROUTING.reviewer[0]!,
+    author: { model: "gpt-6-astra", effort: "high" },
+    reviewer: { model: "claude-opus-5-5", effort: "high" },
+    modelRegistry: resolve(import.meta.dirname, "model-registry.json"),
   };
   const history: QueueParticipant[] = Array.from({ length: priorWorkers }, (_, index) => ({
     ordinal: index + 1,

@@ -1,5 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { expect, it } from "vitest";
+import { classifyStop, parksItem } from "../../scripts/dogfood/fault-class.js";
 import {
   parseRoutingMarker,
   resolveRouting,
@@ -9,6 +10,15 @@ import {
 } from "../../scripts/dogfood/routing.mjs";
 
 const marker = '<!-- routing: {"version":1,"row":7,"review":11} -->';
+
+it("ISS-249 registry observation failure is retry and never parks", () => {
+  expect(classifyStop("model-registry-unavailable")).toEqual({
+    faultClass: "retry",
+    legacyParking: false,
+    rule: "exact",
+  });
+  expect(parksItem("model-registry-unavailable")).toBe(false);
+});
 
 it("requires exactly one versioned planning marker and an explicit review row", () => {
   expect(parseRoutingMarker(`Issue\n${marker}\nAcceptance`)).toEqual({ row: 7, review: 11 });
@@ -32,13 +42,13 @@ it("returns self's ladder, allowing only self to fall back to a static pair", ()
   expect(resolveRouting("self", { row: "self" }, [])).toEqual({
     row: "self",
     author: [
-      { model: "gpt-6-astra", effort: "high" },
-      { model: "gpt-6-astra", effort: "xhigh" },
-      { model: "claude-fable-5-1", effort: "high" },
+      { family: "astra", effort: "high" },
+      { family: "astra", effort: "xhigh" },
+      { family: "fable", effort: "high" },
     ],
     reviewer: [
-      { model: "claude-opus-5-5", effort: "high" },
-      { model: "gpt-6.1-sol", effort: "high" },
+      { family: "opus", effort: "high" },
+      { family: "sol", effort: "high" },
     ],
   });
   expect(resolveRouting("self", undefined)).toBeUndefined();
@@ -48,38 +58,39 @@ it("returns self's ladder, allowing only self to fall back to a static pair", ()
   );
 });
 
-it("ships the exact ISS-203 matrix with ISS-218 successors and independent reviewers", async () => {
+it("ISS-249 ships families with the unchanged ISS-203 roles, efforts and rung order", async () => {
   const rows: RoutingRow[] = JSON.parse(
     await readFile(new URL("../../adapters/chase-sets-routing.json", import.meta.url), "utf8"),
   );
   const expected = new Map([
-    [2, ["gpt-6-luna/high", "gpt-6-luna/xhigh", "gpt-6.1-sol/medium", "claude-sonnet-5-5/medium"]],
-    [3, ["claude-opus-5-5/medium", "claude-opus-5-5/high", "gpt-6-astra/medium"]],
-    [4, ["gpt-6-astra/medium", "gpt-6-astra/high", "claude-fable-5-1/high"]],
-    [7, ["gpt-6-astra/high", "gpt-6-astra/xhigh", "claude-fable-5-1/high"]],
-    [10, ["gpt-6.1-sol/high", "gpt-6-astra/high", "claude-fable-5-1/high"]],
-    [14, ["claude-opus-5-5/medium", "claude-opus-5-5/high", "gpt-6-astra/high"]],
-    [15, ["claude-opus-5-5/high", "gpt-6-astra/high"]],
+    [2, ["luna/high", "luna/xhigh", "sol/medium", "sonnet/medium"]],
+    [3, ["opus/medium", "opus/high", "astra/medium"]],
+    [4, ["astra/medium", "astra/high", "fable/high"]],
+    [7, ["astra/high", "astra/xhigh", "fable/high"]],
+    [10, ["sol/high", "astra/high", "fable/high"]],
+    [14, ["opus/medium", "opus/high", "astra/high"]],
+    [15, ["opus/high", "astra/high"]],
   ]);
   const expectedReviewers = new Map([
-    [2, ["claude-opus-5-5", "gpt-6-astra"]],
-    [3, ["gpt-6.1-sol", "claude-sonnet-5-5"]],
-    [4, ["claude-opus-5-5", "gpt-6.1-sol"]],
-    [7, ["claude-opus-5-5", "gpt-6.1-sol"]],
-    [10, ["claude-opus-5-5", "claude-sonnet-5-5"]],
-    [14, ["gpt-6.1-sol", "claude-sonnet-5-5"]],
-    [15, ["gpt-6.1-sol", "claude-sonnet-5-5"]],
+    [2, ["opus", "astra"]],
+    [3, ["sol", "sonnet"]],
+    [4, ["opus", "sol"]],
+    [7, ["opus", "sol"]],
+    [10, ["opus", "sonnet"]],
+    [14, ["sol", "sonnet"]],
+    [15, ["sol", "sonnet"]],
   ]);
-  const vendor = (model: string) => model.split("-")[0];
+  const vendor = (family: string | undefined) =>
+    ["astra", "sol", "luna"].includes(family!) ? "openai" : "anthropic";
   expect(rows.map(({ row, review }) => `${row}:${review}`)).toEqual(
     [...expected.keys()].flatMap((row) => [`${row}:11`, `${row}:12`]),
   );
   for (const row of rows) {
     expect(() => validateRoutingRow(row)).not.toThrow();
-    expect(row.author.map((p) => `${p.model}/${p.effort}`)).toEqual(expected.get(Number(row.row)));
+    expect(row.author.map((p) => `${p.family}/${p.effort}`)).toEqual(expected.get(Number(row.row)));
     expect(row.reviewer).toEqual(
-      expectedReviewers.get(Number(row.row))!.map((model) => ({
-        model,
+      expectedReviewers.get(Number(row.row))!.map((family) => ({
+        family,
         effort: row.review === 11 ? "high" : "medium",
       })),
     );
@@ -90,19 +101,18 @@ it("ships the exact ISS-203 matrix with ISS-218 successors and independent revie
   }
   for (const row of [...rows, SELF_ROUTING]) {
     expect(() => validateRoutingRow(row)).not.toThrow();
-    expect(vendor(row.author.at(-1)!.model)).not.toBe(vendor(row.author[0]!.model));
+    expect(vendor(row.author.at(-1)!.family)).not.toBe(vendor(row.author[0]!.family));
     for (const placement of [...row.author, ...row.reviewer]) {
       expect(["low", "medium", "high", "xhigh"]).toContain(placement.effort);
-      expect(["gpt-6-sol", "claude-sonnet-5"]).not.toContain(placement.model);
     }
     expect(row.reviewer).toHaveLength(2);
-    expect(new Set(row.reviewer.map((p) => p.model)).size).toBe(2);
-    expect(row.reviewer.every((p) => row.author.every((a) => a.model !== p.model))).toBe(true);
+    expect(new Set(row.reviewer.map((p) => p.family)).size).toBe(2);
+    expect(row.reviewer.every((p) => row.author.every((a) => a.family !== p.family))).toBe(true);
     // An unused author rung must still exclude that model from either review seat.
     for (const author of row.author) {
       for (const index of [0, 1]) {
         const overlap = structuredClone(row);
-        overlap.reviewer[index]!.model = author.model;
+        overlap.reviewer[index]!.family = author.family!;
         expect(() => validateRoutingRow(overlap)).toThrow("routing-reviewer-not-independent");
       }
     }
@@ -145,7 +155,7 @@ it("keeps literal predecessor and operator placements valid without a closed mod
 it("rejects overlap with any author rung and malformed or repeated placements", () => {
   for (const index of [0, 1]) {
     const row = structuredClone(SELF_ROUTING);
-    row.reviewer[index]!.model = row.author[2]!.model;
+    row.reviewer[index]!.family = row.author[2]!.family!;
     expect(() => validateRoutingRow(row)).toThrow("routing-reviewer-not-independent");
   }
   for (const author of [[], [SELF_ROUTING.author[0]!, SELF_ROUTING.author[0]!]])

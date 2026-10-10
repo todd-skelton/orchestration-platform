@@ -398,7 +398,8 @@ async function admitPrerequisite(
   const author = routing?.author[0] ?? config.author;
   const reviewer = routing?.reviewer[0] ?? config.reviewer;
   if (!author || !reviewer) throw new QueueBlocked("routing-row-unconfigured");
-  if (author.model === reviewer.model) throw new QueueBlocked("routing-reviewer-not-independent");
+  if (author.model && author.model === reviewer.model)
+    throw new QueueBlocked("routing-reviewer-not-independent");
   const executor = (
     await exec(config.gitExecutable, ["-C", config.stableExecutorRoot, "rev-parse", "HEAD"])
   ).stdout.trim();

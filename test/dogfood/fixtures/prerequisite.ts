@@ -1,7 +1,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { createHash } from "node:crypto";
-import { SELF_ROUTING } from "../../../scripts/dogfood/routing.mjs";
+import { SELF_ROUTING } from "./literal-routing.js";
 import { expect } from "vitest";
 import { QueueBlocked, queueStep } from "../../../scripts/dogfood/queue.js";
 import {

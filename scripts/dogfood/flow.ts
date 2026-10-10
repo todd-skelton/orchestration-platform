@@ -9,11 +9,13 @@ import type { PreReviewEvidence } from "./continuation.js";
 // @ts-expect-error Node 24 executes this private TypeScript module directly.
 import { defectPrompt, retainWorkerOutcome } from "./outcome.ts";
 import type { Defect } from "./outcome.js";
+import { resolveRole, retainedRouting, type ModelPlacement } from "./routing.mjs";
 
 export type Role = "author" | "reviewer";
 export const CHASE_REVIEW_DELIVERY_BOUNDARY =
   "Publication, required hosted final-head checks, merge and deployment run only after review PASS and are enforced by the loop on the exact landing head. Their absence before the verdict is not a finding; a red required hosted check after PASS stops delivery. All pre-PASS evidence obligations, including executor-native gate evidence and focused tests, remain findings when missing (ISS-139).";
 export interface Config {
+  modelRegistry?: string;
   authorFailures?: { count: number; ids: string[]; diagnostics?: Record<string, string> };
   routing?: import("./routing.mjs").RoutingSelection;
   owner: string;
@@ -33,16 +35,12 @@ export interface Config {
   requiredChecks: string[];
   localGates?: string[];
   providerOutageCeilingMs?: number;
-  author: {
-    model: string;
-    effort: string;
+  author: ModelPlacement & {
     prompt: string;
     ladder?: import("./routing.mjs").ModelPlacement[];
     rung?: number;
   };
-  reviewer: {
-    model: string;
-    effort: string;
+  reviewer: ModelPlacement & {
     prompt: string;
     ladder?: import("./routing.mjs").ModelPlacement[];
     rung?: number;
@@ -76,11 +74,21 @@ function routedAttempt(config: Config, role: Role, attempt: Attempt): Attempt {
   return {
     ...attempt,
     ...(config.routing ? { routing: config.routing } : {}),
-    placement: { model: config[role].model, effort: config[role].effort },
+    placement: {
+      model: config[role].model!,
+      effort: config[role].effort,
+      ...(config[role].family
+        ? {
+            family: config[role].family,
+            generation: config[role].generation,
+            authorityDigest: config[role].authorityDigest,
+          }
+        : {}),
+    },
     ...(config[role].rung === undefined ? {} : { rung: config[role].rung }),
     models: {
-      author: config.author.model,
-      reviewer: role === "reviewer" ? config.reviewer.model : null,
+      author: config.author.model!,
+      reviewer: role === "reviewer" ? config.reviewer.model! : null,
     },
   };
 }
@@ -127,6 +135,7 @@ export interface NativeDbReply {
   diagnostic: string | null;
 }
 export interface Adapter {
+  authorModels?(config: Config): Promise<string[]>;
   resumeUnlaunchedReview?(config: Config): Promise<boolean>;
   beforeReview?(config: Config, head: string): Promise<{ prompt: string } | { result: FlowResult }>;
   authorRung?(config: Config): Promise<number>;
@@ -247,7 +256,7 @@ export function validateConfig(config: Config) {
     const actor = config[role];
     requireThat(
       actor &&
-        [actor.model, actor.effort, actor.prompt].every(
+        [actor.model ?? actor.family, actor.effort, actor.prompt].every(
           (s) => typeof s === "string" && s.length > 0,
         ),
       `invalid-${role}`,
@@ -427,14 +436,42 @@ async function runStep(
       role === "reviewer" ? await get("author-attempt") : undefined;
     let rung = attempt?.rung ?? config[role].rung ?? 0;
     let placement = attempt?.placement ?? ladder?.[rung] ?? config[role];
+    let selectPlacement = !attempt;
     const useFallback = () => {
       requireThat(ladder && rung + 1 < ladder.length, "provider-model-refused");
-      placement = ladder[++rung]!;
+      ++rung;
+      selectPlacement = true;
+    };
+    const select = async () => {
+      if (!selectPlacement || !ladder) return;
+      const authors =
+        role === "reviewer"
+          ? [
+              ...((await adapter.authorModels?.(config)) ?? []),
+              selectedAuthor?.placement?.model,
+              (await get("author-retry-discard"))?.attempt?.placement?.model,
+            ].filter((model): model is string => typeof model === "string")
+          : [];
+      ({ rung, placement } = await resolveRole(config, role, rung, authors));
+      selectPlacement = false;
+    };
+    const placed = (actor: Config[Role], selected: ModelPlacement) => {
+      const {
+        model: _model,
+        family: _family,
+        generation: _generation,
+        authorityDigest: _digest,
+        effort: _effort,
+        ...settings
+      } = actor;
+      return { ...settings, ...selected };
     };
     const launchConfig = () => ({
       ...config,
-      author: { ...config.author, ...selectedAuthor?.placement },
-      [role]: { ...config[role], ...placement, ...(ladder ? { rung } : {}) },
+      author: selectedAuthor?.placement
+        ? placed(config.author, selectedAuthor.placement)
+        : config.author,
+      [role]: { ...placed(config[role], placement), ...(ladder ? { rung } : {}) },
     });
     let relaunch = false;
     for (;;) {
@@ -446,8 +483,14 @@ async function runStep(
         if ("result" in nativeEvidence) return nativeEvidence.result;
         await adapter.waitForProvider?.(config);
         if (role === "author" && ladder) {
-          rung = Math.min((await adapter.authorRung?.(config)) ?? rung, ladder.length - 1);
-          placement = ladder[rung]!;
+          const nextRung = Math.min(
+            (await adapter.authorRung?.(config)) ?? rung,
+            ladder.length - 1,
+          );
+          if (nextRung > rung) {
+            rung = nextRung;
+            selectPlacement = true;
+          }
         }
         let reviewerHead: string | undefined;
         let authorEvidence = hostEvidence + nativeEvidence.prompt;
@@ -463,6 +506,12 @@ async function runStep(
             `${role}-launch-identity-unknown-reconcile`,
           );
           retainedIntent = !!intent;
+          if (intent?.placement) {
+            placement = intent.placement;
+            rung = intent.rung;
+            selectPlacement = false;
+          }
+          await select();
           // Reserve before the first launch. A retry replaces this attempt once launched.
           const intentHead = role === "author" ? config.base : reviewed?.head;
           if (!intent)
@@ -471,6 +520,7 @@ async function runStep(
               fingerprint,
               role,
               head: intentHead,
+              ...(ladder ? { rung, placement } : {}),
             });
         }
         if (role === "author") {
@@ -560,6 +610,7 @@ async function runStep(
         )}${authorEvidence}${retryContext}${deliveryBoundary}`;
         let launched: Attempt;
         for (;;) {
+          await select();
           // Persist selection before dispatch; a running attempt carries this same rung.
           if (!retainedIntent)
             await replace(directory, `${role}-intent`, {
@@ -873,6 +924,7 @@ export async function reviewRefresh(
   inherited: string,
   inheritedRetry = 0,
 ): Promise<FlowResult> {
+  config = await retainedRouting(config);
   const correction = await preReviewCorrection(config, adapter, pilotRoot);
   if (correction) return correction;
   if (!(await readOptional(resolve(config.stateDirectory, "candidate.json"))))
@@ -915,6 +967,7 @@ export async function correctGate(
   evidence: string,
   beforeFirstReview = false,
 ): Promise<FlowResult> {
+  config = await retainedRouting(config);
   await reconcileCorrectionCommit(config, adapter);
   return step(
     {
