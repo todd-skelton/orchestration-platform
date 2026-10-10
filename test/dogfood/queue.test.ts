@@ -4644,6 +4644,10 @@ async function fixture(itemCount = 1) {
 it("ISS-236 binds a bounded queue's configured source directory before continuation wrapping", async () => {
   const phase = "source";
   const f = await fixture();
+  // Exercise the same path aliasing as macOS /var and Windows short temp paths.
+  f.config.stateDirectory = `${f.root}-alias`;
+  roots.push(f.config.stateDirectory);
+  await symlink(f.stateDirectory, f.config.stateDirectory, "junction");
   const item = f.items[0]!;
   item.implementationAttempt = 3;
   item.terminalAttemptAdmission = { correctionUsed: false, resolutionUsed: false };
@@ -4691,7 +4695,9 @@ it("ISS-236 binds a bounded queue's configured source directory before continuat
     evidenceStatus: "established",
     stage: item[phase].stateDirectory,
     head: item.base,
-    terminal: { attempt: { path: resolve(f.stateDirectory, "attempt.json") } },
+    terminal: {
+      attempt: { path: await realpath(resolve(f.config.stateDirectory, "attempt.json")) },
+    },
   });
   expect(await adapter.history()).toEqual([]);
   expect(await currentCandidateAttempt(f.config)).toBe(3);
