@@ -1621,7 +1621,11 @@ it.each([false, true])(
             // ISS-198: the assembled source-stage prompt (flow report text plus
             // the queue's report suffix) states the one shared bound in both halves.
             expect(
-              [...prompt.matchAll(/(\d+) characters/g)].map((match) => Number(match[1])),
+              [
+                ...prompt.matchAll(
+                  /(?:serialized length \(JSON.stringify\) must be at most|Keep the complete JSON report within) (\d+) characters/g,
+                ),
+              ].map((match) => Number(match[1])),
             ).toEqual([MAX_TERMINAL_SUMMARY_LENGTH, MAX_TERMINAL_SUMMARY_LENGTH]);
           }
         }

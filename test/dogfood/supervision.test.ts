@@ -1,6 +1,6 @@
 import { execFile, spawn, type ExecFileOptions } from "node:child_process";
 import { once } from "node:events";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -43,6 +43,37 @@ import {
 } from "../../scripts/dogfood/supervision.js";
 
 const roots: string[] = [];
+
+it("ISS-236 records a host outcome once without changing stop body, parking or history", async () => {
+  const f = await noteFixture();
+  await f.stop();
+  const directory = resolve(f.config.stateRoot, f.config.run);
+  const names = (await readdir(directory)).filter((name) => name.startsWith("outcome-"));
+  expect(names).toHaveLength(1);
+  const bytes = await readFile(resolve(directory, names[0]!), "utf8");
+  const outcome = JSON.parse(bytes);
+  expect(outcome).toMatchObject({
+    schemaVersion: "dogfood-outcome/v1",
+    kind: "stop",
+    defectClass: "environment-tooling",
+    evidenceStatus: "unresolved",
+    repository: f.config.repository,
+    run: f.config.run,
+    issue: f.cycle.selection.key,
+  });
+  const posted = f.row.comments.map((comment) => comment.body);
+  // Frozen behavior at 5854407f39bb0a5c9be66d937ad1924c7e09b337.
+  expect(posted).toEqual([
+    '<!-- loop-stop:selection-run:1:1 --> The loop stopped on ISS-105 because `provider-unavailable` after 2 implementation attempts. A person should restore the subscription pool and its authentication helper, then restart the supervisor; the issue remains ready. Routing and exact worker launches: [{"row":"unrecorded","role":"author","model":"unrecorded","outcome":"dead"}].',
+  ]);
+  expect(posted[0]).not.toContain("defectClass");
+  expect(posted[0]).not.toContain("To unpark");
+  const before = await snapshot(directory);
+  await stopCycle(f.config, f.cycle, "provider-unavailable", 2, f.adapter, f.policy, undefined, 1);
+  expect(f.row.comments.map((comment) => comment.body)).toEqual(posted);
+  expect(await snapshot(directory)).toEqual(before);
+  expect(await readFile(resolve(directory, names[0]!), "utf8")).toBe(bytes);
+});
 const nextCycle: typeof nativeNextCycle = (config, root, adapter, repository) =>
   nativeNextCycle(config, root, adapter, repository, async () => {});
 
@@ -615,7 +646,7 @@ it("ISS-248 exhausted observation creates one non-parking stop and ordinary rest
     stopCycle(f.config, f.cycle, blocked.reason, 1, f.adapter, f.policy, blocked.diagnostics),
   ).resolves.toBe("run");
   const stopped = await snapshot(f.directory);
-  expect(stopped.size).toBe(3); // selection, one intent, one note completion
+  expect(stopped.size).toBe(4); // selection, intent, note completion, additive outcome
   const intent = JSON.parse(await readFile(resolve(f.directory, "cycle-1-stop-1.json"), "utf8"));
   expect(intent).toMatchObject({ attempts: 1, history: f.cycle.initialHistory });
   expect(intent.body).toContain('Diagnostic: "GitHub connection failed before send"');

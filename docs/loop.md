@@ -79,6 +79,31 @@ executed or unproved missing logs still use the parking prefix.
 ISS-225 changes no park, retry, wait or stop behavior; classes authorize no
 automatic recovery and change no saved records or posted bodies.
 
+ISS-236 adds descriptive causal data alongside these authority classes. New
+worker launches require `defect: null` on PASS and one closed `defect` object
+on FAIL: `defectClass`, `explanation` (at most 1000 characters), `rootCause`
+(at most 200), `evidenceStatus` (`established` or `unresolved`), and `evidence`
+(1–16 source references, each at most 1024 characters). The single primary
+class is `mechanical`, `environment-tooling`, `implementation-known-remedy`,
+`brief`, `slice`, `design`, `product-scope`, or `external-dependency`. Mixed
+failures keep all findings and name the cause determining the next step.
+Unresolved attribution uses `environment-tooling` and `unresolved`; it is
+neither candidate exoneration nor retry authority. Gate candidate attribution
+still requires the existing same-command immutable-base control.
+
+The shared `dogfood-outcome/v1` record is `outcome-<identity hash>.json` in
+the existing runtime stage directory. It binds repository, issue, run,
+attempt/stage directory, occurrence identity, exact head when available,
+retained terminal evidence and the descriptive fields. Re-observation reads
+the same record. Pending and PASS produce no failure classification; proved
+hosted non-execution and verifier exit 73 are excluded. Malformed reports
+retain their verbatim source trace and receive a mechanical protocol cause,
+never an invented semantic verdict. Legacy launches keep their saved output
+schema; legacy evidence can receive a new descriptive record without backfilling
+terminals, prompts, configuration fingerprints or posted bodies. Classification
+adds no launches, diagnostic gates, retries, charges or recovery authority;
+the five fault classes, parking and all acceptance checks remain unchanged.
+
 ### Review and corrective authors
 
 ISS-243 makes review locations severity-sensitive after LOC-NOTE-1 stopped
@@ -113,8 +138,9 @@ existing single automatic retry context (ISS-150). Every discard appends to its
 reason a JSON-quoted excerpt of the discarded message, at most
 `MAX_VERDICT_EXCERPT_LENGTH` (600) characters taken half from each end, so the
 retry sees what was lost without an unbounded prompt (ISS-198). Authors share
-this extraction rule (ISS-177), retaining their JSON-only prompts, five-key
-schema and the same `MAX_TERMINAL_SUMMARY_LENGTH` summary cap; the whole
+this extraction rule (ISS-177), retaining their JSON-only prompts, saved five-key
+schema (with ISS-236's additional `defect` for new launches) and the same
+`MAX_TERMINAL_SUMMARY_LENGTH` summary cap; the whole
 author message has no summary cap.
 An oversized author summary reports its measured length and that limit.
 Completed malformed authors use the same single transient retry, retaining

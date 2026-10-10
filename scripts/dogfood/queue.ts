@@ -46,6 +46,8 @@ import { codexAdapter } from "./dispatch-adapter.ts";
 import { correctGate, QueueBlocked, step } from "./flow.ts";
 // @ts-expect-error Node 24 executes this private TypeScript composition directly.
 import { classifyStop } from "./fault-class.ts";
+// @ts-expect-error Node 24 executes this private TypeScript module directly.
+import { retainGateOutcome, retainWorkerOutcome } from "./outcome.ts";
 import type { Adapter, Attempt, Config as SourceConfig, Role } from "./flow.js";
 // @ts-expect-error Node 24 executes this private TypeScript composition directly.
 import { currentMain, rebaseOnto, refreshDelivery } from "./refresh.ts";
@@ -5517,6 +5519,8 @@ export function repositoryQueueAdapter(
       const evidence = await hostedFailureEvidence(
         {
           ...source,
+          run: prior.run,
+          issue: prior.issue,
           controllerRoot: config.controllerRoot,
           repositoryRoot: item.setup.repositoryRoot,
           candidateHead: publication.head,
@@ -5737,8 +5741,10 @@ export function repositoryQueueAdapter(
                   throw error;
                 }
                 const failure = error.evidence;
-                if (!failure || failure.cause !== "diagnostic" || !deliveryAdapter.attributeGate)
+                if (!failure || failure.cause !== "diagnostic" || !deliveryAdapter.attributeGate) {
+                  await retainGateOutcome(current, gate, head, failure);
                   return stopGate(error.reason, error.diagnostics);
+                }
                 const main = current.mainBase ?? current.base;
                 const attribution = await deliveryAdapter.attributeGate(
                   delivery,
@@ -5752,6 +5758,7 @@ export function repositoryQueueAdapter(
                   gate,
                   evidence: failure,
                 });
+                await retainGateOutcome(current, gate, head, failure, attribution);
                 if (attribution.cause !== "candidate")
                   return stopGate(
                     `gate-${attribution.cause === "base" ? "base-failed" : attribution.cause === "host" ? "host-failed" : "attribution-unknown"}:${gate}`,
@@ -5979,6 +5986,13 @@ export function repositoryQueueAdapter(
         )
           terminal = { ...terminal, status: "malformed" };
       }
+      if (attempt !== ABSENT && terminal !== ABSENT)
+        await retainWorkerOutcome(
+          { ...item.source, stateDirectory: directory },
+          role,
+          attempt,
+          terminal,
+        );
       await syncParticipant(item, stage, role, attempt, terminal);
     }
   };
@@ -6510,6 +6524,13 @@ export function repositoryQueueAdapter(
               error.gate,
               error.evidence,
               pinned.mainBase ?? pinned.base,
+            );
+            await retainGateOutcome(
+              delivery,
+              error.gate,
+              delivery.candidateHead,
+              error.evidence,
+              attribution,
             );
             throw new QueueBlocked(
               attribution.cause === "candidate"
@@ -7246,8 +7267,10 @@ export function repositoryQueueAdapter(
       } catch (error) {
         if (error instanceof LocalGateFailure) {
           const failure = error.evidence;
-          if (!failure || failure.cause !== "diagnostic" || !deliveryAdapter.attributeGate)
+          if (!failure || failure.cause !== "diagnostic" || !deliveryAdapter.attributeGate) {
+            await retainGateOutcome(delivery, error.gate, delivery.candidateHead, failure);
             return stopGate(error.reason, error.diagnostics);
+          }
           const currentSource = (await json(delivery.stateDirectory, "config"))
             .config as SourceConfig;
           const main = currentSource.mainBase ?? currentSource.base;
@@ -7261,6 +7284,13 @@ export function repositoryQueueAdapter(
             };
             await record(delivery.stateDirectory, "gate-attribution", attribution);
           }
+          await retainGateOutcome(
+            delivery,
+            error.gate,
+            delivery.candidateHead,
+            failure,
+            attribution,
+          );
           if (attribution.cause !== "candidate")
             return stopGate(
               `gate-${attribution.cause === "base" ? "base-failed" : attribution.cause === "host" ? "host-failed" : "attribution-unknown"}:${error.gate}`,

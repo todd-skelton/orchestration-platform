@@ -12,6 +12,8 @@ import { pauseBeforeSelection } from "./pause.mjs";
 import { GithubCommandFailure } from "./github-command-failure.ts";
 // @ts-expect-error Node 24 executes this private TypeScript module directly.
 import { classifyStop, parksItem } from "./fault-class.ts";
+// @ts-expect-error Node 24 executes this private TypeScript module directly.
+import { retainStopOutcome } from "./outcome.ts";
 
 const {
   continuationSlug,
@@ -967,6 +969,7 @@ export async function stopCycle(
   }
   // A setup stop can have a selected row without having launched a worker yet.
   let routing = cycle.selection.routing;
+  let terminalHead: string | null = null;
   const slugs = config.acceptedReplan
     ? [continuationSlug(config.acceptedReplan)]
     : Array.from(
@@ -976,6 +979,7 @@ export async function stopCycle(
   for (const slug of slugs) {
     const attempt = await optionalRecord(resolve(stateDirectory(config), slug), "attempt");
     if (attempt !== ABSENT && attempt.routing) routing = attempt.routing;
+    if (attempt !== ABSENT && typeof attempt.head === "string") terminalHead = attempt.head;
   }
   let stop = retainedStop ?? 1;
   let intent: any;
@@ -1031,6 +1035,24 @@ export async function stopCycle(
       `malformed-supervision-record:cycle-${cycle.selection.cycle}-stop-${stop}`,
     );
   validateHistory(intent.history, config.nativeLaunchCeiling);
+  await retainStopOutcome(
+    {
+      repository: config.repository,
+      run: config.run,
+      issue: cycle.selection.key,
+      stateDirectory: directory,
+    },
+    intent.marker,
+    intent.reason,
+    {
+      marker: intent.marker,
+      reason: intent.reason,
+      attempts: intent.attempts,
+      digest: queue.queueDigest(intent),
+    },
+    resolve(directory, `cycle-${cycle.selection.cycle}-stop-${stop}.json`),
+    terminalHead,
+  );
   if (config.verificationOnly?.issueKey === cycle.selection.key) {
     const reserved = verification;
     if (reserved !== ABSENT && reserved.stop.marker !== intent.marker) {

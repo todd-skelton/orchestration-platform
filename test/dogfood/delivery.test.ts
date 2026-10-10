@@ -1477,6 +1477,47 @@ it("SYNTHETIC predecessor-log acquisition cannot reuse a foreign failure", async
   expect(f.hosted.requests.filter((args) => args.includes("--log-failed"))).toHaveLength(1);
 });
 
+it("ISS-236 repeated missing hosted logs retain one outcome across census order changes", async () => {
+  const f = await incidentFixture();
+  const checks: CheckEvidence[] = [
+    {
+      name: "linux",
+      bucket: "fail",
+      link: "https://github.com/fixture/repository/actions/runs/1/job/2",
+      actions: { run: 1, attempt: 1, job: 2, workflow: 3 },
+    },
+    {
+      name: "windows",
+      bucket: "fail",
+      link: "https://github.com/fixture/repository/actions/runs/1/job/4",
+      actions: { run: 1, attempt: 1, job: 4, workflow: 3 },
+    },
+  ];
+  f.adapter.failedCheckLog = async () => {
+    throw new Error("logs unavailable");
+  };
+  const outcomes = async () =>
+    (await readdir(f.config.stateDirectory)).filter((name) => name.startsWith("outcome-"));
+  await expect(
+    hostedFailureEvidence(f.config, f.adapter, f.publication, checks, checks),
+  ).rejects.toThrow("logs unavailable");
+  const names = await outcomes();
+  expect(names).toHaveLength(1);
+  const bytes = await readFile(resolve(f.config.stateDirectory, names[0]!), "utf8");
+  expect(JSON.parse(bytes)).toMatchObject({
+    kind: "hosted-gate",
+    defectClass: "environment-tooling",
+    evidenceStatus: "unresolved",
+    head: f.config.candidateHead,
+  });
+  checks.reverse();
+  await expect(
+    hostedFailureEvidence(f.config, f.adapter, f.publication, checks, checks),
+  ).rejects.toThrow("logs unavailable");
+  expect(await outcomes()).toEqual(names);
+  expect(await readFile(resolve(f.config.stateDirectory, names[0]!), "utf8")).toBe(bytes);
+});
+
 it("SYNTHETIC unfinished legacy green receipt requires fresh attribution on resume", async () => {
   const f = await incidentFixture();
   await deliveryStep(f.config, f.adapter, f.policy);
@@ -1929,6 +1970,9 @@ it("ISS-230 SYNTHETIC all-never-executed stops after the shared two retries with
     f.requests.filter((args) => args.includes("--log") || args.includes("--log-failed")),
   ).toEqual([]);
   expect(f.calls).not.toContain("merge");
+  expect(
+    (await readdir(f.config.stateDirectory)).filter((name) => name.startsWith("outcome-")),
+  ).toEqual([]);
   const files = (await readdir(f.config.stateDirectory)).filter((name) =>
     name.startsWith("hosted-non-execution-"),
   );

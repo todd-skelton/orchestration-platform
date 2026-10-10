@@ -2956,6 +2956,22 @@ it.each(["red", "wrong-head", "missing"])(
         checks: [{ actions: { run: 9003, attempt: 1, job: 9004, workflow: 9005 } }],
       });
       expect(failureLog).toContain("Synthetic exact-head candidate assertion failed");
+      const outcomes = (await readdir(refresh.directory)).filter((name) =>
+        name.startsWith("outcome-"),
+      );
+      const records = await Promise.all(
+        outcomes.map(async (name) =>
+          JSON.parse(await readFile(resolve(refresh.directory, name), "utf8")),
+        ),
+      );
+      expect(records.filter((row) => row.kind === "hosted-gate")).toMatchObject([
+        {
+          head: refresh.head,
+          defectClass: "environment-tooling",
+          evidenceStatus: "unresolved",
+          terminal: { checks: [{ actions: { run: 9003, attempt: 1, job: 9004, workflow: 9005 } }] },
+        },
+      ]);
     }
     expect(f.effects).toEqual(["publish"]);
     expect(f.launches).toEqual(["reviewer"]);
@@ -3410,6 +3426,39 @@ it("ISS-231 attributes native candidate failure without authoring or review", as
   expect(f.launches).toEqual([]);
   expect(f.effects).toEqual([]);
   expect(await currentCandidateAttempt(q)).toBe(4);
+  const savedOutcomes = [...(await snapshot(q.stateDirectory)).entries()]
+    .filter(([path]) => /[/\\]outcome-[a-f0-9]+\.json$/.test(path))
+    .map(([, bytes]) => JSON.parse(bytes));
+  expect(savedOutcomes.filter((row) => row.kind === "local-gate")).toMatchObject([
+    {
+      defectClass: "implementation-known-remedy",
+      evidenceStatus: "established",
+      identity: "typecheck",
+    },
+  ]);
+});
+
+it("ISS-236 native exit 73 retains the host stop without failure classification or attempt charge", async () => {
+  const f = await verificationOnlyFixture();
+  await writeFile(
+    f.launcher,
+    `if (process.argv[3] === 'typecheck') process.exit(73); console.log('[VERIFY_STATIC_RUN] check:structure');`,
+  );
+  const q = await f.compose();
+  const before = q.initialHistory;
+  const adapter = f.adapter(q);
+  for (let replay = 0; replay < 2; replay++)
+    await expect(queueStep(q, adapter)).rejects.toMatchObject({
+      reason: "gate-attribution-unknown:typecheck",
+    });
+  expect(await adapter.history()).toEqual(before);
+  expect(await currentCandidateAttempt(q)).toBe(4);
+  expect(f.launches).toEqual([]);
+  expect(f.effects).toEqual([]);
+  const outcomes = [...(await snapshot(q.stateDirectory)).entries()]
+    .filter(([path]) => /[/\\]outcome-[a-f0-9]+\.json$/.test(path))
+    .map(([, bytes]) => JSON.parse(bytes));
+  expect(outcomes.filter((row) => row.kind === "local-gate")).toEqual([]);
 });
 
 it.each(["unavailable", "author", "body"])(
@@ -4454,7 +4503,19 @@ it("ISS-235 resumes the baseline-exhausted attempt-2 candidate with only reviewe
   expect(await real.git(item.source.worktree, ["rev-parse", "HEAD"])).toBe(head);
   for (const [path, bytes] of preserved) expect(await readFile(path, "utf8"), path).toBe(bytes);
   expect(await snapshot(item.setup.stateDirectory)).toEqual(setupBytes);
-  expect(await snapshot(priorDirectory)).toEqual(priorBytes);
+  const observedPrior = await snapshot(priorDirectory);
+  for (const [path, bytes] of priorBytes) expect(observedPrior.get(path), path).toBe(bytes);
+  const additions = [...observedPrior].filter(([path]) => !priorBytes.has(path));
+  expect(additions).toHaveLength(1);
+  expect(additions[0]![0]).toMatch(/[/\\]outcome-[a-f0-9]{64}\.json$/);
+  expect(JSON.parse(additions[0]![1])).toMatchObject({
+    kind: "hosted-gate",
+    run: prior.run,
+    issue: prior.issue,
+    head: prior.head,
+    defectClass: "environment-tooling",
+    evidenceStatus: "unresolved",
+  });
   expect(await readFile(resolve(runState, "cycle-1-stop-1-complete.json"))).toEqual(stopBytes);
   expect(comments).toHaveLength(1);
   console.info(
@@ -5316,6 +5377,23 @@ See docs/architecture/bounded-context-structure.md#rules-the-structure-gate-enfo
         ...(executorRecovery ? [...retainedStages, "refresh-reviewer"] : ["author", "reviewer"]),
       ]);
       expect(effects).not.toContain("publish");
+      const outcomes = [...(await snapshot(q.stateDirectory)).entries()]
+        .filter(([path]) => /[/\\]outcome-[a-f0-9]+\.json$/.test(path))
+        .map(([, bytes]) => JSON.parse(bytes))
+        .filter((row) => row.kind === "local-gate");
+      expect(outcomes.length).toBeGreaterThan(0);
+      // A resumed executor recovery retains the original unresolved outcome
+      // beside the fresh control's cause in its own evidence directory.
+      expect(outcomes).toContainEqual(
+        expect.objectContaining({
+          defectClass: ["spent", "corrected source"].includes(mode)
+            ? "implementation-known-remedy"
+            : "environment-tooling",
+          evidenceStatus: ["spent", "corrected source"].includes(mode)
+            ? "established"
+            : "unresolved",
+        }),
+      );
       await expect(readFile(resolve(correctionRoot, "gate-correction.json"))).rejects.toMatchObject(
         { code: "ENOENT" },
       );
@@ -5345,6 +5423,17 @@ See docs/architecture/bounded-context-structure.md#rules-the-structure-gate-enfo
       await readFile(resolve(correctionRoot, "gate-correction.json"), "utf8"),
     );
     expect(capture.gate).toBe("verify:static:scoped");
+    const outcomes = [...(await snapshot(q.stateDirectory)).entries()]
+      .filter(([path]) => /[/\\]outcome-[a-f0-9]+\.json$/.test(path))
+      .map(([, bytes]) => JSON.parse(bytes))
+      .filter((row) => row.kind === "local-gate");
+    expect(outcomes).toContainEqual(
+      expect.objectContaining({
+        defectClass: "implementation-known-remedy",
+        evidenceStatus: "established",
+        head: capture.failedHead,
+      }),
+    );
     authorRunning = true;
     for (let replay = 0; replay < 2; replay++)
       await expect(run()).resolves.toMatchObject({ status: "observing-author" });

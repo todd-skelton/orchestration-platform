@@ -240,6 +240,17 @@ export async function prerequisiteProof(
       cause = "native flow configuration, dispatch, observation or commit reconciliation";
     if (file && /^(source|repair)\/(author|reviewer|command-worker-\d+)\.jsonl$/.test(file))
       cause = "deterministic worker trace double";
+    if (
+      /^(prerequisite|fixture-110-attempt-(2|4)\/(source|repair))\/outcome-[a-f0-9]{64}\.json$/.test(
+        relative,
+      )
+    ) {
+      const outcome = JSON.parse(bytes);
+      expect(outcome.schemaVersion).toBe("dogfood-outcome/v1");
+      expect(outcome.defectClass).toBe("environment-tooling");
+      expect(outcome.evidenceStatus).toBe("unresolved");
+      cause = "ISS-236 descriptive outcome; no lifecycle mutation or launch charge";
+    }
     expect(cause, `unlisted added path ${relative}`).toBeDefined();
     table.push({ path, fields: fields(bytes), cause });
   }
