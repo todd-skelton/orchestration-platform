@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 // @ts-expect-error Node 24 executes this private TypeScript composition directly.
 import { QueueBlocked, readOptional, step } from "./flow.ts";
 import type { Adapter, Config } from "./flow.js";
+import { retainedRouting } from "./routing.mjs";
 
 export interface Conflict {
   files?: Record<string, string>;
@@ -229,7 +230,11 @@ export async function resolveConflict(
     );
   }
   try {
-    return await step(bounded, { ...native, validateAuthorChanges: validate }, pilot);
+    return await step(
+      await retainedRouting(bounded),
+      { ...native, validateAuthorChanges: validate },
+      pilot,
+    );
   } catch (error) {
     if (
       error instanceof QueueBlocked &&

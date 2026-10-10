@@ -50,6 +50,7 @@ import {
 import { gitSetupAdapter } from "../../scripts/dogfood/setup-adapter.js";
 import { codexAdapter } from "../../scripts/dogfood/dispatch-adapter.js";
 import { SELF_ROUTING } from "../../scripts/dogfood/routing.mjs";
+import registryFixture from "./fixtures/model-registry.json" with { type: "json" };
 import { MAX_TERMINAL_SUMMARY_LENGTH } from "../../scripts/dogfood/terminal-summary.mjs";
 import { sourceFailureFixture, historicalStops, snapshot } from "./fixtures/source-failure.js";
 import { prerequisiteFixture, prerequisiteProof } from "./fixtures/prerequisite.js";
@@ -424,6 +425,7 @@ async function fixture(history: QueueParticipant[] = []) {
   };
   await Promise.all(Object.values(paths).map((path) => mkdir(path, { recursive: true })));
   const source = {
+    modelRegistry: resolve(import.meta.dirname, "fixtures/model-registry.json"),
     owner: "synthetic-controller",
     run: "synthetic-item-run",
     issue: "fixture-338",
@@ -688,6 +690,50 @@ async function enableLadders(current: Awaited<ReturnType<typeof fixture>>) {
   );
 }
 
+it("ISS-249 retains exact family provenance in charged participants", async () => {
+  const f = await fixture();
+  await enableLadders(f);
+  const native: Adapter = {
+    async preflight() {},
+    async git(tree, args) {
+      if (args[0] === "rev-parse")
+        return args[1] === "--show-toplevel" ? tree : tree === f.paths.pilot ? stable : base;
+      return "";
+    },
+    async launch(_role, config) {
+      return {
+        id: "family-author",
+        pid: 123,
+        launchedAt: 1,
+        trace: resolve(config.stateDirectory, "trace"),
+      };
+    },
+    async observe(_role, _config, attempt) {
+      return { id: attempt.id, status: "failed", head: base };
+    },
+    async checks() {
+      throw new Error("no publication");
+    },
+  };
+  const adapter = repositoryQueueAdapter(f.config, f.paths.controller, { native });
+  await expect(adapter.source(f.item)).rejects.toThrow("author-failed");
+  expect(await adapter.history()).toMatchObject([
+    {
+      id: "family-author",
+      role: "author",
+      outcome: "failed",
+      rung: 0,
+      placement: {
+        model: "gpt-6-astra",
+        family: "astra",
+        effort: "high",
+        generation: 7,
+        authorityDigest: "synthetic-registry",
+      },
+    },
+  ]);
+});
+
 it.each([
   "refused-probe",
   "refused-worker",
@@ -716,7 +762,7 @@ it.each([
     async launch(role, config) {
       expect(role).toBe("author");
       const { model, effort, rung } = config.author;
-      placements.push({ model, effort, rung });
+      placements.push({ model: model!, effort, rung });
       expect(
         JSON.parse(await readFile(resolve(config.stateDirectory, "author-intent.json"), "utf8")),
       ).toMatchObject({ rung, placement: { model, effort } });
@@ -766,7 +812,11 @@ it.each([
   const count = failure === "outages" ? 4 : failure === "refused-worker" ? 2 : 1;
   expect(placements).toEqual(
     Array.from({ length: count + 1 }, (_, index) => ({
-      ...SELF_ROUTING.author[Math.min(index, 2)],
+      model:
+        registryFixture.families[
+          SELF_ROUTING.author[Math.min(index, 2)]!.family as keyof typeof registryFixture.families
+        ].current,
+      effort: SELF_ROUTING.author[Math.min(index, 2)]!.effort,
       rung: Math.min(index, 2),
     })),
   );
@@ -1338,6 +1388,7 @@ it.each([false, true])(
       await git(root, ["commit", "-m", "synthetic old executor"]);
     }
     const loop: LoopConfig = {
+      modelRegistry: resolve(import.meta.dirname, "fixtures/model-registry.json"),
       schemaVersion: "dogfood-loop/v1",
       run: "synthetic-setup-upgrade",
       adapter: "chase-sets",
@@ -2030,7 +2081,7 @@ it.each([false, true])("delivers and resumes (unchanged: %s)", async (unchanged)
           rung: stage === "source" ? 0 : 1,
         });
       if (unchanged && role === "reviewer")
-        if (config.reviewer.model === SELF_ROUTING.reviewer[0]!.model) {
+        if (config.reviewer.family === SELF_ROUTING.reviewer[0]!.family) {
           expect(stage).toBe("source");
           throw new QueueBlocked("provider-model-refused");
         } else expect(config.reviewer).toMatchObject({ ...SELF_ROUTING.reviewer[1], rung: 1 });

@@ -916,6 +916,22 @@ rung. Learning notes include it; older records without a rung remain history.
 `docs/model-selection.md` describes the shipped ladders and historical benchmark basis.
 Workers still use the existing Codex launcher and account_pool provider.
 
+ISS-249 replaces shipped selector literals with `{family, effort}` rungs after
+ISS-202, ISS-203 and ISS-218 recorded repeated release-only edits. Literal
+`{model, effort}` remains valid. New role selections resolve one v2 model-registry
+snapshot from the absolute `modelRegistry` config path or
+`DOGFOOD_MODEL_REGISTRY`, exported by the attached launcher. Invalid or unreadable
+registry data stops as non-parking retry `model-registry-unavailable` before
+intent; null or absent current models advance without a charge. Resolved models
+must remain independent across the full author ladder and all recorded authors
+of the attempt. Intents, attempts and participants retain exact model, family,
+generation and authority digest. Retained selections keep their recorded model;
+ordinary ladder advancement selects a new rung. Composition restores each saved
+stage's ladders, rungs and effective role placements from its pinned config,
+without changing the fingerprint check or any saved bytes. Registry swaps affect
+new intents only; efforts, placement policy, retries and launch ceilings stay
+unchanged. This supplies no provider probe, installation or live-start authority.
+
 `planning/roadmap.json` registers milestones and issues. Each issue has a
 draft at `planning/drafts/<key>.md`:
 

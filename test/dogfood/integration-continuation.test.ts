@@ -46,7 +46,7 @@ import {
   type QueueParticipant,
 } from "../../scripts/dogfood/queue.js";
 import type { RepositoryAdapter } from "../../scripts/dogfood/repository-adapter.js";
-import { SELF_ROUTING } from "../../scripts/dogfood/routing.mjs";
+import { SELF_ROUTING } from "./fixtures/literal-routing.js";
 import { gitSetupAdapter } from "../../scripts/dogfood/setup-adapter.js";
 import type { SetupAdapter } from "../../scripts/dogfood/setup.js";
 import {
@@ -160,6 +160,7 @@ async function exhaustedFixture(shape: Shape = "conflict", spentRetry = false, a
   await execute(gitExecutable, ["clone", "--bare", repository, remote]);
   await git(["remote", "add", "origin", remote]);
   const loop: LoopConfig = {
+    modelRegistry: resolve(import.meta.dirname, "fixtures/model-registry.json"),
     schemaVersion: "dogfood-loop/v1",
     run: RUN,
     adapter: "self",
@@ -4157,7 +4158,7 @@ it("composes one integration item from the retained reviewed attempt and claims 
       inheritedWorkerRetry: false,
       correctionPaths: ["docs/loop.md"],
       authorFailures: { count: 1 },
-      author: { ...SELF_ROUTING.author[1], rung: 1 },
+      author: { family: "astra", effort: "xhigh", rung: 1 },
     },
     setup: {
       base: f.reviewed,

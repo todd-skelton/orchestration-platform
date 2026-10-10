@@ -42,6 +42,7 @@ import type { LoopConfig } from "../../scripts/dogfood/queue.js";
 import { reviewedRepairAdapter } from "../../scripts/dogfood/repair-adapter.js";
 import { SELF_ROUTING, type RoutingRow } from "../../scripts/dogfood/routing.mjs";
 import shippedRouting from "../../adapters/chase-sets-routing.json" with { type: "json" };
+import registryFixture from "./fixtures/model-registry.json" with { type: "json" };
 import { MAX_TERMINAL_SUMMARY_LENGTH } from "../../scripts/dogfood/terminal-summary.mjs";
 import {
   MAX_VERDICT_EXCERPT_LENGTH,
@@ -73,6 +74,234 @@ const conflictSeed = {
   },
 };
 const cleanup: string[] = [];
+
+async function familyFixture() {
+  const f = await fixture();
+  const registry = structuredClone(registryFixture);
+  f.config.modelRegistry = resolve(f.config.stateDirectory, "registry.json");
+  for (const role of ["author", "reviewer"] as const)
+    f.config[role] = { ...SELF_ROUTING[role][0]!, ladder: SELF_ROUTING[role], prompt: role };
+  const save = () => writeFile(f.config.modelRegistry!, JSON.stringify(registry));
+  await save();
+  const record = async (name: string) =>
+    JSON.parse(await readFile(resolve(f.config.stateDirectory, `${name}.json`), "utf8"));
+  return { ...f, registry, save, record };
+}
+
+it("ISS-249 resolves the next new intent after a swap without changing config or retained attempts", async () => {
+  const f = await familyFixture();
+  f.config.reviewer.rung = 1;
+  const configured = JSON.stringify(f.config);
+  await f.run();
+  const author = await f.record("author-attempt");
+  f.registry.families.sol.current = "synthetic-sol-successor";
+  f.registry.generation++;
+  f.registry.authorityDigest = "synthetic-successor-authority";
+  await f.save();
+  f.authorDone();
+  await expect(f.run()).resolves.toMatchObject({ status: "observing-reviewer" });
+  const expected = {
+    model: "synthetic-sol-successor",
+    family: "sol",
+    generation: 8,
+    authorityDigest: "synthetic-successor-authority",
+    effort: "high",
+  };
+  expect((await f.record("reviewer-intent")).placement).toEqual(expected);
+  expect((await f.record("reviewer-attempt")).placement).toEqual(expected);
+  expect(await f.record("author-attempt")).toEqual(author);
+  expect(JSON.stringify(f.config)).toBe(configured);
+  await rm(f.config.modelRegistry!);
+  await expect(f.run()).resolves.toMatchObject({ status: "observing-reviewer" });
+  expect(f.launches).toEqual(["author", "reviewer"]);
+});
+
+it("ISS-249 reuses a retained reviewer intent and retry after the registry disappears", async () => {
+  const f = await familyFixture();
+  f.authorDone();
+  const launch = f.adapter.launch;
+  f.adapter.launch = async (role, config, prompt) => {
+    if (role === "reviewer") throw new QueueBlocked("native-launch-ceiling-exhausted");
+    return launch(role, config, prompt);
+  };
+  await expect(f.run()).rejects.toThrow("native-launch-ceiling-exhausted");
+  const intent = await f.record("reviewer-intent");
+  await rm(f.config.modelRegistry!);
+  f.adapter.resumeUnlaunchedReview = async () => true;
+  f.adapter.launch = async (role, config, prompt) => {
+    expect(config[role]).toMatchObject(intent.placement);
+    return launch(role, config, prompt);
+  };
+  await expect(f.run()).resolves.toMatchObject({ status: "observing-reviewer" });
+  expect(await f.record("reviewer-intent")).toEqual(intent);
+  f.statuses.reviewer = "malformed";
+  await expect(f.run()).resolves.toMatchObject({ status: "observing-reviewer" });
+  expect((await f.record("reviewer-attempt")).placement).toEqual(intent.placement);
+  expect(f.launches).toEqual(["author", "reviewer", "reviewer"]);
+});
+
+it.each(["null", "absent", "missing-current"])(
+  "ISS-249 advances %s families without a launch or failure charge",
+  async (kind) => {
+    const f = await familyFixture();
+    const value: any = f.registry;
+    value.families.astra.current = null;
+    if (kind === "absent") delete value.families.astra;
+    if (kind === "missing-current") delete value.families.astra.current;
+    await f.save();
+    let charges = 0;
+    f.adapter.authorRefused = async () => {
+      charges++;
+    };
+    await f.run();
+    expect(await f.record("author-intent")).toMatchObject({
+      rung: 2,
+      placement: { model: "claude-fable-5-1", family: "fable" },
+    });
+    expect(f.launches).toEqual(["author"]);
+    expect(charges).toBe(0);
+  },
+);
+
+it.each(["header", "generation", "digest", "families", "current", "unreadable"])(
+  "ISS-249 rejects malformed registry %s before any intent",
+  async (kind) => {
+    const f = await familyFixture();
+    const value: any = f.registry;
+    if (kind === "header") value.format = "model-registry/v1";
+    if (kind === "generation") value.generation = 1.5;
+    if (kind === "digest") value.authorityDigest = "";
+    if (kind === "families") value.families = [];
+    if (kind === "current") value.families.sol.current = 42;
+    await f.save();
+    if (kind === "unreadable") await rm(f.config.modelRegistry!);
+    await expect(f.run()).rejects.toThrow("model-registry-unavailable");
+    expect(await readdir(f.config.stateDirectory)).not.toContain("author-intent.json");
+    expect(f.launches).toEqual([]);
+  },
+);
+
+it.each(["unused-rung", "recorded-author"])(
+  "ISS-249 refuses reviewer overlap with %s after a swap",
+  async (kind) => {
+    const f = await familyFixture();
+    f.config.reviewer.rung = 1;
+    await f.run();
+    f.authorDone();
+    if (kind === "unused-rung") f.registry.families.sol.current = f.registry.families.fable.current;
+    else {
+      f.registry.families.sol.current = f.registry.families.astra.current;
+      f.registry.families.astra.current = "synthetic-new-astra";
+    }
+    await f.save();
+    await expect(f.run()).rejects.toThrow("routing-reviewer-not-independent");
+    expect(await readdir(f.config.stateDirectory)).not.toContain("reviewer-intent.json");
+    expect(f.launches).toEqual(["author"]);
+  },
+);
+
+it("ISS-249 excludes all recorded authors across this attempt's stages", async () => {
+  const f = await familyFixture();
+  f.authorDone();
+  f.adapter.authorModels = async () => ["claude-opus-5-5"];
+  await expect(f.run()).rejects.toThrow("routing-reviewer-not-independent");
+  expect(f.launches).toEqual(["author"]);
+});
+
+it("ISS-249 rejects aliased reviewer families", async () => {
+  const f = await familyFixture();
+  f.registry.families.sol.current = f.registry.families.opus.current;
+  await f.save();
+  await expect(f.run()).rejects.toThrow("invalid-routing-fallback");
+  expect(f.launches).toEqual([]);
+});
+
+it("ISS-249 rejects aliased author families even with different efforts", async () => {
+  const f = await familyFixture();
+  f.registry.families.fable.current = f.registry.families.astra.current;
+  await f.save();
+  await expect(f.run()).rejects.toThrow("invalid-routing-row");
+  expect(f.launches).toEqual([]);
+});
+
+it("ISS-249 mixes literal and family rungs without stale family provenance", async () => {
+  const f = await familyFixture();
+  f.config.author.ladder = [
+    { family: "astra", effort: "high" },
+    { model: "literal-tail", effort: "medium" },
+  ];
+  f.adapter.authorRung = async () => 1;
+  await f.run();
+  expect((await f.record("author-attempt")).placement).toEqual({
+    model: "literal-tail",
+    effort: "medium",
+  });
+});
+
+it("ISS-249 resumes literal saved configuration without any registry", async () => {
+  const f = await fixture();
+  f.config.modelRegistry = resolve(f.config.stateDirectory, "absent-registry.json");
+  f.config.author.ladder = [{ model: "literal-author", effort: "high" }];
+  f.config.reviewer.ladder = [{ model: "literal-reviewer", effort: "high" }];
+  await f.run();
+  f.authorDone();
+  await expect(f.run()).resolves.toMatchObject({ status: "observing-reviewer" });
+  expect(f.launches).toEqual(["author", "reviewer"]);
+});
+
+it("ISS-249 resolves a fresh self refresh from families while retaining its literal source", async () => {
+  const f = await fixture();
+  f.config.routing = { row: "self" };
+  for (const role of ["author", "reviewer"] as const) {
+    const ladder = SELF_ROUTING[role].map((p) => ({
+      model: registryFixture.families[p.family as keyof typeof registryFixture.families].current,
+      effort: p.effort,
+    }));
+    f.config[role] = { ...ladder[0]!, ladder, rung: 0, prompt: role };
+  }
+  f.authorDone();
+  f.reviewerDone();
+  await expect(f.run()).resolves.toMatchObject({ status: "awaiting-publication" });
+  const inherited = f.config.stateDirectory;
+  const old = await readFile(resolve(inherited, "config.json"), "utf8");
+  const directory = resolve(inherited, "fresh-refresh");
+  await mkdir(directory);
+  const launch = f.adapter.launch;
+  f.adapter.launch = async (role, config, prompt) => {
+    expect(config.reviewer).toMatchObject({
+      model: "gpt-6.1-sol",
+      family: "sol",
+      generation: 7,
+      rung: 1,
+    });
+    return launch(role, config, prompt);
+  };
+  await expect(
+    reviewRefresh(
+      { ...f.config, stateDirectory: directory, reviewer: { ...f.config.reviewer, rung: 1 } },
+      f.adapter,
+      f.pilot,
+      inherited,
+    ),
+  ).resolves.toMatchObject({ status: "observing-reviewer" });
+  expect(await readFile(resolve(inherited, "config.json"), "utf8")).toBe(old);
+});
+
+it("ISS-249 uses the environment registry only when no explicit path is configured", async () => {
+  const old = process.env.DOGFOOD_MODEL_REGISTRY;
+  try {
+    const explicit = await familyFixture();
+    process.env.DOGFOOD_MODEL_REGISTRY = resolve(explicit.config.stateDirectory, "absent.json");
+    await expect(explicit.run()).resolves.toMatchObject({ status: "observing-author" });
+    const implicit = await familyFixture();
+    process.env.DOGFOOD_MODEL_REGISTRY = implicit.config.modelRegistry;
+    delete implicit.config.modelRegistry;
+    await expect(implicit.run()).resolves.toMatchObject({ status: "observing-author" });
+  } finally {
+    if (old === undefined) delete process.env.DOGFOOD_MODEL_REGISTRY;
+    else process.env.DOGFOOD_MODEL_REGISTRY = old;
+  }
+});
 
 it.each(["author", "reviewer"] as const)(
   "ISS-236 persists one %s FAIL cause across legacy/new replay without another launch",
@@ -767,6 +996,7 @@ async function fixture() {
     string,
   ];
   const config: Config = {
+    modelRegistry: resolve(import.meta.dirname, "fixtures/model-registry.json"),
     owner: "controller",
     run: "one-trial",
     issue: "ISS-071",
@@ -1036,7 +1266,7 @@ it("replays literal predecessor placements and rungs but refuses changed ladder 
     placement.model = role === "author" ? "gpt-6-luna" : "claude-opus-5-5";
     await expect(f.run()).rejects.toThrow("conflicting-run-configuration");
     expect(await snapshot()).toEqual(retained);
-    placement.model = predecessor;
+    placement.model = predecessor!;
   }
   expect(f.observations).toHaveLength(observations);
   expect(f.launches).toEqual(["author", "reviewer"]);
@@ -1090,7 +1320,18 @@ it("retains a literal pre-ISS-203 ladder and refuses the new placements before l
 const reviewerPolicies: RoutingRow[] = [
   SELF_ROUTING,
   ...(shippedRouting as RoutingRow[]).filter((row) => row.row === 2 || row.row === 3),
-];
+].map((row) => ({
+  ...row,
+  ...Object.fromEntries(
+    ["author", "reviewer"].map((role) => [
+      role,
+      row[role as "author" | "reviewer"].map((p) => ({
+        model: registryFixture.families[p.family as keyof typeof registryFixture.families].current,
+        effort: p.effort,
+      })),
+    ]),
+  ),
+}));
 
 it.each([
   {
@@ -1163,7 +1404,7 @@ it.each(
     const observe = f.adapter.observe;
     const models: string[] = [];
     f.adapter.launch = async (role, config, prompt) => {
-      models.push(config[role].model);
+      models.push(config[role].model!);
       if (
         role === "reviewer" &&
         config.reviewer.model === routing.reviewer[0]!.model &&
@@ -1215,7 +1456,7 @@ it.each(
     const observe = f.adapter.observe;
     const models: string[] = [];
     f.adapter.launch = async (role, config, prompt) => {
-      if (role === "reviewer") models.push(config.reviewer.model);
+      if (role === "reviewer") models.push(config.reviewer.model!);
       return launch(role, config, prompt);
     };
     f.adapter.observe = async (role, config, attempt) => {
@@ -1263,7 +1504,7 @@ it("walks every reviewer rung only on refusal and records the final rung before 
   const observed: string[] = [];
   f.adapter.launch = async (role, config, prompt) => {
     if (role === "reviewer") {
-      observed.push(config.reviewer.model);
+      observed.push(config.reviewer.model!);
       expect(
         JSON.parse(await readFile(resolve(config.stateDirectory, "reviewer-intent.json"), "utf8")),
       ).toMatchObject({ rung: observed.length - 1 });
@@ -1300,7 +1541,7 @@ it.each(reviewerPolicies)(
       const models: string[] = [];
       f.adapter.launch = async (role, config, prompt) => {
         if (role === "reviewer") {
-          models.push(config.reviewer.model);
+          models.push(config.reviewer.model!);
           if (reason !== "worker-model-refused") throw new QueueBlocked(reason);
         }
         return launch(role, config, prompt);

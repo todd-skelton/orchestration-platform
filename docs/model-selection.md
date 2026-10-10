@@ -1,43 +1,75 @@
 # Model selection
 
-Native selectors in the shipped ladders. Every worker launches through the
-executor's Codex CLI against the `account_pool` provider; no second launcher
-exists. Selectors are case-sensitive. This table describes configured
-placements, not provider availability or capability evidence.
+Native ladders name families, resolved through the shared model registry at
+launch selection (ISS-249, after ISS-202, ISS-203 and ISS-218 recorded the cost
+of literal selector replacement). Every worker still launches through the
+executor's Codex CLI against `account_pool`. The registry supplies model
+identity only: efforts, roles and rung order remain platform-owned. No
+incumbent routing-policy rows, account selection or `admittedEfforts` are
+imported.
 
-| Selector           | Short label | Efforts in native ladders | Native ladder roles |
-| ------------------ | ----------- | ------------------------- | ------------------- |
-| `gpt-6-astra`       | Astra       | medium, high, xhigh       | author, reviewer    |
-| `gpt-6.1-sol`       | Sol         | medium, high              | author, reviewer    |
-| `gpt-6-luna`        | Luna        | high, xhigh               | author              |
-| `claude-opus-5-5`   | Opus        | medium, high              | author, reviewer    |
-| `claude-sonnet-5-5` | Sonnet      | medium, high              | author, reviewer    |
-| `claude-fable-5-1`  | Fable       | high                      | author              |
+| Family   | Efforts in native ladders | Native ladder roles |
+| -------- | ------------------------- | ------------------- |
+| `astra`  | medium, high, xhigh       | author, reviewer    |
+| `sol`    | medium, high              | author, reviewer    |
+| `luna`   | high, xhigh               | author              |
+| `opus`   | medium, high              | author, reviewer    |
+| `sonnet` | medium, high              | author, reviewer    |
+| `fable`  | high                      | author              |
 
-Placement comes from the routing row (ISS-149, ISS-158, `docs/loop.md`).
-Each row has ordered author and reviewer ladders; reviewer models are disjoint
-from every author model. Self uses Astra/high, Astra/xhigh, Fable/high author
-with Opus/high then Sol/high review. Chase Sets planning markers select the
-ladders in `adapters/chase-sets-routing.json`. Current placement prose uses
-the short labels above: Luna means Luna 6, Sol means Sol 6.1, Sonnet means
-Sonnet 5.5, and Opus means Opus 5.5.
-`claude-fable-5` is retired. Terra has no native route and is removed from
-the current dispatch roster.
+Self uses Astra/high, Astra/xhigh, Fable/high author with Opus/high then Sol/high
+review. Chase Sets planning markers select the unchanged placements in
+`adapters/chase-sets-routing.json`. Fresh host configs copy those rows into
+`routingRows`, for example:
 
-ISS-202 implemented Todd's [successor replacement ruling](https://github.com/chase-sets/chase-sets/issues/4388#issuecomment-5786554032)
-as literal selector replacements: `gpt-5.6-luna` to `gpt-6-luna`,
-`gpt-5.6-sol` to `gpt-6-sol`, and `claude-opus-5` to `claude-opus-5-5`.
-That replacement preserved roles, efforts and ladder order; ISS-203's placement
-changes are below. Native Opus roles grant no incumbent protected authorship.
-Generic operator model strings remain open configuration; there is no global
-blacklist or automatic static-config rewrite.
+```json
+{
+  "modelRegistry": "/mnt/d/Users/ToddS/AgentPools/state/model-registry.json",
+  "routingRows": [
+    {
+      "row": 7,
+      "review": 11,
+      "author": [
+        { "family": "astra", "effort": "high" },
+        { "family": "astra", "effort": "xhigh" },
+        { "family": "fable", "effort": "high" }
+      ],
+      "reviewer": [
+        { "family": "opus", "effort": "high" },
+        { "family": "sol", "effort": "high" }
+      ]
+    }
+  ]
+}
+```
 
-ISS-218 applies Todd's September 28 [Sonnet replacement](https://github.com/chase-sets/chase-sets/issues/8403)
-and September 29 [Sol replacement](https://github.com/chase-sets/chase-sets/issues/8403#issuecomment-5900473741):
-`gpt-6-sol` becomes `gpt-6.1-sol` and `claude-sonnet-5` becomes
-`claude-sonnet-5-5`. These literal substitutions preserve every ISS-203 row,
-role, effort and rung, including native Sonnet reviewer tails. Predecessors
-remain historical identities, with no new selections from shipped ladders.
+`modelRegistry` is an optional absolute path. Otherwise the executor uses
+`DOGFOOD_MODEL_REGISTRY`; the attached launcher exports the path shown above
+unless the host already set that environment variable. Saved self configs
+need no edit to use families for new stages. Literal `{model, effort}` rungs
+remain supported and need no registry when the entire row is literal.
+
+One snapshot is read per new role selection, before writing its intent.
+The projection requires `format: "model-registry/v2"`, safe-integer
+`generation`, nonempty `authorityDigest`, and a `families` object.
+Used families have a nonempty string `current`, or null/absent current.
+Malformed or unreadable data stops as non-parking retry
+`model-registry-unavailable`. A null or absent current advances the ladder
+without a launch charge; exhaustion retains `provider-model-refused`.
+Reviewer-author disjointness covers every author rung in that snapshot
+and every recorded author model for the attempt. Aliased families count as
+duplicate models.
+
+Intents, attempts and participant placements retain the exact resolved model,
+effort, family, generation and authority digest. Registry swaps affect later
+new intents only. Retained intents and retries keep their recorded identities
+without another registry read; ordinary ladder advancement selects a new rung
+and writes a new intent. Existing stage composition takes both roles'
+ladders, rungs, effective models and efforts from its pinned `config.json`.
+The fingerprint still binds the configured ladder and all other step inputs;
+records are never rewritten or migrated. A first-use host capture remains a
+separately authorized observation, not a provider probe or live start granted
+by this implementation.
 
 After every author failure, try the next configured rung: normally more effort
 before changing model, with the other vendor last in every author ladder.
@@ -51,19 +83,19 @@ the selected rung. Attempt ceilings and retry budgets are unchanged.
 
 ## Shipped placements
 
-ISS-158 supplies failure-count advancement, ISS-202/218 the successor selectors,
-and ISS-203 this complete placement matrix. Entries are in launch order:
+ISS-158 supplies failure-count advancement, ISS-203 this placement matrix,
+and ISS-249 family resolution. Entries are in launch order:
 
-| Row | Author ladder | Review 11 ladder | Review 12 ladder |
-| --- | --- | --- | --- |
-| 2 | Luna high, Luna xhigh, Sol medium, Sonnet medium | Opus high, Astra high | Opus medium, Astra medium |
-| 3 | Opus medium, Opus high, Astra medium | Sol high, Sonnet high | Sol medium, Sonnet medium |
-| 4 | Astra medium, Astra high, Fable high | Opus high, Sol high | Opus medium, Sol medium |
-| 7 | Astra high, Astra xhigh, Fable high | Opus high, Sol high | Opus medium, Sol medium |
-| 10 | Sol high, Astra high, Fable high | Opus high, Sonnet high | Opus medium, Sonnet medium |
-| 14 | Opus medium, Opus high, Astra high | Sol high, Sonnet high | Sol medium, Sonnet medium |
-| 15 | Opus high, Astra high | Sol high, Sonnet high | Sol medium, Sonnet medium |
-| self | Astra high, Astra xhigh, Fable high | Opus high, Sol high | — |
+| Row  | Author ladder                                    | Review 11 ladder       | Review 12 ladder           |
+| ---- | ------------------------------------------------ | ---------------------- | -------------------------- |
+| 2    | Luna high, Luna xhigh, Sol medium, Sonnet medium | Opus high, Astra high  | Opus medium, Astra medium  |
+| 3    | Opus medium, Opus high, Astra medium             | Sol high, Sonnet high  | Sol medium, Sonnet medium  |
+| 4    | Astra medium, Astra high, Fable high             | Opus high, Sol high    | Opus medium, Sol medium    |
+| 7    | Astra high, Astra xhigh, Fable high              | Opus high, Sol high    | Opus medium, Sol medium    |
+| 10   | Sol high, Astra high, Fable high                 | Opus high, Sonnet high | Opus medium, Sonnet medium |
+| 14   | Opus medium, Opus high, Astra high               | Sol high, Sonnet high  | Sol medium, Sonnet medium  |
+| 15   | Opus high, Astra high                            | Sol high, Sonnet high  | Sol medium, Sonnet medium  |
+| self | Astra high, Astra xhigh, Fable high              | Opus high, Sol high    | —                          |
 
 Review 11 uses high effort for intended recall; review 12 uses medium for
 intended precision. Neither intent is locally certified.
@@ -151,14 +183,31 @@ publication, main-bound mirror and ordinary native readiness remain required.
 
 Preserve old runs/configs and participant strings, efforts, routing indexes,
 attempts, failure counts, retries, ceilings and launch charges. Same-config
-replay retains its saved placement and rung. Changed ladders change the full
-configuration fingerprint and retain `conflicting-run-configuration` before
-launch: no aliases, backfill, waiver, automatic resume, version-changing
+replay retains its saved placement and rung. New stage ladders bind the full
+configuration fingerprint; changes to other pinned inputs retain
+`conflicting-run-configuration` before launch: no backfill, waiver, automatic resume, version-changing
 dead-worker retry, budget reset, exhausted-lineage re-entry or #457 renewal.
 Observing a pinned worker grants no retired-worker relaunch permission.
 Preserved-run continuation needs separate host disposition. Native authoring,
 independent review and all ordinary local,
 after-mirror and hosted gates remain required.
+
+## Historical selector replacements
+
+ISS-202 implemented Todd's [successor replacement ruling](https://github.com/chase-sets/chase-sets/issues/4388#issuecomment-5786554032)
+as literal selector replacements: `gpt-5.6-luna` to `gpt-6-luna`,
+`gpt-5.6-sol` to `gpt-6-sol`, and `claude-opus-5` to `claude-opus-5-5`.
+That replacement preserved roles, efforts and ladder order; ISS-203's placement
+changes are described above. Native Opus roles grant no incumbent protected authorship.
+Generic operator model strings remain open configuration; there is no global
+blacklist or automatic static-config rewrite.
+
+ISS-218 applies Todd's September 28 [Sonnet replacement](https://github.com/chase-sets/chase-sets/issues/8403)
+and September 29 [Sol replacement](https://github.com/chase-sets/chase-sets/issues/8403#issuecomment-5900473741):
+`gpt-6-sol` becomes `gpt-6.1-sol` and `claude-sonnet-5` becomes
+`claude-sonnet-5-5`. These literal substitutions preserve every ISS-203 row,
+role, effort and rung, including native Sonnet reviewer tails. Predecessors
+remain historical identities, with no new selections from shipped ladders.
 
 ## Historical placement basis (2026-09-15)
 
@@ -172,15 +221,15 @@ and Coding Agent Index, vendor launch tables, Terminal-Bench 4.0, GDPval-AA,
 OSWorld 2.0) rather than the earlier per-model usage rules, which are
 withdrawn. Cheapest configuration that clears the row's bar wins.
 
-| Row | Author         | Basis                                                                                       |
-| --- | -------------- | ------------------------------------------------------------------------------------------- |
-| 2   | Luna high      | Luna and Sol dominate Terra on the intelligence/cost frontier; Luna runs Codex auto-review  |
-| 3   | Sonnet medium  | Sonnet's value band is low/medium; xhigh costs more than Opus for the same quality         |
-| 4   | Astra medium   | Terminal-Bench 4.0 56% vs Sol 37%; every Astra effort sits on the cost frontier             |
-| 7   | Astra high     | Tied with Fable 5.1 on both AA indices at roughly 40-60% of the cost per task              |
-| 10  | Sol high       | Cheapest flagship that leads DeepSWE (72% vs Astra 68%)                                     |
-| 14  | Opus medium    | GDPval-AA leader (1861) at half Fable's price; Astra scores ~45 Elo below Sol on GDPval    |
-| 15  | Opus high      | Within 0.5% of Fable on CursorBench at half cost; front-end is Astra's weakest coding area |
+| Row | Author        | Basis                                                                                      |
+| --- | ------------- | ------------------------------------------------------------------------------------------ |
+| 2   | Luna high     | Luna and Sol dominate Terra on the intelligence/cost frontier; Luna runs Codex auto-review |
+| 3   | Sonnet medium | Sonnet's value band is low/medium; xhigh costs more than Opus for the same quality         |
+| 4   | Astra medium  | Terminal-Bench 4.0 56% vs Sol 37%; every Astra effort sits on the cost frontier            |
+| 7   | Astra high    | Tied with Fable 5.1 on both AA indices at roughly 40-60% of the cost per task              |
+| 10  | Sol high      | Cheapest flagship that leads DeepSWE (72% vs Astra 68%)                                    |
+| 14  | Opus medium   | GDPval-AA leader (1861) at half Fable's price; Astra scores ~45 Elo below Sol on GDPval    |
+| 15  | Opus high     | Within 0.5% of Fable on CursorBench at half cost; front-end is Astra's weakest coding area |
 
 Rung 1 retains PR #491's placements. ISS-158 supplies these escalation ladders.
 Row 10 changes model at rung 2 because Sol xhigh costs three to four times

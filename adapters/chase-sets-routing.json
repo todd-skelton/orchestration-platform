@@ -4,29 +4,29 @@
     "review": 11,
     "author": [
       {
-        "model": "gpt-6-luna",
+        "family": "luna",
         "effort": "high"
       },
       {
-        "model": "gpt-6-luna",
+        "family": "luna",
         "effort": "xhigh"
       },
       {
-        "model": "gpt-6.1-sol",
+        "family": "sol",
         "effort": "medium"
       },
       {
-        "model": "claude-sonnet-5-5",
+        "family": "sonnet",
         "effort": "medium"
       }
     ],
     "reviewer": [
       {
-        "model": "claude-opus-5-5",
+        "family": "opus",
         "effort": "high"
       },
       {
-        "model": "gpt-6-astra",
+        "family": "astra",
         "effort": "high"
       }
     ]
@@ -36,29 +36,29 @@
     "review": 12,
     "author": [
       {
-        "model": "gpt-6-luna",
+        "family": "luna",
         "effort": "high"
       },
       {
-        "model": "gpt-6-luna",
+        "family": "luna",
         "effort": "xhigh"
       },
       {
-        "model": "gpt-6.1-sol",
+        "family": "sol",
         "effort": "medium"
       },
       {
-        "model": "claude-sonnet-5-5",
+        "family": "sonnet",
         "effort": "medium"
       }
     ],
     "reviewer": [
       {
-        "model": "claude-opus-5-5",
+        "family": "opus",
         "effort": "medium"
       },
       {
-        "model": "gpt-6-astra",
+        "family": "astra",
         "effort": "medium"
       }
     ]
@@ -68,25 +68,25 @@
     "review": 11,
     "author": [
       {
-        "model": "claude-opus-5-5",
+        "family": "opus",
         "effort": "medium"
       },
       {
-        "model": "claude-opus-5-5",
+        "family": "opus",
         "effort": "high"
       },
       {
-        "model": "gpt-6-astra",
+        "family": "astra",
         "effort": "medium"
       }
     ],
     "reviewer": [
       {
-        "model": "gpt-6.1-sol",
+        "family": "sol",
         "effort": "high"
       },
       {
-        "model": "claude-sonnet-5-5",
+        "family": "sonnet",
         "effort": "high"
       }
     ]
@@ -96,25 +96,25 @@
     "review": 12,
     "author": [
       {
-        "model": "claude-opus-5-5",
+        "family": "opus",
         "effort": "medium"
       },
       {
-        "model": "claude-opus-5-5",
+        "family": "opus",
         "effort": "high"
       },
       {
-        "model": "gpt-6-astra",
+        "family": "astra",
         "effort": "medium"
       }
     ],
     "reviewer": [
       {
-        "model": "gpt-6.1-sol",
+        "family": "sol",
         "effort": "medium"
       },
       {
-        "model": "claude-sonnet-5-5",
+        "family": "sonnet",
         "effort": "medium"
       }
     ]
@@ -124,25 +124,25 @@
     "review": 11,
     "author": [
       {
-        "model": "gpt-6-astra",
+        "family": "astra",
         "effort": "medium"
       },
       {
-        "model": "gpt-6-astra",
+        "family": "astra",
         "effort": "high"
       },
       {
-        "model": "claude-fable-5-1",
+        "family": "fable",
         "effort": "high"
       }
     ],
     "reviewer": [
       {
-        "model": "claude-opus-5-5",
+        "family": "opus",
         "effort": "high"
       },
       {
-        "model": "gpt-6.1-sol",
+        "family": "sol",
         "effort": "high"
       }
     ]
@@ -152,25 +152,25 @@
     "review": 12,
     "author": [
       {
-        "model": "gpt-6-astra",
+        "family": "astra",
         "effort": "medium"
       },
       {
-        "model": "gpt-6-astra",
+        "family": "astra",
         "effort": "high"
       },
       {
-        "model": "claude-fable-5-1",
+        "family": "fable",
         "effort": "high"
       }
     ],
     "reviewer": [
       {
-        "model": "claude-opus-5-5",
+        "family": "opus",
         "effort": "medium"
       },
       {
-        "model": "gpt-6.1-sol",
+        "family": "sol",
         "effort": "medium"
       }
     ]
@@ -180,25 +180,25 @@
     "review": 11,
     "author": [
       {
-        "model": "gpt-6-astra",
+        "family": "astra",
         "effort": "high"
       },
       {
-        "model": "gpt-6-astra",
+        "family": "astra",
         "effort": "xhigh"
       },
       {
-        "model": "claude-fable-5-1",
+        "family": "fable",
         "effort": "high"
       }
     ],
     "reviewer": [
       {
-        "model": "claude-opus-5-5",
+        "family": "opus",
         "effort": "high"
       },
       {
-        "model": "gpt-6.1-sol",
+        "family": "sol",
         "effort": "high"
       }
     ]
@@ -208,25 +208,25 @@
     "review": 12,
     "author": [
       {
-        "model": "gpt-6-astra",
+        "family": "astra",
         "effort": "high"
       },
       {
-        "model": "gpt-6-astra",
+        "family": "astra",
         "effort": "xhigh"
       },
       {
-        "model": "claude-fable-5-1",
+        "family": "fable",
         "effort": "high"
       }
     ],
     "reviewer": [
       {
-        "model": "claude-opus-5-5",
+        "family": "opus",
         "effort": "medium"
       },
       {
-        "model": "gpt-6.1-sol",
+        "family": "sol",
         "effort": "medium"
       }
     ]
@@ -236,25 +236,25 @@
     "review": 11,
     "author": [
       {
-        "model": "gpt-6.1-sol",
+        "family": "sol",
         "effort": "high"
       },
       {
-        "model": "gpt-6-astra",
+        "family": "astra",
         "effort": "high"
       },
       {
-        "model": "claude-fable-5-1",
+        "family": "fable",
         "effort": "high"
       }
     ],
     "reviewer": [
       {
-        "model": "claude-opus-5-5",
+        "family": "opus",
         "effort": "high"
       },
       {
-        "model": "claude-sonnet-5-5",
+        "family": "sonnet",
         "effort": "high"
       }
     ]
@@ -264,25 +264,25 @@
     "review": 12,
     "author": [
       {
-        "model": "gpt-6.1-sol",
+        "family": "sol",
         "effort": "high"
       },
       {
-        "model": "gpt-6-astra",
+        "family": "astra",
         "effort": "high"
       },
       {
-        "model": "claude-fable-5-1",
+        "family": "fable",
         "effort": "high"
       }
     ],
     "reviewer": [
       {
-        "model": "claude-opus-5-5",
+        "family": "opus",
         "effort": "medium"
       },
       {
-        "model": "claude-sonnet-5-5",
+        "family": "sonnet",
         "effort": "medium"
       }
     ]
@@ -292,25 +292,25 @@
     "review": 11,
     "author": [
       {
-        "model": "claude-opus-5-5",
+        "family": "opus",
         "effort": "medium"
       },
       {
-        "model": "claude-opus-5-5",
+        "family": "opus",
         "effort": "high"
       },
       {
-        "model": "gpt-6-astra",
+        "family": "astra",
         "effort": "high"
       }
     ],
     "reviewer": [
       {
-        "model": "gpt-6.1-sol",
+        "family": "sol",
         "effort": "high"
       },
       {
-        "model": "claude-sonnet-5-5",
+        "family": "sonnet",
         "effort": "high"
       }
     ]
@@ -320,25 +320,25 @@
     "review": 12,
     "author": [
       {
-        "model": "claude-opus-5-5",
+        "family": "opus",
         "effort": "medium"
       },
       {
-        "model": "claude-opus-5-5",
+        "family": "opus",
         "effort": "high"
       },
       {
-        "model": "gpt-6-astra",
+        "family": "astra",
         "effort": "high"
       }
     ],
     "reviewer": [
       {
-        "model": "gpt-6.1-sol",
+        "family": "sol",
         "effort": "medium"
       },
       {
-        "model": "claude-sonnet-5-5",
+        "family": "sonnet",
         "effort": "medium"
       }
     ]
@@ -348,21 +348,21 @@
     "review": 11,
     "author": [
       {
-        "model": "claude-opus-5-5",
+        "family": "opus",
         "effort": "high"
       },
       {
-        "model": "gpt-6-astra",
+        "family": "astra",
         "effort": "high"
       }
     ],
     "reviewer": [
       {
-        "model": "gpt-6.1-sol",
+        "family": "sol",
         "effort": "high"
       },
       {
-        "model": "claude-sonnet-5-5",
+        "family": "sonnet",
         "effort": "high"
       }
     ]
@@ -372,21 +372,21 @@
     "review": 12,
     "author": [
       {
-        "model": "claude-opus-5-5",
+        "family": "opus",
         "effort": "high"
       },
       {
-        "model": "gpt-6-astra",
+        "family": "astra",
         "effort": "high"
       }
     ],
     "reviewer": [
       {
-        "model": "gpt-6.1-sol",
+        "family": "sol",
         "effort": "medium"
       },
       {
-        "model": "claude-sonnet-5-5",
+        "family": "sonnet",
         "effort": "medium"
       }
     ]

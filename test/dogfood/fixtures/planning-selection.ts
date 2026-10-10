@@ -93,8 +93,9 @@ export async function planningSelectionFixture() {
     gitExecutable,
     nativeLaunchCeiling: 8,
     attemptCeiling: 4,
-    author: SELF_ROUTING.author[0]!,
-    reviewer: SELF_ROUTING.reviewer[0]!,
+    author: { model: "gpt-6-astra", effort: "high" },
+    reviewer: { model: "claude-opus-5-5", effort: "high" },
+    modelRegistry: resolve(import.meta.dirname, "model-registry.json"),
     routingRows: [SELF_ROUTING],
   };
   const policy = await loadRepositoryAdapter("self", resolve(import.meta.dirname, "../../.."));

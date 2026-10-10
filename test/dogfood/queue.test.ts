@@ -5620,6 +5620,7 @@ async function loopFixture(
   ).stdout.trim();
   const loop = {
     schemaVersion: "dogfood-loop/v1" as const,
+    modelRegistry: resolve(import.meta.dirname, "fixtures/model-registry.json"),
     run: "iss-104-run",
     adapter: "self",
     repository: "fixture/repository",
@@ -8154,6 +8155,74 @@ it("admits repository-wide source scope without a pre-authored repair path list"
   expect(() => validateQueueConfig(current.config)).not.toThrow();
 });
 
+it("ISS-249 composes a retained literal self stage with its exact fingerprint and no registry", async () => {
+  const f = await loopFixture();
+  f.loop.modelRegistry = resolve(f.stateRoot, "missing-registry.json");
+  const policy: RepositoryAdapter = {
+    ...repositoryPolicy,
+    issueContext: async (input) => ({
+      ...(await repositoryPolicy.issueContext(input)),
+      routing: { row: "self" },
+    }),
+  };
+  const first = await queueConfigFromLoop(f.loop, f.repository, f.selected, policy);
+  const item = first.items[0]!;
+  const source = item.source;
+  const registry = JSON.parse(
+    await readFile(resolve(import.meta.dirname, "fixtures/model-registry.json"), "utf8"),
+  );
+  for (const role of ["author", "reviewer"] as const) {
+    const ladder = SELF_ROUTING[role].map((p) => ({
+      model: registry.families[p.family!].current as string,
+      effort: p.effort,
+    }));
+    // Nonzero rungs catch restoration of ladders without effective model/effort.
+    source[role] = { ...ladder[1]!, ladder, rung: 1, prompt: source[role].prompt };
+  }
+  const fingerprint = createHash("sha256")
+    .update(
+      JSON.stringify({ config: source, prompts: [source.author.prompt, source.reviewer.prompt] }),
+    )
+    .digest("hex");
+  await mkdir(source.stateDirectory, { recursive: true });
+  const bytes = JSON.stringify({ config: source, fingerprint, host: process.platform });
+  await writeFile(resolve(source.stateDirectory, "config.json"), bytes);
+  const rebuilt = (await queueConfigFromLoop(f.loop, f.repository, f.selected, policy)).items[0]!
+    .source;
+  expect(JSON.stringify(rebuilt)).toBe(JSON.stringify(source));
+  for (const dir of [source.worktree, source.reviewWorktree, item.setup.pilotWorktree])
+    await mkdir(dir, { recursive: true });
+  const native: Adapter = {
+    async preflight() {
+      throw new Error("retained config must not preflight again");
+    },
+    async git(cwd, args) {
+      if (args[1] === "--show-toplevel") return cwd;
+      if (args[0] === "status") return "";
+      return cwd === item.setup.pilotWorktree ? source.pilotRevision : source.base;
+    },
+    async launch(role, config) {
+      expect(config[role]).toEqual(source[role]);
+      return {
+        id: "retained-literal-author",
+        pid: 123,
+        trace: resolve(source.stateDirectory, "trace.jsonl"),
+        launchedAt: 1,
+      };
+    },
+    async observe(_role, _config, attempt) {
+      return { id: attempt.id, status: "running" };
+    },
+    async checks() {
+      throw new Error("no delivery");
+    },
+  };
+  await expect(sourceStep(rebuilt, native, item.setup.pilotWorktree)).resolves.toMatchObject({
+    status: "observing-author",
+  });
+  expect(await readFile(resolve(source.stateDirectory, "config.json"), "utf8")).toBe(bytes);
+});
+
 it("resolves ladders before setup and rejects the old fixed-seat config", async () => {
   const f = await loopFixture();
   const rows: RoutingRow[] = JSON.parse(
@@ -8196,8 +8265,8 @@ it("resolves ladders before setup and rejects the old fixed-seat config", async 
   );
   expect(queue.items[0]?.source).toMatchObject({
     routing: { row: 7, review: 11 },
-    author: { model: "gpt-6-astra", effort: "high", ladder: row.author },
-    reviewer: { model: "claude-opus-5-5", effort: "high", ladder: row.reviewer },
+    author: { family: "astra", effort: "high", ladder: row.author },
+    reviewer: { family: "opus", effort: "high", ladder: row.reviewer },
   });
   expect(queue.items[0]?.repair.author).toMatchObject({ ...row.author[0], ladder: row.author });
   const self = await queueConfigFromLoop(
@@ -8208,8 +8277,8 @@ it("resolves ladders before setup and rejects the old fixed-seat config", async 
   );
   expect(self.items[0]?.source).toMatchObject({
     routing: { row: "self" },
-    author: { model: "gpt-6-astra", effort: "high", ladder: SELF_ROUTING.author },
-    reviewer: { model: "claude-opus-5-5", effort: "high", ladder: SELF_ROUTING.reviewer },
+    author: { family: "astra", effort: "high", ladder: SELF_ROUTING.author },
+    reviewer: { family: "opus", effort: "high", ladder: SELF_ROUTING.reviewer },
   });
   const {
     author: _author,
@@ -8228,13 +8297,13 @@ it("composes all shipped Chase pairs before setup and reconstructs the same sele
     await readFile(new URL("../../adapters/chase-sets-routing.json", import.meta.url), "utf8"),
   );
   const expected = [
-    [2, "gpt-6-luna", "high", "claude-opus-5-5"],
-    [3, "claude-opus-5-5", "medium", "gpt-6.1-sol"],
-    [4, "gpt-6-astra", "medium", "claude-opus-5-5"],
-    [7, "gpt-6-astra", "high", "claude-opus-5-5"],
-    [10, "gpt-6.1-sol", "high", "claude-opus-5-5"],
-    [14, "claude-opus-5-5", "medium", "gpt-6.1-sol"],
-    [15, "claude-opus-5-5", "high", "gpt-6.1-sol"],
+    [2, "luna", "high", "opus"],
+    [3, "opus", "medium", "sol"],
+    [4, "astra", "medium", "opus"],
+    [7, "astra", "high", "opus"],
+    [10, "sol", "high", "opus"],
+    [14, "opus", "medium", "sol"],
+    [15, "opus", "high", "sol"],
   ] as const;
   for (const [row, author, effort, reviewer] of expected) {
     for (const review of [11, 12] as const) {
@@ -8258,8 +8327,8 @@ it("composes all shipped Chase pairs before setup and reconstructs the same sele
       const queue = await queueConfigFromLoop(loop, f.repository, selected, policy);
       expect(queue.items[0]!.source).toMatchObject({
         routing,
-        author: { model: author, effort, rung: 0 },
-        reviewer: { model: reviewer, effort: review === 11 ? "high" : "medium", rung: 0 },
+        author: { family: author, effort, rung: 0 },
+        reviewer: { family: reviewer, effort: review === 11 ? "high" : "medium", rung: 0 },
       });
       const shipped = rows.find((entry) => entry.row === row && entry.review === review)!;
       expect(queue.items[0]!.source.author.ladder).toEqual(shipped.author);
@@ -8352,7 +8421,11 @@ it.each([
       },
       async launch(role, config) {
         const placement = config[role];
-        const identity = { model: placement.model, effort: placement.effort, rung: placement.rung };
+        const identity = {
+          model: placement.model!,
+          effort: placement.effort,
+          rung: placement.rung,
+        };
         requested.push(identity);
         if (role === "reviewer" && placement.rung === 0)
           throw new QueueBlocked("provider-model-refused");
@@ -8504,7 +8577,7 @@ it.each([false, true])(
         );
         expect(await snapshot(queue.stateDirectory)).toEqual(retained);
         expect(await adapter.history()).toEqual(participants);
-        placement.model = predecessor;
+        placement.model = predecessor!;
       }
       expect(observations).toBe(observed);
       expect(launchCalls).toBe(launched);

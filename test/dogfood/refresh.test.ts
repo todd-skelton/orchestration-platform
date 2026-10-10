@@ -413,7 +413,7 @@ async function fixture(
           authorPrompts.push(prompt);
           await resolution?.();
         } else {
-          reviewerModels.push(_config.reviewer.model);
+          reviewerModels.push(_config.reviewer.model!);
           prompts.push(prompt);
         }
         return {
@@ -2032,7 +2032,7 @@ it("carries a delta review refusal forward when main moves again", async () => {
   const launch = f.native.launch;
   const models: string[] = [];
   f.native.launch = async (role, config, prompt) => {
-    models.push(config.reviewer.model);
+    models.push(config.reviewer.model!);
     if (config.reviewer.model === "claude-opus-5") throw new QueueBlocked("provider-model-refused");
     return launch(role, config, prompt);
   };

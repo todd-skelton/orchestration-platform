@@ -21,7 +21,12 @@ import type {
 } from "./continuation.js";
 import type { Conflict } from "./conflict.js";
 export { continuationSlug };
-import { resolveRouting, validateRoutingRow, type RoutingRow } from "./routing.mjs";
+import {
+  resolveRouting,
+  retainedRouting,
+  validateRoutingRow,
+  type RoutingRow,
+} from "./routing.mjs";
 import { assertControllerExecutor, githubDeliveryAdapter } from "./delivery-adapter.mjs";
 // @ts-expect-error Node 24 executes this private TypeScript composition directly.
 import { recognizeStoppedStructure, observeExecutedHostedFailure } from "./delivery-adapter.ts";
@@ -176,6 +181,7 @@ export interface LoopConfig {
   author?: { model: string; effort: string };
   reviewer?: { model: string; effort: string };
   routingRows?: RoutingRow[];
+  modelRegistry?: string;
   codexExecutable: string;
   gitExecutable: string;
   nativeLaunchCeiling: number;
@@ -730,6 +736,7 @@ export function validateLoopConfig(config: LoopConfig) {
       ...(config.author === undefined ? [] : ["author"]),
       ...(config.reviewer === undefined ? [] : ["reviewer"]),
       ...(config.routingRows === undefined ? [] : ["routingRows"]),
+      ...(config.modelRegistry === undefined ? [] : ["modelRegistry"]),
       "codexExecutable",
       "gitExecutable",
       "nativeLaunchCeiling",
@@ -943,6 +950,11 @@ export function validateLoopConfig(config: LoopConfig) {
   ] as const)
     demand(typeof config[name] === "string" && isAbsolute(config[name]), `invalid-${name}`);
   demand(config.adapter === "self" || Array.isArray(config.routingRows), "routing-table-required");
+  demand(
+    config.modelRegistry === undefined ||
+      (typeof config.modelRegistry === "string" && isAbsolute(config.modelRegistry)),
+    "model-registry-unavailable",
+  );
   if (config.routingRows !== undefined) {
     demand(Array.isArray(config.routingRows), "invalid-routing-table");
     const keys = new Set();
@@ -2298,7 +2310,7 @@ export async function queueConfigFromLoop(
     ? { ...routing.reviewer[0]!, ladder: routing.reviewer }
     : config.reviewer;
   demand(author && reviewer, "routing-row-unconfigured");
-  demand(author.model !== reviewer.model, "routing-reviewer-not-independent");
+  demand(!author.model || author.model !== reviewer.model, "routing-reviewer-not-independent");
   const promptContext = `Repository loop rules:\n\n${issueContext.rules.trim()}\n\nSelected issue ${selected.key} (#${selected.number}):\n\n${issueContext.body.trim()}`;
   const baseSourcePrompt = `Implement the selected issue completely and stay within its scope.\n\n${promptContext}`;
   let reviewerPrompt = `Review the selected issue implementation independently against every stated criterion.\n\n${promptContext}`;
@@ -3110,7 +3122,7 @@ export async function queueConfigFromLoop(
   const routedReviewer = routing
     ? { ...reviewer, ...routing.reviewer[reviewerRung]!, rung: reviewerRung }
     : reviewer;
-  const source: SourceConfig = {
+  const source: SourceConfig = await retainedRouting({
     owner: controller,
     run: config.run,
     issue: issueUrl,
@@ -3137,6 +3149,7 @@ export async function queueConfigFromLoop(
       ? { preReviewEvidence: config.acceptedReplan.preReviewEvidence }
       : {}),
     repository: config.repository,
+    ...(config.modelRegistry === undefined ? {} : { modelRegistry: config.modelRegistry }),
     requiredChecks: hostedChecks,
     ...(localGates ? { localGates } : {}),
     ...(config.providerOutageCeilingMs === undefined
@@ -3149,7 +3162,7 @@ export async function queueConfigFromLoop(
     author: { ...routedAuthor, prompt: sourcePrompt },
     reviewer: { ...routedReviewer, prompt: reviewerPrompt },
     adapter: { kind: "codex-exec", executable: config.codexExecutable },
-  };
+  });
   const item: QueueItem = {
     ...(terminalAdmission
       ? {
@@ -3459,7 +3472,7 @@ export function validateQueueConfig(config: QueueConfig) {
     for (const actor of [item.repair.author, item.repair.reviewer])
       demand(
         object(actor) &&
-          [actor.model, actor.effort].every(
+          [actor.model ?? actor.family, actor.effort].every(
             (value) => typeof value === "string" && value.length > 0,
           ) &&
           typeof actor.prompt === "string" &&
@@ -5563,6 +5576,11 @@ export function repositoryQueueAdapter(
 
   const boundedNative = (item: QueueItem, stage: QueueParticipant["stage"]): Adapter => ({
     ...native,
+    async authorModels() {
+      return (await readHistory())
+        .filter((p) => p.item === item.id && p.role === "author")
+        .flatMap((p) => (p.placement?.model ? [p.placement.model] : []));
+    },
     async resumeUnlaunchedReview(current) {
       // ISS-235's legacy run-total refusal happened after flow saved its intent,
       // but before native.launch. Native dispatch writes reviewer artifacts before
@@ -6166,7 +6184,7 @@ export function repositoryQueueAdapter(
         config.nativeLaunchCeiling,
       "native-launch-ceiling-exhausted",
     );
-    const repair: RepairConfig = {
+    const repair: RepairConfig = await retainedRouting({
       ...item.source,
       base: candidate.head,
       mainBase: item.source.mainBase ?? item.base,
@@ -6181,7 +6199,7 @@ export function repositoryQueueAdapter(
             }
           : {}),
       },
-    };
+    });
     return {
       repair,
       handoff: {
