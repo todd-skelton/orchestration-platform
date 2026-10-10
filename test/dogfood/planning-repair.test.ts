@@ -417,24 +417,80 @@ it("keeps genuine new requirements out of precision repairs and bounds non-compl
   expect(() => validateProposal(epic, f.input, "EPIC")).toThrow();
 });
 
-it.each(["before-review", "during-review", "after-PASS"])(
-  "invalidates changing native dependencies %s without a new worker or application",
-  async (when) => {
-    const f = await fixture();
+it.each(
+  (["ISSUE", "SET", "EPIC"] as const).flatMap((level) =>
+    ["during-author", "before-review", "during-review", "after-PASS"].flatMap((when) =>
+      ["dependencies", "main"].map((change) => ({ level, when, change })),
+    ),
+  ),
+)(
+  "re-derives $level at the same level after $change drift $when, retaining work and charges",
+  async ({ level, when, change: field }) => {
+    const f = await fixture(level);
+    f.operation.source.inheritedWorkerRetry = true;
+    if (when === "during-author") f.setRunning(true);
     await planningStep(f.operation);
     const change = () => {
-      f.input.authority.issues[0].blockedBy.nodes.push({ number: 2, state: "OPEN" });
+      if (field === "dependencies")
+        f.input.authority.issues[0].blockedBy.nodes.push({ number: 2, state: "OPEN" });
+      else f.input.main = "d".repeat(40);
     };
-    if (when === "before-review") change();
+    if (when === "during-author") {
+      change();
+      expect((await planningStep(f.operation)).status).toBe("observing-planning-author");
+      expect(f.history).toHaveLength(0);
+      f.setRunning(false);
+    } else if (when === "before-review") change();
     else if (when === "during-review") f.onReview(async () => change());
     else {
       expect((await planningStep(f.operation)).status).toBe("planning-accepted");
       change();
     }
-    expect((await planningStep(f.operation)).status).toBe("planning-rejected");
-    expect(f.calls.filter((row) => row === "launch:reviewer")).toHaveLength(
-      when === "before-review" ? 0 : 1,
+    const old = await f.read();
+    const drafts = await snapshot(old.workers[0].config.worktree);
+    expect((await planningStep(f.operation)).status).toBe("observing-planning-author");
+    const pending = await f.read();
+    expect(pending.state).toBe("pending-author");
+    expect(pending.level).toBe(level);
+    expect(pending.nextLevel).toBeUndefined();
+    expect(pending.proposal).toBeUndefined();
+    expect(pending.review).toBeUndefined();
+    expect(pending.retryUsed).toBe(true);
+    expect(pending.superseded).toHaveLength(1);
+    expect(pending.superseded[0].input).toEqual(old.input);
+    expect(pending.superseded[0].proposal).toEqual(old.proposal);
+    expect(pending.input.main).toBe(f.input.main);
+    expect(pending.workers.every((worker: any) => worker.terminal.status === "passed")).toBe(true);
+    const history = structuredClone(f.history);
+    expect(history).toHaveLength(["during-review", "after-PASS"].includes(when) ? 2 : 1);
+    const workers = await Promise.all(
+      pending.workers.map((worker: any) => snapshot(worker.config.stateDirectory)),
     );
+    f.onReview(async () => {});
+    f.setProposal(proposal(f.input, level));
+    f.setRunning(true);
+    expect((await planningStep(f.operation)).status).toBe("observing-planning-author");
+    expect((await planningStep(f.operation)).status).toBe("observing-planning-author");
+    expect(f.calls.filter((row) => row === "launch:author")).toHaveLength(2);
+    const next = (await f.read()).workers.at(-1);
+    expect(next.config.worktree).not.toBe(old.workers[0].config.worktree);
+    expect(next.config.base).toBe(f.input.main);
+    expect(next.config.author.rung).toBe(old.workers[0].config.author.rung);
+    f.setRunning(false);
+    expect((await planningStep(f.operation)).status).toBe("observing-planning-reviewer");
+    expect((await planningStep(f.operation)).status).toBe("planning-accepted");
+    const accepted = await snapshot(f.directory);
+    expect((await planningStep(f.operation)).status).toBe("planning-accepted");
+    expect(await snapshot(f.directory)).toEqual(accepted);
+    expect(await snapshot(old.workers[0].config.worktree)).toEqual(drafts);
+    expect(
+      await Promise.all(
+        pending.workers.map((worker: any) => snapshot(worker.config.stateDirectory)),
+      ),
+    ).toEqual(workers);
+    expect(f.history.slice(0, history.length)).toEqual(history);
+    expect(f.history.slice(history.length).map((row) => row.role)).toEqual(["author", "reviewer"]);
+    expect((await f.read()).proposal.author).toBe(next.attempt.id);
   },
 );
 
@@ -451,6 +507,85 @@ it("the exact-body negative control changes only proposal bytes after PASS", asy
   expect((await planningStep(f.operation)).status).toBe("planning-rejected");
   expect((await f.read()).diagnostic).toContain("invalidate review");
   expect(f.calls.filter((row) => row.startsWith("launch:"))).toHaveLength(2);
+});
+
+it.each([
+  "selected body",
+  "selected update",
+  "selected decision",
+  "sibling",
+  "epic",
+  "epic child",
+  "dependency",
+  "transitive prerequisite",
+  "dependent",
+  "proposed dependency",
+  "stopped lineage",
+  "unrelated issue",
+  "unrelated dependency consumer",
+])("binds relevant authority after PASS: %s", async (change) => {
+  const f = await fixture();
+  const rows = f.input.authority.issues;
+  for (let number = 3; number <= 12; number++)
+    rows.push({ key: `ISS-${String(number).padStart(3, "0")}`, number, body });
+  rows[0].parent = { number: 3 };
+  rows[0].blockedBy.nodes = [{ number: 4, state: "OPEN" }];
+  rows[0].blocking = { nodes: [{ number: 9, state: "OPEN" }] };
+  rows[2].subIssues = { nodes: [{ number: 1 }, { number: 5 }] };
+  rows[3].blockedBy = { nodes: [{ number: 7, state: "OPEN" }] };
+  rows[3].blocking = { nodes: [{ number: 1 }, { number: 6 }] };
+  rows[5].blockedBy = { nodes: [{ number: 4, state: "OPEN" }] };
+  f.input.lineages.push({ key: "ISS-010", lastFailure: "prior-failure", priorHypotheses: [] });
+  const p = proposal(f.input, "ISSUE");
+  p.briefs[0]!.dependencies = ["ISS-008"];
+  f.setProposal(p);
+  await planningStep(f.operation);
+  expect((await planningStep(f.operation)).status).toBe("planning-accepted");
+  const accepted = await snapshot(f.directory);
+  const index = {
+    "selected body": 0,
+    "selected update": 0,
+    "selected decision": 0,
+    sibling: 1,
+    epic: 2,
+    "epic child": 4,
+    dependency: 3,
+    "transitive prerequisite": 6,
+    dependent: 8,
+    "proposed dependency": 7,
+    "stopped lineage": 9,
+    "unrelated issue": 11,
+    "unrelated dependency consumer": 5,
+  }[change]!;
+  if (change === "selected update") rows[index].updatedAt = "2026-10-10T01:00:00Z";
+  else if (change === "selected body") rows[index].body += "Changed accepted decision.\n";
+  else rows[index].comments = { nodes: [{ id: "decision", body: "New scope decision." }] };
+  if (change.startsWith("unrelated")) {
+    expect((await planningStep(f.operation)).status).toBe("planning-accepted");
+    expect((await planningStep(f.operation)).status).toBe("planning-accepted");
+    expect(await snapshot(f.directory)).toEqual(accepted);
+  } else {
+    expect((await planningStep(f.operation)).status).toBe("observing-planning-author");
+    expect((await f.read()).nextLevel).toBeUndefined();
+  }
+  expect(f.calls.filter((row) => row.startsWith("launch:"))).toHaveLength(2);
+});
+
+it("re-acquires changed sibling membership instead of accepting an earlier coverage set", async () => {
+  const f = await fixture("SET");
+  await planningStep(f.operation);
+  await planningStep(f.operation);
+  f.input.authority.issues.push({ key: "ISS-003", number: 3, body });
+  f.input.siblings.push("ISS-003");
+  expect((await planningStep(f.operation)).status).toBe("observing-planning-author");
+  f.setProposal(proposal(f.input, "SET"));
+  await planningStep(f.operation);
+  expect((await planningStep(f.operation)).status).toBe("planning-accepted");
+  expect(JSON.parse((await f.read()).proposal.raw).coverage.map((row: any) => row.key)).toEqual([
+    "ISS-001",
+    "ISS-002",
+    "ISS-003",
+  ]);
 });
 
 it("the self-review negative control changes only returned reviewer identity", async () => {
@@ -560,18 +695,26 @@ it("resumes pending input acquisition without losing the planning reservation", 
   expect((await planningStep(f.operation)).status).toBe("planning-accepted");
 });
 
-it("charges an in-flight reviewer before rejecting changed authority", async () => {
-  const f = await fixture();
-  await planningStep(f.operation);
-  f.setRunning(true);
-  await planningStep(f.operation);
-  f.input.authority.issues[0].updatedAt = "2026-10-10T00:00:10Z";
-  expect((await planningStep(f.operation)).status).toBe("observing-planning-reviewer");
-  expect(f.history).toHaveLength(1);
-  f.setRunning(false);
-  expect((await planningStep(f.operation)).status).toBe("planning-rejected");
-  expect(f.history).toHaveLength(2);
-});
+it.each(["passed", "failed"] as const)(
+  "charges an in-flight %s reviewer before re-deriving changed authority",
+  async (status) => {
+    const f = await fixture();
+    await planningStep(f.operation);
+    f.setRunning(true);
+    await planningStep(f.operation);
+    f.input.authority.issues[0].updatedAt = "2026-10-10T00:00:10Z";
+    expect((await planningStep(f.operation)).status).toBe("observing-planning-reviewer");
+    expect(f.history).toHaveLength(1);
+    f.setReviewStatus(status);
+    f.setRunning(false);
+    expect((await planningStep(f.operation)).status).toBe("observing-planning-author");
+    expect(f.history).toHaveLength(2);
+    const saved = await f.read();
+    expect(saved.workers.at(-1).terminal.status).toBe(status);
+    expect(saved.superseded[0].review.report.verdict).toBe(status === "passed" ? "PASS" : "FAIL");
+    expect(saved.nextLevel).toBeUndefined();
+  },
+);
 
 it("finalizes a retained reviewer terminal after unavailable authority without a second reviewer", async () => {
   const f = await fixture();
@@ -655,7 +798,7 @@ it.each(["brief", "slice", "design"] as const)(
             launchedAt: 1,
           }
         : launch(role, config, prompt);
-    f.policy.planningContext = async () => ({
+    const authority = {
       context: {
         title: "Fixture",
         body,
@@ -664,7 +807,8 @@ it.each(["brief", "slice", "design"] as const)(
       },
       planning: null,
       issues: [{ number: 110, body, updatedAt: "2026-10-10T00:00:00Z", milestone: null }],
-    });
+    };
+    f.policy.planningContext = async () => structuredClone(authority);
     const older = resolve(f.loop.stateRoot, "earlier-run", "fixture-110-attempt-1");
     await mkdir(older, { recursive: true });
     await writeFile(
@@ -756,6 +900,25 @@ it.each(["brief", "slice", "design"] as const)(
       implementation,
     );
     expect((await adapter.history()).filter((row) => row.stage === "planning")).toHaveLength(2);
+    authority.issues[0]!.updatedAt = "2026-10-10T01:00:00Z";
+    expect((await queueStep(reconstructed.config, reconstructed.adapter)).status).toBe(
+      "observing-planning-author",
+    );
+    const pending = JSON.parse(await readFile(path, "utf8"));
+    expect(pending.level).toBe({ brief: "ISSUE", slice: "SET", design: "EPIC" }[defectClass]);
+    expect(pending.nextLevel).toBeUndefined();
+    expect(pending.input.evidence.some((row: any) => row.path === path)).toBe(false);
+    const resumed = await f.compose(f.cycle);
+    resumed.adapter.planning = adapter.planning!;
+    expect((await queueStep(resumed.config, resumed.adapter)).status).toBe(
+      "observing-planning-reviewer",
+    );
+    expect((await queueStep(resumed.config, resumed.adapter)).status).toBe("planning-accepted");
+    expect((await queueStep(resumed.config, resumed.adapter)).status).toBe("planning-accepted");
+    expect((await adapter.history()).filter((row) => row.stage === "planning")).toHaveLength(4);
+    expect(await readFile(resolve(f.current.config.stateDirectory, "attempt.json"), "utf8")).toBe(
+      implementation,
+    );
     expect(f.calls.some((call) => /^(park|note|delivery):/.test(call))).toBe(false);
     expect(await f.git(f.current.config.items[0]!.source.worktree, ["status", "--porcelain"])).toBe(
       "",
@@ -845,14 +1008,14 @@ it("resumes the failure-to-planning gap without parking or creating an implement
 });
 
 it.skipIf(process.platform === "win32")(
-  "both production adapter readers acquire issue/update, decisions and native dependencies through fake GitHub",
+  "both production adapter readers scope authority and re-derive through fake GitHub",
   async () => {
     const root = await mkdtemp(resolve(tmpdir(), "planning-adapters-"));
     roots.push(root);
     const queryLog = resolve(root, "queries.jsonl");
     const response = resolve(root, "issues.json");
     const empty = { pageInfo: { hasNextPage: false }, nodes: [] };
-    const rows = [
+    const rows: any[] = [
       {
         number: 756,
         url: "https://github.com/todd-skelton/orchestration-platform/issues/756",
@@ -874,6 +1037,22 @@ it.skipIf(process.platform === "win32")(
         blocking: empty,
       },
     ];
+    rows.push(
+      {
+        ...structuredClone(rows[0]),
+        number: 999,
+        body: "<!-- planning-key: ISS-999 -->\nUnrelated issue.",
+        milestone: { number: 2 },
+        blockedBy: { ...empty, nodes: [{ number: 755, state: "OPEN" }] },
+      },
+      {
+        ...structuredClone(rows[0]),
+        number: 755,
+        body: "<!-- planning-key: ISS-236 -->\nRetained dependency.",
+        milestone: { number: 2 },
+        blocking: { ...empty, nodes: [{ number: 756 }, { number: 999 }] },
+      },
+    );
     await writeFile(response, JSON.stringify(rows));
     await writeFile(
       resolve(root, "gh"),
@@ -906,7 +1085,9 @@ fs.writeFileSync(1,JSON.stringify({data:{repository:q.includes('issues(first:')?
     expect(selfContext.planning.issueDrafts["ISS-237"]).toContain(
       "Author and independently review bounded planning repairs",
     );
-    expect(selfContext.issues[0].updatedAt).toBe(rows[0]!.updatedAt);
+    expect(selfContext.issues.find((row: any) => row.number === 756).updatedAt).toBe(
+      rows[0]!.updatedAt,
+    );
     await mkdir(resolve(root, ".agents/skills/delivery"), { recursive: true });
     await writeFile(resolve(root, ".agents/skills/delivery/SKILL.md"), "Synthetic delivery skill.");
     await writeFile(resolve(root, "AGENTS.md"), "Synthetic product rules.");
@@ -918,8 +1099,72 @@ fs.writeFileSync(1,JSON.stringify({data:{repository:q.includes('issues(first:')?
       executorRoot: root,
       gitExecutable: "git",
     });
-    expect(chaseContext.issues[0].comments.nodes[0].body).toBe("Keep publication host-owned.");
+    expect(chaseContext.issues.find((row: any) => row.number === 756).comments.nodes[0].body).toBe(
+      "Keep publication host-owned.",
+    );
     expect(chaseContext.context.body).toBe(rows[0]!.body);
     expect((await readFile(queryLog, "utf8")).trim().split("\n")).toHaveLength(3);
+    for (const adapter of ["self", "chase-sets"] as const) {
+      const f = await fixture();
+      const isSelf = adapter === "self";
+      const repository = isSelf ? "todd-skelton/orchestration-platform" : "chase-sets/chase-sets";
+      const key = isSelf ? "ISS-237" : "cs-756";
+      // Self dependencies come from immutable planning; product dependencies
+      // come from GitHub. The common prerequisite also has an unrelated consumer.
+      rows[0].blockedBy = { ...empty, nodes: isSelf ? [] : [{ number: 755, state: "OPEN" }] };
+      await writeFile(response, JSON.stringify(rows));
+      f.input.main = head;
+      f.input.outcome.value.repository = repository;
+      f.input.lineages[0]!.key = key;
+      f.input.siblings = [key];
+      f.operation.acquire = async () => {
+        const authority = await (isSelf ? self : chase).planningContext({
+          repository,
+          key,
+          number: 756,
+          main: head,
+          executorRoot: isSelf ? repositoryRoot : root,
+          gitExecutable: "git",
+        });
+        authority.issues = authority.issues.map((row: any) => ({
+          ...row,
+          key: isSelf ? /planning-key: (ISS-\d+)/.exec(row.body)![1] : `cs-${row.number}`,
+        }));
+        return { ...structuredClone(f.input), authority };
+      };
+      const p = proposal(f.input, "ISSUE");
+      p.disposition = "RECOMMEND_NOT_COMPLETING";
+      p.briefs = [];
+      f.setProposal(p);
+      const unrelatedEdit = async () => {
+        rows[1].body += "\nUnrelated edit.";
+        rows[1].updatedAt = new Date(Date.parse(rows[1].updatedAt) + 1000).toISOString();
+        rows[1].comments.nodes.push({ id: "unrelated", body: "Unrelated comment." });
+        rows[1].labels = { ...empty, nodes: [{ name: "ready" }] };
+        await writeFile(response, JSON.stringify(rows));
+      };
+      f.setRunning(true);
+      expect((await planningStep(f.operation)).status).toBe("observing-planning-author");
+      await unrelatedEdit();
+      f.setRunning(false);
+      expect((await planningStep(f.operation)).status).toBe("observing-planning-reviewer");
+      await unrelatedEdit();
+      f.onReview(unrelatedEdit);
+      expect((await planningStep(f.operation)).status).toBe("planning-accepted");
+      const accepted = await snapshot(f.directory);
+      for (let read = 0; read < 2; read++) {
+        await unrelatedEdit();
+        expect((await planningStep(f.operation)).status).toBe("planning-accepted");
+        expect(await snapshot(f.directory)).toEqual(accepted);
+      }
+      expect(f.history).toHaveLength(2);
+      rows[2].comments.nodes.push({ id: "changed-decision", body: "Change dependency ownership." });
+      await writeFile(response, JSON.stringify(rows));
+      expect((await planningStep(f.operation)).status).toBe("observing-planning-author");
+      expect((await f.read()).nextLevel).toBeUndefined();
+      expect((await planningStep(f.operation)).status).toBe("observing-planning-reviewer");
+      expect((await planningStep(f.operation)).status).toBe("planning-accepted");
+      expect(f.history).toHaveLength(4);
+    }
   },
 );

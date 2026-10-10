@@ -6289,6 +6289,7 @@ export function repositoryQueueAdapter(
             await collect(path);
           else if (
             entry.isFile() &&
+            path !== resolve(state, "planning-recovery.json") &&
             /^(attempt|config|candidate|native-refresh|planning-recovery|author-attempt|author-terminal|reviewer-attempt|reviewer-terminal|outcome-[a-f0-9]{64})\.json$/.test(
               entry.name,
             )

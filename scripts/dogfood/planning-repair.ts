@@ -394,6 +394,7 @@ interface Recovery {
   review?: { id: string; proposal: string; report: ReturnType<typeof parseReview> };
   diagnostic?: string;
   nextLevel?: PlanningLevel | "PRODUCT_QUESTION";
+  superseded?: Pick<Recovery, "input" | "state" | "proposal" | "review" | "diagnostic">[];
 }
 const instructions = `Write one finite planning-repair/v1 JSON proposal in proposal.json. Its exact keys are schemaVersion, level, disposition, reason, approach, productQuestion, lineages, coverage, briefs.
 disposition is REPAIR_IN_PLACE only for outcome/decision/acceptance-preserving precision; otherwise REPLACED with fixed-scope successors, or RECOMMEND_NOT_COMPLETING with evidence and no closure. New requirements belong to a new slice.
@@ -431,17 +432,48 @@ async function proposalBytes(workspace: string) {
   );
   return readFile(path, "utf8");
 }
-function externalIdentity(input: PlanningInput) {
-  // Launch charges naturally grow; only authority (including native dependencies,
-  // decisions, bodies/update identities and main) requires re-derivation on drift.
-  return digest({ main: input.main, authority: input.authority });
+function externalIdentity(input: PlanningInput, proposal?: Recovery["proposal"]) {
+  // The census is discovery context, not repository-wide invalidation authority.
+  // Bind the stopped lineages, siblings/epic and their native dependencies,
+  // including any existing issue named by the proposed dependency intent.
+  const context = new Set([...input.siblings, ...input.lineages.map((row) => row.key)]);
+  const byKey = new Map(input.authority.issues.map((row) => [row.key, row]));
+  const byNumber = new Map(input.authority.issues.map((row) => [row.number, row]));
+  const relatedKeys = (relations: any[]) =>
+    relations.flatMap((relation) => {
+      const row = relation && byNumber.get(relation.number);
+      return row ? [row.key] : [];
+    });
+  for (const key of context) {
+    const row = byKey.get(key);
+    for (const related of relatedKeys([row?.parent, ...(row?.subIssues?.nodes ?? [])]))
+      context.add(related);
+  }
+  const keys = new Set([
+    ...context,
+    ...[...context].flatMap((key) => relatedKeys(byKey.get(key)?.blocking?.nodes ?? [])),
+    ...(proposal?.bodies.flatMap((row) => row.dependencies) ?? []),
+  ]);
+  // Follow prerequisites without pulling in their unrelated consumers or epics.
+  for (const key of keys) {
+    for (const dependency of relatedKeys(byKey.get(key)?.blockedBy?.nodes ?? []))
+      keys.add(dependency);
+    const registered = input.authority.planning?.roadmap.issues.find(
+      (issue: any) => issue.key === key,
+    );
+    for (const dependency of registered?.blockedBy ?? []) keys.add(dependency);
+  }
+  return digest({
+    main: input.main,
+    context: input.authority.context,
+    issues: [...keys].sort().map((key) => ({ key, issue: byKey.get(key) ?? null })),
+  });
 }
 export async function planningStep(operation: PlanningOperation): Promise<PlanningResult> {
   const { directory, source, native } = operation;
   const path = resolve(directory, "planning-recovery.json");
   let recovery: Recovery | (Omit<Recovery, "input"> & { input: null }) | undefined =
     await readOptional(path);
-  const workspace = resolve(directory, "planning-drafts");
   if (!recovery) {
     const level = ({ brief: "ISSUE", slice: "SET", design: "EPIC" } as const)[
       operation.outcome.value.defectClass as "brief" | "slice" | "design"
@@ -450,8 +482,6 @@ export async function planningStep(operation: PlanningOperation): Promise<Planni
       level && operation.outcome.value.evidenceStatus === "established",
       "Planning requires an established brief, slice or design failure.",
     );
-    await mkdir(workspace, { recursive: true });
-    await mkdir(resolve(workspace, "author-temp"), { recursive: true });
     recovery = {
       schemaVersion: "planning-recovery/v1",
       outcome: operation.outcome,
@@ -476,6 +506,10 @@ export async function planningStep(operation: PlanningOperation): Promise<Planni
     }
   }
   const state = recovery as Recovery;
+  const workspace = resolve(
+    directory,
+    state.superseded?.length ? `planning-drafts-${state.superseded.length + 1}` : "planning-drafts",
+  );
   const result = (): PlanningResult => ({
     status:
       state.state === "accepted"
@@ -502,6 +536,25 @@ export async function planningStep(operation: PlanningOperation): Promise<Planni
     recovery: path,
     diagnostic: `Planning authority unavailable; retained work and review are unchanged: ${String(error)}`,
   });
+  const rederive = async (input: PlanningInput) => {
+    // Keep old inputs, artifacts, verdicts and workers as evidence. A new
+    // workspace prevents a stale proposal/PASS from supplying the new derivation.
+    (state.superseded ??= []).push({
+      input: state.input,
+      state: state.state,
+      ...(state.proposal ? { proposal: state.proposal } : {}),
+      ...(state.review ? { review: state.review } : {}),
+      ...(state.diagnostic ? { diagnostic: state.diagnostic } : {}),
+    });
+    state.input = input;
+    state.state = "pending-author";
+    delete state.proposal;
+    delete state.review;
+    delete state.nextLevel;
+    state.diagnostic = `External planning authority or main changed; re-derive at ${state.level}. Prior work and native charges remain retained.`;
+    await save(path, state);
+    return result();
+  };
   if (state.state === "rejected" || state.state === "PENDING_HOST_REVIEW") return result();
   const activeReview =
     state.state === "pending-reviewer" &&
@@ -517,10 +570,8 @@ export async function planningStep(operation: PlanningOperation): Promise<Planni
     } catch (error) {
       return unavailable(error);
     }
-    if (externalIdentity(fresh) !== externalIdentity(state.input))
-      return stop(
-        "External authority or dependencies changed; re-derive planning before review/application.",
-      );
+    if (externalIdentity(fresh, state.proposal) !== externalIdentity(state.input, state.proposal))
+      return rederive(fresh);
     if (state.state === "accepted") {
       const reviewer = state.workers.find((row) => row.attempt?.id === state.review?.id);
       check(
@@ -545,7 +596,8 @@ export async function planningStep(operation: PlanningOperation): Promise<Planni
   const role: Role = state.state === "pending-author" ? "author" : "reviewer";
   let worker = state.workers.at(-1);
   if (
-    worker?.intent.role !== role ||
+    worker?.config.worktree !== workspace ||
+    worker.intent.role !== role ||
     (worker.terminal && ["malformed", "dead"].includes(worker.terminal.status)) ||
     worker.refused
   )
@@ -568,7 +620,9 @@ export async function planningStep(operation: PlanningOperation): Promise<Planni
           )
           .map((row) => row.config.reviewer.model),
       );
-      const priorReviewer = state.workers.findLast((row) => row.intent.role === "reviewer");
+      const priorReviewer = state.workers.findLast(
+        (row) => row.intent.role === "reviewer" && row.config.worktree === workspace,
+      );
       const retryPlacement =
         priorReviewer?.terminal &&
         !priorReviewer.terminal.modelRefused &&
@@ -613,6 +667,7 @@ export async function planningStep(operation: PlanningOperation): Promise<Planni
     }
     const workerDirectory = resolve(directory, `planning-worker-${state.workers.length + 1}`);
     await mkdir(workerDirectory, { recursive: true });
+    if (role === "author") await mkdir(resolve(workspace, "author-temp"), { recursive: true });
     const current: Config = {
       ...source,
       purpose: "planning",
@@ -730,6 +785,16 @@ export async function planningStep(operation: PlanningOperation): Promise<Planni
       true,
     );
   }
+  // Finish observing/charging an in-flight worker before re-deriving. Even a
+  // semantic FAIL on superseded inputs cannot justify a planning escalation.
+  let fresh: PlanningInput;
+  try {
+    fresh = await operation.acquire();
+  } catch (error) {
+    return unavailable(error);
+  }
+  if (externalIdentity(fresh, state.proposal) !== externalIdentity(state.input, state.proposal))
+    return rederive(fresh);
   if (terminal.status !== "passed")
     return stop(
       `Planning ${role} FAIL; prescribed findings remain in ${worker.config.stateDirectory}. Escalate to ${levels[levels.indexOf(state.level) + 1] ?? "EPIC product question only for a demonstrated scope conflict"}.`,
@@ -789,14 +854,6 @@ export async function planningStep(operation: PlanningOperation): Promise<Planni
     // a proposal or an old PASS is never enough, including repeated handoffs.
     if (bodyHash(await proposalBytes(workspace)) !== state.proposal!.digest)
       return stop("Proposal changed during review; PASS invalidated.");
-    let fresh: PlanningInput;
-    try {
-      fresh = await operation.acquire();
-    } catch (error) {
-      return unavailable(error);
-    }
-    if (externalIdentity(fresh) !== externalIdentity(state.input))
-      return stop("Planning authority changed during review; re-derivation required.");
     check(
       worker.attempt.id !== state.proposal!.author &&
         !state.proposal!.participants.some(

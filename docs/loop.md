@@ -150,8 +150,16 @@ leave the work hypothesis unchanged, prescribing repair or the higher level.
 Input acquisition reads current main, native dependencies, complete sibling
 and epic context, issue bodies/update identities, comments/decisions and
 retained failure/history artifacts. Both adapters use their existing context
-readers and a paginated read-only GitHub census. External authority is observed
-again before review and after its terminal; drift requires re-derivation.
+readers and a paginated read-only GitHub census. The binding covers the selected
+issue, stopped lineages, siblings/epic, their decisions and native dependencies,
+proposed dependency targets and main; unrelated census edits do not invalidate
+it. External authority is observed again after author completion, before review
+and after its terminal. Drift retains the old inputs, drafts, workers, verdicts
+and charges, then acquires a fresh pending author at the same planning level in
+a separate drafts workspace. It does not reject the work hypothesis, escalate
+the level or renew the shared retry or launch allowance. In-flight workers are
+observed and charged before re-derivation; their verdicts cannot accept the new
+inputs.
 Review binds the complete proposal digest, individual body hashes and
 dependencies to the native author and reviewer dispatch/terminal identities.
 All native and declared in-body repair participation remains visible. Selection
