@@ -1,4 +1,5 @@
 import { execFile, spawn, type ExecFileOptions } from "node:child_process";
+import { createHash } from "node:crypto";
 import { once } from "node:events";
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
@@ -6,6 +7,7 @@ import { resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as githubFailures from "../../scripts/dogfood/github-command-failure.js";
+import { retainGateOutcome, type Defect } from "../../scripts/dogfood/outcome.js";
 import { expectedBoardItems, type BoardSnapshot } from "../../scripts/planning/board-check.mjs";
 import { loadPlanningSnapshot, type PlanningSnapshot } from "../../scripts/planning/check.mjs";
 import * as planningLoader from "../../scripts/planning/check.mjs";
@@ -56,7 +58,8 @@ it("ISS-236 records a host outcome once without changing stop body, parking or h
     schemaVersion: "dogfood-outcome/v1",
     kind: "stop",
     defectClass: "environment-tooling",
-    evidenceStatus: "unresolved",
+    evidenceStatus: "established",
+    rootCause: "provider-unavailable",
     repository: f.config.repository,
     run: f.config.run,
     issue: f.cycle.selection.key,
@@ -74,6 +77,255 @@ it("ISS-236 records a host outcome once without changing stop body, parking or h
   expect(await snapshot(directory)).toEqual(before);
   expect(await readFile(resolve(directory, names[0]!), "utf8")).toBe(bytes);
 });
+
+it("ISS-236 reuses the native author's cause and exact terminal despite a later attempt", async () => {
+  const f = await sourceFailureFixture();
+  roots.push(f.root);
+  const observe = f.native.observe;
+  const defect: Defect = {
+    defectClass: "brief",
+    rootCause: "contradictory-acceptance",
+    explanation: "The two required behaviors contradict each other.",
+    evidenceStatus: "established",
+    evidence: ["brief.md:1"],
+  };
+  f.native.observe = async (...args) => ({ ...(await observe(...args)), defect });
+  await f.fail();
+  const source = f.current.config.items[0]!.source.stateDirectory;
+  const before = await snapshot(source);
+  const outcomes = [...before.entries()].filter(([path]) =>
+    /outcome-[a-f0-9]{64}\.json$/.test(path),
+  );
+  expect(outcomes).toHaveLength(1);
+  const later = resolve(f.runState, "fixture-110-attempt-4");
+  await mkdir(later);
+  const prior = JSON.parse(
+    await readFile(resolve(f.current.config.stateDirectory, "attempt.json"), "utf8"),
+  );
+  await writeFile(
+    resolve(later, "attempt.json"),
+    JSON.stringify({ ...prior, candidateAttempt: 4, head: "f".repeat(40) }),
+  );
+  // The existing parking observer sees the later cursor and retains a run stop;
+  // classification must still bind the absolute attempt named by this stop.
+  expect(await f.stop()).toBe("run");
+  expect(await snapshot(source)).toEqual(before);
+  const all = [...(await snapshot(f.runState))].filter(([path]) =>
+    /outcome-[a-f0-9]{64}\.json$/.test(path),
+  );
+  expect(all).toEqual(outcomes);
+  expect(JSON.parse(all[0]![1])).toMatchObject({
+    ...defect,
+    stage: source,
+    head: f.base,
+    terminal: JSON.parse(await readFile(resolve(source, "author-terminal.json"), "utf8")),
+  });
+  expect(f.calls.filter((call) => call.startsWith("launch:"))).toHaveLength(1);
+  expect(f.rows[0]).toMatchObject({ ready: false });
+});
+
+async function outcomeStopFixture(stage = "source") {
+  const f = await noteFixture();
+  const directory = resolve(f.config.stateRoot, f.config.run, "iss-105-attempt-1");
+  const source = resolve(directory, stage);
+  await mkdir(source, { recursive: true });
+  const issue = `https://github.com/${f.config.repository}/issues/${f.cycle.selection.number}`;
+  const head = "b".repeat(40);
+  const attempt = {
+    run: f.config.run,
+    item: "ISS-105:1",
+    issue,
+    candidateAttempt: 2,
+    phase: "delivery",
+    head,
+    stateDirectory: source,
+    history: f.cycle.initialHistory,
+  };
+  await writeFile(resolve(directory, "attempt.json"), JSON.stringify(attempt));
+  const policy = { ...f.policy, park: vi.fn(async () => "restore readiness after repair") };
+  const stop = (reason: string, diagnostics?: string, ordinal?: number) =>
+    stopCycle(f.config, f.cycle, reason, 2, f.adapter, policy, diagnostics, ordinal);
+  return { ...f, directory, source, issue, head, attempt, stop, policy };
+}
+
+it.each(["source", "repair", "source/refresh-" + "c".repeat(40), "source/gate-correction"])(
+  "ISS-236 retains one legacy/new worker cause at its actual %s stage",
+  async (stage) => {
+    const f = await outcomeStopFixture(stage);
+    const worker = { id: "retained-author", trace: resolve(f.source, "reviewer.jsonl") };
+    const terminal = {
+      id: worker.id,
+      head: f.head,
+      status: "failed",
+      summary: JSON.stringify({
+        verdict: "FAIL",
+        defect: {
+          defectClass: "design",
+          rootCause: "lost-parent-behavior",
+          explanation: "The resolution loses the main parent's behavior.",
+          evidenceStatus: "established",
+          evidence: ["product.ts:1"],
+        },
+      }),
+    };
+    await writeFile(resolve(f.source, "reviewer-attempt.json"), JSON.stringify(worker));
+    await writeFile(resolve(f.source, "reviewer-terminal.json"), JSON.stringify(terminal));
+    const before = await snapshot(f.directory);
+    await f.stop("refresh-review-failed");
+    const after = await snapshot(f.directory);
+    for (const [path, bytes] of before) expect(after.get(path)).toBe(bytes);
+    const outcomes = [...after].filter(([path]) => /outcome-[a-f0-9]{64}\.json$/.test(path));
+    expect(outcomes).toHaveLength(1);
+    expect(JSON.parse(outcomes[0]![1])).toMatchObject({
+      kind: "worker",
+      head: f.head,
+      stage: f.source,
+      terminal,
+      defectClass: "design",
+      rootCause: "lost-parent-behavior",
+      evidenceStatus: "established",
+    });
+    await f.stop("refresh-review-failed", undefined, 1);
+    expect(await snapshot(f.directory)).toEqual(after);
+  },
+);
+
+it.each([
+  ["conflict-resolution-scope-escape", "mechanical", "conflict-resolution-boundary"],
+  ["conflict-resolution-unsupported", "environment-tooling", "unsupported-conflict-shape"],
+  ["rebase-conflict", "mechanical", "git-integration-conflict"],
+  ["outside-footprint", "mechanical", "outside-footprint"],
+])(
+  "ISS-236 binds typed %s to the active refresh and seed, not the queue's old head",
+  async (reason, defectClass, rootCause) => {
+    const f = await outcomeStopFixture();
+    const refresh = resolve(f.source, `refresh-${"c".repeat(40)}`);
+    const seed = "d".repeat(40);
+    await mkdir(refresh);
+    const bytes = JSON.stringify({
+      directory: refresh,
+      previousHead: f.head,
+      main: "c".repeat(40),
+      conflict: { seed },
+      resolutionUsed: true,
+    });
+    await writeFile(resolve(f.source, "native-refresh.json"), bytes);
+    await f.stop(reason!, "product.ts");
+    const outcomes = [...(await snapshot(resolve(f.config.stateRoot, f.config.run)))].filter(
+      ([path]) => /outcome-[a-f0-9]{64}\.json$/.test(path),
+    );
+    expect(outcomes).toHaveLength(1);
+    expect(JSON.parse(outcomes[0]![1])).toMatchObject({
+      defectClass,
+      rootCause,
+      evidenceStatus: "established",
+      head: seed,
+      stage: refresh,
+      terminal: {
+        stage: {
+          path: resolve(f.source, "native-refresh.json"),
+          sha256: createHash("sha256").update(bytes).digest("hex"),
+        },
+      },
+    });
+    expect(f.policy.park).toHaveBeenCalledTimes(reason === "outside-footprint" ? 0 : 1);
+  },
+);
+
+it.each(["candidate", "unknown"] as const)(
+  "ISS-236 propagates the %s gate attribution without a second class",
+  async (cause) => {
+    const f = await outcomeStopFixture();
+    const context = {
+      repository: f.config.repository,
+      run: f.config.run,
+      issue: f.issue,
+      stateDirectory: f.source,
+    };
+    const path = await retainGateOutcome(
+      context,
+      "test",
+      f.head,
+      { log: resolve(f.source, "candidate.log"), diagnostics: ["product.ts:1"] },
+      { cause, main: "c".repeat(40), log: resolve(f.source, "base.log") },
+    );
+    const before = await snapshot(f.directory);
+    await f.stop(
+      cause === "candidate" ? "gate-correction-exhausted:test" : "gate-attribution-unknown:test",
+    );
+    expect(await snapshot(f.directory)).toEqual(before);
+    expect(JSON.parse(await readFile(path!, "utf8"))).toMatchObject({
+      defectClass: cause === "candidate" ? "implementation-known-remedy" : "environment-tooling",
+      evidenceStatus: cause === "candidate" ? "established" : "unresolved",
+    });
+    // A terminal continuation wraps this same gate without supplying a second
+    // primary classification or changing the immutable-base judgment.
+    await f.stop("continuation-failed");
+    expect(await snapshot(f.directory)).toEqual(before);
+  },
+);
+
+it("ISS-236 excludes an exit-73 stop without inventing a failed gate on recovery", async () => {
+  const f = await outcomeStopFixture();
+  const artifacts = resolve(f.source, `gate-${createHash("sha256").update("test").digest("hex")}`);
+  await mkdir(artifacts);
+  await writeFile(
+    resolve(artifacts, "candidate-terminal.json"),
+    JSON.stringify({ head: f.head, code: 73 }),
+  );
+  const before = await snapshot(f.directory);
+  await f.stop("gate-attribution-unknown:test");
+  expect(await snapshot(f.directory)).toEqual(before);
+  expect(f.policy.park).not.toHaveBeenCalled();
+});
+
+it.each([
+  [
+    'Get "https://api.github.com/graphql": net/http: TLS handshake timeout',
+    "github-connection-before-send",
+    "established",
+  ],
+  ['Get "https://api.github.com/graphql": EOF', "github-transport-response", "established"],
+  ["unclassified CLI error", "stop:issue-observation-unavailable", "unresolved"],
+])(
+  "ISS-236 uses the retained GitHub command discriminator: %s",
+  async (stderr, rootCause, evidenceStatus) => {
+    const f = await noteFixture();
+    const failure = new githubFailures.GithubCommandFailure(noteTransport(stderr));
+    await stopCycle(
+      f.config,
+      f.cycle,
+      "issue-observation-unavailable",
+      0,
+      f.adapter,
+      f.policy,
+      failure.message,
+    );
+    const records = [...(await snapshot(resolve(f.config.stateRoot, f.config.run)))].filter(
+      ([path]) => /outcome-[a-f0-9]{64}\.json$/.test(path),
+    );
+    expect(records).toHaveLength(1);
+    expect(JSON.parse(records[0]![1])).toMatchObject({
+      defectClass: "environment-tooling",
+      rootCause,
+      evidenceStatus,
+    });
+    expect(f.park).not.toHaveBeenCalled();
+    // Simulate first recovery of a legacy stop without an outcome record.
+    await rm(records[0]![0]);
+    await stopCycle(
+      f.config,
+      f.cycle,
+      "issue-observation-unavailable",
+      0,
+      f.adapter,
+      f.policy,
+      undefined,
+      1,
+    );
+    expect(await readFile(records[0]![0], "utf8")).toBe(records[0]![1]);
+  },
+);
 const nextCycle: typeof nativeNextCycle = (config, root, adapter, repository) =>
   nativeNextCycle(config, root, adapter, repository, async () => {});
 

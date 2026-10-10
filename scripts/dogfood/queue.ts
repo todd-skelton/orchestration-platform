@@ -47,7 +47,7 @@ import { correctGate, QueueBlocked, step } from "./flow.ts";
 // @ts-expect-error Node 24 executes this private TypeScript composition directly.
 import { classifyStop } from "./fault-class.ts";
 // @ts-expect-error Node 24 executes this private TypeScript module directly.
-import { retainGateOutcome, retainWorkerOutcome } from "./outcome.ts";
+import { retainGateOutcome, retainStopOutcome, retainWorkerOutcome } from "./outcome.ts";
 import type { Adapter, Attempt, Config as SourceConfig, Role } from "./flow.js";
 // @ts-expect-error Node 24 executes this private TypeScript composition directly.
 import { currentMain, rebaseOnto, refreshDelivery } from "./refresh.ts";
@@ -4670,6 +4670,23 @@ async function runQueueStep(config: QueueConfig, adapter: QueueAdapter): Promise
           error.reason.startsWith("gate-correction-exhausted:") ||
           error.reason.startsWith("hosted-check-failed:"))
       ) {
+        // Retain the original typed cause before a special continuation wraps
+        // it as continuation-failed and clears the accepted stage cursor.
+        await retainStopOutcome(
+          {
+            ...item.source,
+            attemptDirectory: directory,
+            stateDirectory:
+              attempt.phase === "repair" ? item.repair.stateDirectory : item.source.stateDirectory,
+          },
+          `queue-stop:${item.id}:${error.reason}:${attempt.head}`,
+          error.reason,
+          { reason: error.reason, diagnostics: error.diagnostics ?? null },
+          resolve(directory, "attempt.json"),
+          attempt.head,
+          error.diagnostics,
+          await adapter.history(),
+        );
         const candidate = await optionalRecord(item.source.stateDirectory, "candidate");
         const refreshed =
           attempt.phase === "delivery"

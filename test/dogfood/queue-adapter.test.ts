@@ -1469,6 +1469,21 @@ it.each([false, true])(
     const stop = stopCycle(loop, cycle, "dependency-install-failed", 1, supervisor, policy);
     if (pendingNote) await expect(stop).rejects.toThrow("synthetic lost comment receipt");
     else await stop;
+    const outcomeDirectory = resolve(loop.stateRoot, loop.run);
+    const outcomes = (await readdir(outcomeDirectory)).filter((name) =>
+      name.startsWith("outcome-"),
+    );
+    expect(outcomes).toHaveLength(1);
+    expect(
+      JSON.parse(await readFile(resolve(outcomeDirectory, outcomes[0]!), "utf8")),
+    ).toMatchObject({
+      stage: item.setup.stateDirectory,
+      head: selected.base,
+      terminal: { attempt: { path: attemptPath } },
+    });
+    expect(
+      (await readdir(item.setup.stateDirectory)).some((name) => name.startsWith("outcome-")),
+    ).toBe(false);
     const stopPath = resolve(loop.stateRoot, loop.run, "cycle-1-stop-1.json");
     const oldStop = await readFile(stopPath, "utf8");
     await git(f.paths.controller, ["commit", "--allow-empty", "-m", "synthetic upgraded executor"]);

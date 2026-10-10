@@ -248,7 +248,10 @@ export async function prerequisiteProof(
       const outcome = JSON.parse(bytes);
       expect(outcome.schemaVersion).toBe("dogfood-outcome/v1");
       expect(outcome.defectClass).toBe("environment-tooling");
-      expect(outcome.evidenceStatus).toBe("unresolved");
+      if (outcome.kind === "stop") {
+        expect(outcome.rootCause).toBe("provider-unavailable");
+        expect(outcome.evidenceStatus).toBe("established");
+      } else expect(outcome.evidenceStatus).toBe("unresolved");
       cause = "ISS-236 descriptive outcome; no lifecycle mutation or launch charge";
     }
     expect(cause, `unlisted added path ${relative}`).toBeDefined();

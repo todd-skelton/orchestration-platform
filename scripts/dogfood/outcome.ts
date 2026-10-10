@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { readFile, rename, writeFile } from "node:fs/promises";
+import { readFile, readdir, rename, writeFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
 // ISS-236 / JR-1: descriptive cause only. Nothing here chooses a disposition.
@@ -102,7 +102,11 @@ export function unresolved(rootCause: string, explanation: string, evidence: str
 // One writer, one occurrence. Replay uses the first observation; old terminal,
 // configuration, prompt and stop bytes are never backfilled. The stage directory
 // is also the attempt/stage identity (including special continuation directories).
-export async function retainOutcome(context: OutcomeContext, outcome: Outcome): Promise<string> {
+export async function retainOutcome(
+  context: OutcomeContext,
+  outcome: Outcome,
+  storageDirectory = context.stateDirectory,
+): Promise<string> {
   const identity = {
     repository: context.repository,
     issue: context.issue,
@@ -122,7 +126,7 @@ export async function retainOutcome(context: OutcomeContext, outcome: Outcome): 
       }),
     )
     .digest("hex");
-  const path = resolve(context.stateDirectory, `outcome-${hash}.json`);
+  const path = resolve(storageDirectory, `outcome-${hash}.json`);
   try {
     await readFile(path);
     return path;
@@ -258,23 +262,348 @@ export async function retainGateOutcome(
 }
 
 export async function retainStopOutcome(
-  context: OutcomeContext,
+  context: OutcomeContext & { attemptDirectory?: string },
   identity: string,
   reason: string,
   terminal: unknown,
   evidence: string,
   head: string | null = null,
+  diagnostics?: string,
+  history?: { item: string; stage: string; role: string; id: string; outcome?: string }[],
 ) {
   if (reason === "hosted-check-never-executed") return;
-  return retainOutcome(context, {
-    kind: "stop",
-    identity,
-    head,
-    terminal,
-    defect: unresolved(
-      `stop:${reason}`,
-      "This stop records an unsuccessful stage; its retained evidence does not independently establish a semantic cause. Worker and gate outcome records retain their own causal judgments. No disposition is inferred from the stop reason.",
-      [evidence],
-    ),
+  const read = async (directory: string, name: string): Promise<any> => {
+    try {
+      return JSON.parse(await readFile(resolve(directory, `${name}.json`), "utf8"));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw error;
+    }
+  };
+  const attemptDirectory = context.attemptDirectory ?? context.stateDirectory;
+  const storageDirectory = resolve(evidence, "..");
+  const attempt = await read(attemptDirectory, "attempt");
+  const participants = (history ?? attempt?.history ?? []).filter(
+    (participant: { item: string }) => participant.item === attempt?.item,
+  );
+  const last = participants.at(-1);
+  const stage =
+    attempt?.stateDirectory ??
+    (context.attemptDirectory
+      ? context.stateDirectory
+      : attempt
+        ? resolve(
+            attemptDirectory,
+            attempt.phase === "setup"
+              ? "setup"
+              : attempt.phase === "repair" ||
+                  participants.findLast((p: { stage: string }) => p.stage !== "refresh")?.stage ===
+                    "repair"
+                ? "repair"
+                : "source",
+          )
+        : attemptDirectory);
+  const references = [evidence];
+  if (attempt) references.push(resolve(attemptDirectory, "attempt.json"));
+  let directory = stage;
+  let stageHead = attempt?.head ?? head;
+  let stagePath = attempt ? resolve(attemptDirectory, "attempt.json") : evidence;
+  // Follow the lifecycle's retained pointers, including in-flight correction and
+  // conflict stages. Directory order or a later attempt is not failure identity.
+  const stages = new Set([storageDirectory, attemptDirectory]);
+  for (;;) {
+    stages.add(directory);
+    const correction = await read(directory, "gate-correction");
+    const recovery = await read(directory, "gate-stop-continuation");
+    const refresh = await read(directory, "native-refresh");
+    if (
+      recovery?.delivery &&
+      !recovery.authorization?.hostedNonExecution &&
+      !recovery.authorization?.hostedExecutedFailure
+    ) {
+      references.push(resolve(directory, "gate-stop-continuation.json"));
+      directory = resolve(directory, "gate-stop-continuation");
+      stageHead = recovery.delivery.candidateHead;
+      stagePath = references.at(-1)!;
+    } else if (correction?.directory) {
+      references.push(resolve(directory, "gate-correction.json"));
+      directory = correction.directory;
+      stageHead = correction.failedHead ?? stageHead;
+      stagePath = references.at(-1)!;
+    } else if (refresh?.directory) {
+      references.push(resolve(directory, "native-refresh.json"));
+      directory = refresh.reviewDirectory ?? refresh.directory;
+      stageHead = refresh.head ?? refresh.conflict?.seed ?? refresh.previousHead;
+      stagePath = references.at(-1)!;
+    } else break;
+  }
+  const records: { path: string; value: any }[] = [];
+  for (const state of stages) {
+    const names = await readdir(state).catch((error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return [];
+      throw error;
+    });
+    for (const name of names.filter((name) => /^outcome-[a-f0-9]{64}\.json$/.test(name)))
+      records.push({ path: resolve(state, name), value: await read(state, name.slice(0, -5)) });
+  }
+  // A retained stop remains bound to its first observation, even if its cursor
+  // subsequently advanced. Worker/gate propagation below reuses that occurrence.
+  const existing = records.find(
+    (row) => row.value.kind === "stop" && row.value.identity === identity,
+  );
+  if (existing) return existing.path;
+  const candidate = await read(directory, "candidate");
+  const reviewer = await read(directory, "reviewer-terminal");
+  const author = await read(directory, "author-terminal");
+  const exactTerminal = reviewer ?? author;
+  stageHead = candidate?.head ?? exactTerminal?.head ?? stageHead;
+  if (exactTerminal) {
+    references.push(resolve(directory, `${reviewer ? "reviewer" : "author"}-terminal.json`));
+    stagePath = references.at(-1)!;
+  }
+  const wrapped = [
+    "continuation-failed",
+    "implementation-attempt-ceiling-exhausted",
+    "verification-only-candidate-failed",
+  ].includes(reason);
+  const workerRole = [
+    "author-failed",
+    "author-malformed",
+    "conflict-resolution-failed",
+    "gate-correction-failed",
+  ].includes(reason)
+    ? "author"
+    : [
+          "reviewer-failed",
+          "review-failed",
+          "reviewer-malformed",
+          "refresh-review-failed",
+          "gate-correction-review-failed",
+        ].includes(reason)
+      ? "reviewer"
+      : ["launcher-failed", "exit-receipt-timeout"].includes(reason) || wrapped
+        ? last?.role
+        : undefined;
+  if (workerRole) {
+    const participant = participants.findLast((row: { role: string }) => row.role === workerRole);
+    const retained = records.find(
+      (row) =>
+        row.value.kind === "worker" && row.value.identity === `${workerRole}:${participant?.id}`,
+    );
+    if (retained) return retained.path;
+    const worker = await read(directory, `${workerRole}-attempt`);
+    const result = workerRole === "reviewer" ? reviewer : author;
+    if (worker && result?.id === worker.id && (!wrapped || last?.id === worker.id)) {
+      const prior = records.find(
+        (row) => row.value.kind === "worker" && row.value.identity === `${workerRole}:${worker.id}`,
+      );
+      if (prior) return prior.path;
+      const saved = await read(directory, "config");
+      const path = await retainWorkerOutcome(
+        {
+          ...context,
+          issue: attempt?.issue ?? context.issue,
+          ...saved?.config,
+          stateDirectory: directory,
+        },
+        workerRole,
+        worker,
+        result,
+      );
+      if (path) return path;
+    }
+  }
+  // Special continuations wrap the original typed failure. Reuse the outcome
+  // captured before that wrapping, rather than inventing a second primary cause.
+  if (wrapped) {
+    const prior = records.findLast(
+      (row) =>
+        row.value.kind === "stop" && row.value.stage === directory && row.value.head === stageHead,
+    );
+    if (prior) return prior.path;
+  }
+  let gateStop;
+  for (const state of [...stages].toReversed()) {
+    gateStop = await read(state, "gate-stop");
+    if (gateStop) break;
+  }
+  const effectiveReason = wrapped && gateStop ? gateStop.reason : reason;
+  if (effectiveReason === "hosted-check-never-executed") return;
+  const gate =
+    /^(?:gate-failed|gate-base-failed|gate-host-failed|gate-attribution-unknown|gate-correction-exhausted):(.+)$/.exec(
+      effectiveReason,
+    )?.[1];
+  const hosted =
+    effectiveReason === "hosted-check-failed" ||
+    effectiveReason.startsWith("hosted-check-failed:") ||
+    effectiveReason.startsWith("hosted-check-log-unavailable:");
+  const priorHosted = records.findLast(
+    (row) =>
+      row.value.stage === directory &&
+      row.value.head === stageHead &&
+      row.value.kind === "hosted-gate" &&
+      (hosted || wrapped),
+  );
+  if (priorHosted) return priorHosted.path;
+  const gateFailure = wrapped || effectiveReason === "gate-correction-not-authorized";
+  const priorGate = records.findLast(
+    (row) =>
+      row.value.stage === directory &&
+      row.value.head === stageHead &&
+      row.value.kind === "local-gate" &&
+      (row.value.identity === gate || (gateFailure && !gate)),
+  );
+  if (priorGate) return priorGate.path;
+  const attribution = await read(directory, "gate-attribution");
+  if (gate || (gateFailure && attribution)) {
+    const gateName = gate ?? attribution.gate;
+    const artifacts = resolve(
+      directory,
+      `gate-${createHash("sha256").update(gateName).digest("hex")}`,
+    );
+    const execution = await read(artifacts, "candidate-terminal");
+    if (execution?.code === 73) return;
+    return retainGateOutcome(
+      { ...context, issue: attempt?.issue ?? context.issue, stateDirectory: directory },
+      gateName,
+      stageHead!,
+      attribution?.evidence ??
+        (execution ? { log: resolve(artifacts, "candidate.log"), diagnostics: [] } : undefined),
+      attribution,
+    );
+  }
+
+  const established = (
+    defectClass: DefectClass,
+    rootCause: string,
+    explanation: string,
+  ): Defect => ({
+    defectClass,
+    rootCause,
+    explanation,
+    evidenceStatus: "established",
+    evidence: references,
   });
+  let defect: Defect;
+  switch (effectiveReason) {
+    case "conflict-resolution-scope-escape":
+      defect = established(
+        "mechanical",
+        "conflict-resolution-boundary",
+        "The conflict validator rejected a captured path or changes outside its permitted text boundary. The retained conflict inputs and terminal identify the rejected resolution; this supplies no wider edit permission.",
+      );
+      break;
+    case "conflict-resolution-unsupported":
+      defect = established(
+        "environment-tooling",
+        "unsupported-conflict-shape",
+        "Native conflict capture found a shape the text-only resolver does not support. This identifies the tooling limitation, not a semantic verdict on either parent.",
+      );
+      break;
+    case "conflict-resolution-exhausted":
+      defect = established(
+        "mechanical",
+        "conflict-resolution-allowance",
+        "Native integration encountered another conflict after the retained resolution allowance was consumed. Classification does not renew it.",
+      );
+      break;
+    case "rebase-conflict":
+      defect = diagnostics
+        ? established(
+            "mechanical",
+            "git-integration-conflict",
+            "The native integration failure retained conflict diagnostics. Both parents and the failed integration remain evidence; no semantic resolution is inferred.",
+          )
+        : unresolved(
+            "git-integration-failure",
+            "The Git integration failed without captured conflict paths. Its semantic cause is unresolved.",
+            references,
+          );
+      break;
+    case "provider-unavailable":
+    case "provider-model-refused":
+      defect = established(
+        "environment-tooling",
+        effectiveReason,
+        "The existing provider admission discriminator refused launch. This describes provider availability, not a failed candidate execution or candidate exoneration.",
+      );
+      break;
+    case "author-malformed":
+    case "reviewer-malformed":
+      defect = established(
+        "mechanical",
+        "worker-report-protocol",
+        "The worker protocol rejected the retained report; no semantic verdict is inferred.",
+      );
+      break;
+    case "author-wrong-head":
+    case "author-head-moved":
+    case "missing-candidate-commit":
+    case "dirty-author":
+    case "outside-footprint":
+    case "reviewer-wrong-head":
+    case "reviewer-modified-worktree":
+    case "source-finding-location-outside-candidate":
+      defect = established(
+        "mechanical",
+        effectiveReason,
+        `The existing worker/candidate validator rejected its ${effectiveReason} contract. The retained terminal and stage evidence identify the rejected output; no semantic worker verdict is invented.`,
+      );
+      break;
+    case "issue-observation-unavailable":
+    case "hosted-observation-unavailable":
+    case "learning-note-state-unknown":
+      defect =
+        diagnostics === "GitHub connection failed before send" ||
+        diagnostics === "GitHub transport response unavailable"
+          ? established(
+              "environment-tooling",
+              diagnostics === "GitHub connection failed before send"
+                ? "github-connection-before-send"
+                : "github-transport-response",
+              "The retained GithubCommandFailure category establishes transport failure, not a semantic candidate failure.",
+            )
+          : diagnostics === "malformed issue observation"
+            ? established(
+                "mechanical",
+                "github-issue-response-protocol",
+                "The acquired issue response failed the existing parser or shape checks.",
+              )
+            : unresolved(
+                `stop:${effectiveReason}`,
+                "The retained typed outcome and source evidence do not establish a semantic cause. This unresolved classification neither exonerates the candidate nor changes disposition.",
+                references,
+              );
+      break;
+    default:
+      defect = unresolved(
+        hosted ? "hosted-gate-cause-unresolved" : `stop:${effectiveReason}`,
+        "The retained typed outcome and source evidence do not establish a semantic cause. This unresolved classification neither exonerates the candidate nor changes disposition.",
+        references,
+      );
+  }
+  const binding = async (path: string) => ({
+    path,
+    sha256: createHash("sha256")
+      .update(await readFile(path))
+      .digest("hex"),
+  });
+  return retainOutcome(
+    { ...context, issue: attempt?.issue ?? context.issue, stateDirectory: directory },
+    {
+      kind: "stop",
+      identity,
+      head: stageHead ?? null,
+      terminal: {
+        stop: terminal,
+        attempt: attempt ? await binding(resolve(attemptDirectory, "attempt.json")) : null,
+        stage: await binding(stagePath),
+        diagnostics: diagnostics?.slice(0, 1000) ?? null,
+      },
+      defect,
+    },
+    // Keep the record beside the owning stop/cursor, while binding the actual
+    // stage above. Setup's closed inventory and completed attempts stay intact.
+    storageDirectory,
+  );
 }

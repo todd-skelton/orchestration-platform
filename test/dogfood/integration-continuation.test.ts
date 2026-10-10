@@ -2540,7 +2540,9 @@ async function terminalAdmissionFixture() {
     head: f.reviewed,
     resolutionUsed: true,
   });
-  await f.put(f.sourceDirectory, "gate-correction", { directory: "synthetic consumed correction" });
+  await f.put(f.sourceDirectory, "gate-correction", {
+    directory: resolve(f.sourceDirectory, "gate-correction"),
+  });
   const priorPublication = {
     number: 9001,
     url: "https://github.com/fixture/repository/pull/9001",

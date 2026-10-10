@@ -969,17 +969,18 @@ export async function stopCycle(
   }
   // A setup stop can have a selected row without having launched a worker yet.
   let routing = cycle.selection.routing;
-  let terminalHead: string | null = null;
   const slugs = config.acceptedReplan
     ? [continuationSlug(config.acceptedReplan)]
     : Array.from(
         { length: config.attemptCeiling },
         (_, index) => `${cycle.selection.key.toLowerCase()}-attempt-${index + 1}`,
       );
+  const retainedAttempts: { directory: string; attempt: any }[] = [];
   for (const slug of slugs) {
-    const attempt = await optionalRecord(resolve(stateDirectory(config), slug), "attempt");
+    const directory = resolve(stateDirectory(config), slug);
+    const attempt = await optionalRecord(directory, "attempt");
     if (attempt !== ABSENT && attempt.routing) routing = attempt.routing;
-    if (attempt !== ABSENT && typeof attempt.head === "string") terminalHead = attempt.head;
+    if (attempt !== ABSENT) retainedAttempts.push({ directory, attempt });
   }
   let stop = retainedStop ?? 1;
   let intent: any;
@@ -1035,12 +1036,39 @@ export async function stopCycle(
       `malformed-supervision-record:cycle-${cycle.selection.cycle}-stop-${stop}`,
     );
   validateHistory(intent.history, config.nativeLaunchCeiling);
+  // A repair can spend absolute attempt N+1 inside directory N. Match the
+  // saved cursor's candidateAttempt, not the slug or enumeration order.
+  const lastItem = intent.history.findLast(
+    (participant: QueueParticipant) =>
+      participant.item.replace(/:[1-9]\d*$/, "") === cycle.selection.key,
+  )?.item;
+  let outcomeDirectory =
+    retainedAttempts.find(({ attempt }) => attempt.candidateAttempt === intent.attempts)
+      ?.directory ??
+    (intent.attempts > 0
+      ? retainedAttempts.find(({ attempt }) => attempt.item === lastItem)?.directory
+      : undefined) ??
+    directory;
+  if (config.integrationContinuation?.issueKey === cycle.selection.key) {
+    const integration = resolve(config.integrationContinuation.attemptDirectory, "integration");
+    outcomeDirectory = config.integrationContinuation.spentResolution
+      ? resolve(integration, "spent-resolution")
+      : integration;
+  }
+  if (verification !== ABSENT && verification.stop.marker !== intent.marker)
+    outcomeDirectory = resolve(config.verificationOnly!.attemptDirectory, "verification");
+  // Pre-setup stops have no attempt or terminal. Once one exists, bind to the
+  // stop's absolute attempt, never the last slug found while rendering routing.
+  if ((await optionalRecord(outcomeDirectory, "attempt")) === ABSENT) outcomeDirectory = directory;
+  // Legacy stop bodies already retain the typed, JSON-quoted diagnostic. Read
+  // that observation on recovery without adding a field to the old intent.
+  const retainedDiagnostic = / Diagnostic: ("(?:[^"\\]|\\.)*")\./.exec(intent.body)?.[1];
   await retainStopOutcome(
     {
       repository: config.repository,
       run: config.run,
       issue: cycle.selection.key,
-      stateDirectory: directory,
+      stateDirectory: outcomeDirectory,
     },
     intent.marker,
     intent.reason,
@@ -1051,7 +1079,9 @@ export async function stopCycle(
       digest: queue.queueDigest(intent),
     },
     resolve(directory, `cycle-${cycle.selection.cycle}-stop-${stop}.json`),
-    terminalHead,
+    null,
+    retainedDiagnostic ? JSON.parse(retainedDiagnostic) : undefined,
+    intent.history,
   );
   if (config.verificationOnly?.issueKey === cycle.selection.key) {
     const reserved = verification;

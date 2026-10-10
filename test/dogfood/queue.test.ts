@@ -4641,6 +4641,62 @@ async function fixture(itemCount = 1) {
   return { root, stateDirectory, config, items };
 }
 
+it("ISS-236 binds a bounded queue's configured source directory before continuation wrapping", async () => {
+  const phase = "source";
+  const f = await fixture();
+  const item = f.items[0]!;
+  item.implementationAttempt = 3;
+  item.terminalAttemptAdmission = { correctionUsed: false, resolutionUsed: false };
+  await writeFile(
+    resolve(f.stateDirectory, "attempt.json"),
+    JSON.stringify({
+      schemaVersion: "dogfood-bounded-queue-attempt/v1",
+      run: f.config.run,
+      index: 0,
+      item: item.id,
+      issue: item.issue,
+      base: item.base,
+      head: item.base,
+      candidateAttempt: 3,
+      phase,
+      reviewId: null,
+      findings: [],
+      history: [],
+      retries: 0,
+      acceptedStage: null,
+      stateDirectory: null,
+    }),
+  );
+  const fail = async (): Promise<never> => {
+    throw new QueueBlocked("outside-footprint");
+  };
+  const adapter: QueueAdapter = {
+    assertExecutor: async () => {},
+    setup: async () => ({ status: "ready" }),
+    source: fail,
+    repair: fail,
+    delivery: fail,
+    history: async () => [],
+  };
+  await expect(queueStep(f.config, adapter)).rejects.toMatchObject({
+    reason: "continuation-failed",
+  });
+  const outcomes = [...(await snapshot(f.root))].filter(([path]) =>
+    /outcome-[a-f0-9]{64}\.json$/.test(path),
+  );
+  expect(outcomes).toHaveLength(1);
+  expect(JSON.parse(outcomes[0]![1])).toMatchObject({
+    defectClass: "mechanical",
+    rootCause: "outside-footprint",
+    evidenceStatus: "established",
+    stage: item[phase].stateDirectory,
+    head: item.base,
+    terminal: { attempt: { path: resolve(f.stateDirectory, "attempt.json") } },
+  });
+  expect(await adapter.history()).toEqual([]);
+  expect(await currentCandidateAttempt(f.config)).toBe(3);
+});
+
 describe.each([
   [false, false, "candidate"],
   [false, true, "candidate"],
@@ -7350,6 +7406,73 @@ async function unpublishedReplanFixture() {
   const compose = (config = loop) => queueConfigFromLoop(config, f.repository, selected, policy);
   return { ...f, loop, selected, head, history, prior, priorSource, file, compose, policy };
 }
+
+it("ISS-236 preserves a typed continuation cause through queue wrapping and supervision replay", async () => {
+  const f = await unpublishedReplanFixture();
+  const q = await f.compose();
+  const source = q.items[0]!.source.stateDirectory;
+  const refresh = resolve(source, `refresh-${"c".repeat(40)}`);
+  await mkdir(refresh);
+  await writeFile(
+    resolve(source, "native-refresh.json"),
+    JSON.stringify({
+      directory: refresh,
+      previousHead: f.head,
+      main: "c".repeat(40),
+      conflict: { seed: "d".repeat(40) },
+      resolutionUsed: true,
+    }),
+  );
+  const adapter = repositoryQueueAdapter(q, f.repository, {
+    setup: f.setup,
+    gitExecutable: f.gitExecutable,
+  });
+  adapter.source = async () => {
+    throw new QueueBlocked("conflict-resolution-scope-escape", f.file);
+  };
+  await expect(queueStep(q, adapter)).rejects.toMatchObject({ reason: "continuation-failed" });
+  const before = await snapshot(q.stateDirectory);
+  const outcomes = [...before].filter(([path]) => /outcome-[a-f0-9]{64}\.json$/.test(path));
+  expect(outcomes).toHaveLength(1);
+  expect(JSON.parse(outcomes[0]![1])).toMatchObject({
+    kind: "stop",
+    stage: refresh,
+    head: "d".repeat(40),
+    defectClass: "mechanical",
+    rootCause: "conflict-resolution-boundary",
+    evidenceStatus: "established",
+  });
+  const comments: string[] = [];
+  const cycle = { selection: { ...f.selected, cycle: 1 }, initialHistory: await adapter.history() };
+  const host: SupervisionAdapter = {
+    currentMain: async () => f.head,
+    issue: async () => ({ state: "OPEN", key: f.selected.key, labels: [], comments }),
+    removeReady: async () => {},
+    close: async () => {},
+    comment: async (_config, _number, body) => {
+      comments.push(body);
+    },
+  };
+  const park = vi.fn(async () => "restore readiness after repair");
+  for (let replay = 0; replay < 2; replay++) {
+    expect(
+      await stopCycle(
+        f.loop,
+        cycle,
+        "continuation-failed",
+        5,
+        host,
+        { ...f.policy, park },
+        undefined,
+        replay ? 1 : undefined,
+      ),
+    ).toBe("item");
+    expect(await snapshot(q.stateDirectory)).toEqual(before);
+  }
+  expect(comments).toHaveLength(1);
+  expect(await adapter.history()).toEqual(f.history);
+  expect(await currentCandidateAttempt(q)).toBe(5);
+});
 
 it("ISS-235 a granted replan's custom slug cannot renew its inherited issue allowance", async () => {
   const f = await acceptedReplanFixture();

@@ -92,12 +92,16 @@ neither candidate exoneration nor retry authority. Gate candidate attribution
 still requires the existing same-command immutable-base control.
 
 The shared `dogfood-outcome/v1` record is `outcome-<identity hash>.json` in
-the existing runtime stage directory. It binds repository, issue, run,
+the existing runtime directory. It binds repository, issue, run,
 attempt/stage directory, occurrence identity, exact head when available,
 retained terminal evidence and the descriptive fields. Re-observation reads
-the same record. Pending and PASS produce no failure classification; proved
-hosted non-execution and verifier exit 73 are excluded. Malformed reports
-retain their verbatim source trace and receive a mechanical protocol cause,
+the same record. Stops reuse the worker or gate occurrence that caused them;
+typed conflict-validator and transport outcomes retain their existing
+discriminators. Stop bindings follow the named absolute attempt and its saved
+stage pointers, including repair and continuation stages, with the terminal
+path and digest when available. Pending and PASS produce no failure
+classification; proved hosted non-execution and verifier exit 73 are excluded.
+Malformed reports retain their verbatim source trace and receive a mechanical protocol cause,
 never an invented semantic verdict. Legacy launches keep their saved output
 schema; legacy evidence can receive a new descriptive record without backfilling
 terminals, prompts, configuration fingerprints or posted bodies. Classification
