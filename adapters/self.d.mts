@@ -13,6 +13,7 @@ export function previewWork(
   input: Parameters<typeof selectCandidates>[0],
 ): Promise<import("../scripts/dogfood/status.mjs").WorkPreview>;
 export const issueContext: RepositoryAdapter["issueContext"];
+export const planningContext: NonNullable<RepositoryAdapter["planningContext"]>;
 export const branchName: RepositoryAdapter["branchName"];
 export const pullRequest: RepositoryAdapter["pullRequest"];
 export const requiredChecks: RepositoryAdapter["requiredChecks"];

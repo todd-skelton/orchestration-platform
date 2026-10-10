@@ -22,6 +22,7 @@ import { DeliveryBlocked } from "../scripts/dogfood/delivery.mjs";
 import { acceptedReviewG0 } from "../scripts/dogfood/delivery-adapter.mjs";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
+import { planningAuthority } from "../scripts/dogfood/planning-context.mjs";
 
 const EXPECTED_REPOSITORY = "todd-skelton/orchestration-platform";
 const REQUIRED_CHECKS = [
@@ -179,6 +180,18 @@ export async function issueContext({
     acceptanceCriteria,
     rules: `${loopRules.trimEnd()}\n\nKeep the loop smaller: prefer deleting to adding.\n`,
   };
+}
+
+export async function planningContext(input) {
+  const pinned = pinnedPlanning(input.executorRoot, input.main, input.gitExecutable);
+  const [context, planning, issues] = await Promise.all([
+    issueContext({ ...input, planningRevision: input.main }),
+    loadPlanningSnapshot(input.executorRoot, pinned),
+    planningAuthority(input.repository),
+  ]);
+  validatePlanningSnapshot(planning);
+  if (!issues.some((row) => row.number === input.number)) throw new Error("missing planning issue");
+  return { context, planning, issues };
 }
 
 export function branchName({ key, attempt }) {

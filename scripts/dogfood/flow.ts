@@ -14,6 +14,7 @@ export type Role = "author" | "reviewer";
 export const CHASE_REVIEW_DELIVERY_BOUNDARY =
   "Publication, required hosted final-head checks, merge and deployment run only after review PASS and are enforced by the loop on the exact landing head. Their absence before the verdict is not a finding; a red required hosted check after PASS stops delivery. All pre-PASS evidence obligations, including executor-native gate evidence and focused tests, remain findings when missing (ISS-139).";
 export interface Config {
+  purpose?: "planning";
   authorFailures?: { count: number; ids: string[]; diagnostics?: Record<string, string> };
   routing?: import("./routing.mjs").RoutingSelection;
   owner: string;
@@ -276,15 +277,19 @@ export function workerPrompt(config: Config, role: Role, head: string, prompt: s
     role === "author"
       ? `Final response must be ONLY JSON: {"run":"${config.run}","role":"author","head":"${head}","verdict":"PASS","summary":""} (or verdict FAIL), with a short "summary" string of at most ${MAX_TERMINAL_SUMMARY_LENGTH} characters; use an empty string when there are no findings.`
       : `Final response must be ONLY JSON: {"run":"${config.run}","role":"reviewer","head":"${head}","verdict":"PASS","findings":[],"g0":"<answer>"} (or verdict FAIL). Answer G0 with a string: "Is there a simpler shape that still satisfies every acceptance criterion and every stated not-built reason? Answer No with one reason, or name the shape and the constraint you checked it against." Return the JSON object alone; its serialized length (JSON.stringify) must be at most ${MAX_TERMINAL_SUMMARY_LENGTH} characters. Write findings and G0 to fit within that total. Each finding is exactly {"file":"<repository path>","line":1,"severity":"blocking"|"note","text":"<finding>"}. Blocking findings must use changed candidate files. Advisory notes may cite existing unchanged files at the exact reviewed head. Both require a file, not a directory, and a valid one-based line at that head. A blocking finding requires FAIL; notes never block and grant no edit, repair or landing authority.`;
-  return (
-    `${prompt}\n\nPilot run ${config.run}; role ${role}; exact ${role === "author" ? "base" : "review head"}: ${head}.\n` +
-    `Allowed author paths: ${JSON.stringify(config.correctionPaths ?? config.allowedPaths)}. Author may edit source only: do not stage, commit, or change Git metadata; leave HEAD at the exact base. Reviewer must leave its worktree unchanged. Never push, publish, merge, or change credentials.\n` +
-    `Explain substantive findings in progress messages before the final response; these remain in the captured trace. ${report} Review every changed assertion independently.${localVerification}\n` +
-    `${defectPrompt}\n` +
-    (role === "author" && config.mainBase && config.mainBase !== config.base
-      ? "This corrective base already contains implementation work. If inspection and executed checks support the existing source, report PASS without manufacturing source changes; the unchanged candidate still requires independent review and all delivery gates.\n"
-      : "")
-  );
+  const planningReport =
+    role === "reviewer"
+      ? `${report.slice(0, report.indexOf("Blocking findings must"))}Findings cite proposal.json with valid one-based lines in the exact retained artifact. Blocking findings require FAIL; notes never grant application or implementation authority.`
+      : report;
+  return config.purpose === "planning"
+    ? `${prompt}\n\nPlanning purpose only; run ${config.run}; role ${role}; exact main ${head}. Author may write only proposal.json in this isolated drafts workspace. Reviewer is read-only. Never edit code, tests, configuration, runtime records, Git metadata or the executing checkout. Never invoke another model, publish, mutate GitHub, unpark or close work. No product gates or implementation acceptance. The controller runs planning:check and shared acceptance parsing. ${planningReport}\n${defectPrompt}\n`
+    : `${prompt}\n\nPilot run ${config.run}; role ${role}; exact ${role === "author" ? "base" : "review head"}: ${head}.\n` +
+        `Allowed author paths: ${JSON.stringify(config.correctionPaths ?? config.allowedPaths)}. Author may edit source only: do not stage, commit, or change Git metadata; leave HEAD at the exact base. Reviewer must leave its worktree unchanged. Never push, publish, merge, or change credentials.\n` +
+        `Explain substantive findings in progress messages before the final response; these remain in the captured trace. ${report} Review every changed assertion independently.${localVerification}\n` +
+        `${defectPrompt}\n` +
+        (role === "author" && config.mainBase && config.mainBase !== config.base
+          ? "This corrective base already contains implementation work. If inspection and executed checks support the existing source, report PASS without manufacturing source changes; the unchanged candidate still requires independent review and all delivery gates.\n"
+          : "");
 }
 function footprint(config: Config, changed: string[]) {
   requireThat(

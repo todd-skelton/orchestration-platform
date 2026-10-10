@@ -75,6 +75,10 @@ import {
 } from "./repository-adapter.mjs";
 import { gitSetupAdapter } from "./setup-adapter.mjs";
 import { SetupBlocked, setupStep, type SetupAdapter, type SetupConfig } from "./setup.mjs";
+import { planningKeyOf } from "../planning/board-check.mjs";
+// @ts-expect-error Node 24 executes TypeScript directly.
+import { planningStep, planningLevel, recoveryHypothesis } from "./planning-repair.ts";
+import type { PlanningInput, PlanningResult } from "./planning-repair.js";
 
 export const QUEUE_CONFIG_SCHEMA = "dogfood-bounded-queue-config/v1" as const;
 export const LOOP_CONFIG_SCHEMA = "dogfood-loop/v1" as const;
@@ -97,7 +101,7 @@ export interface QueueParticipant {
   ordinal: number;
   id: string;
   item: string;
-  stage: "source" | "repair" | "refresh";
+  stage: "source" | "repair" | "refresh" | "planning";
   role: "author" | "reviewer";
   outcome: "passed" | "failed" | "unknown" | "malformed" | "dead";
   usage: QueueUsage;
@@ -432,6 +436,7 @@ export type QueueDeliveryResult =
   | Extract<DeliveryResult, { status: "complete" }>;
 
 export interface QueueAdapter {
+  planning?(item: QueueItem): Promise<PlanningResult | undefined>;
   assertExecutor(): Promise<void>;
   history(): Promise<QueueParticipant[]>;
   setup(
@@ -446,6 +451,7 @@ export interface QueueAdapter {
 }
 
 export type QueueResult =
+  | (PlanningResult & { run: string; item: string; issue: string; cursor: number })
   | {
       status: "observing-author" | "observing-reviewer" | "observing-hosted-checks";
       run: string;
@@ -2828,7 +2834,15 @@ export async function queueConfigFromLoop(
     const priorSlug = `${selected.key.toLowerCase()}-attempt-${sourceAttempt}`;
     const priorQueue = resolve(runState, priorSlug);
     let attempt = await optionalRecord(priorQueue, "attempt");
+    // Planning owns no implementation transition. Keep the rejected source and
+    // its cursor pinned while the proposal is authored/reviewed/read repeatedly.
+    if ((await optionalRecord(priorQueue, "planning-recovery")) !== ABSENT) break;
     const conflict = await failedConflict(priorQueue, attempt);
+    if (
+      conflict &&
+      planningLevel((await optionalRecord(conflict.refresh.directory, "author-terminal")).defect)
+    )
+      break;
     if (conflict && attempt.phase === "delivery") {
       const history = await readQueueHistory({
         stateDirectory: priorQueue,
@@ -2848,7 +2862,15 @@ export async function queueConfigFromLoop(
     }
     // ISS-179: an explicitly unparked source FAIL consumes its original attempt,
     // just as the retained conflict failure above does, without inventing a review.
-    if (await pinnedSourceFailure(config, selected, sourceAttempt, priorQueue, attempt)) {
+    const sourceFailure = await pinnedSourceFailure(
+      config,
+      selected,
+      sourceAttempt,
+      priorQueue,
+      attempt,
+    );
+    if (planningLevel(sourceFailure?.defect)) break;
+    if (sourceFailure) {
       attempt = {
         ...attempt,
         phase: "failed",
@@ -2874,6 +2896,7 @@ export async function queueConfigFromLoop(
       priorQueue,
       attempt,
     );
+    if (planningLevel(repairFailure?.terminal.defect)) break;
     if (repairFailure && attempt.phase === "repair") {
       attempt = { ...attempt, phase: "failed" };
       await record(priorQueue, "attempt", attempt);
@@ -2887,6 +2910,7 @@ export async function queueConfigFromLoop(
       priorQueue,
       attempt,
     );
+    if (planningLevel(refreshFailure?.defect)) break;
     if (refreshFailure) {
       attempt = {
         ...attempt,
@@ -3249,7 +3273,7 @@ export function validateHistory(history: QueueParticipant[], ceiling: number) {
         participant.ordinal === index + 1 &&
         /^[A-Za-z0-9._:-]{1,128}$/.test(participant.id) &&
         /^[A-Za-z0-9._:-]{1,128}$/.test(participant.item) &&
-        ["source", "repair", "refresh"].includes(participant.stage) &&
+        ["source", "repair", "refresh", "planning"].includes(participant.stage) &&
         ["author", "reviewer"].includes(participant.role) &&
         ["passed", "failed", "unknown", "malformed", "dead"].includes(participant.outcome) &&
         validUsage(participant.usage),
@@ -3821,11 +3845,13 @@ export async function retainedSourceFailure(config: LoopConfig, selected: Select
     );
     const attempt = await optionalRecord(directory, "attempt");
     if (attempt === ABSENT) continue;
+    if ((await optionalRecord(directory, "planning-recovery")) !== ABSENT) return undefined;
     if (attempt.phase === "failed") return undefined;
     const terminal =
       (await pinnedSourceFailure(config, selected, number, directory, attempt)) ??
       (await pinnedRepairFailure(config, selected, number, directory, attempt))?.terminal;
     if (!terminal) return undefined;
+    if (planningLevel(terminal.defect)) return undefined;
     const history = await readQueueHistory({
       stateDirectory: directory,
       nativeLaunchCeiling: config.nativeLaunchCeiling,
@@ -4121,6 +4147,7 @@ async function pinnedRefreshFailure(
   return {
     head: refresh.head as string,
     reviewId: reviewer.id as string,
+    defect: review.defect,
     findings: review.findings,
     history,
   };
@@ -4583,13 +4610,31 @@ export async function failedDeliveryDiagnostic(
   return `${prefix}${path ?? finding?.text ?? ""}`.slice(0, 500);
 }
 
+class PlanningYield {
+  readonly result: QueueResult;
+  constructor(result: QueueResult) {
+    this.result = result;
+  }
+}
 export async function queueStep(config: QueueConfig, adapter: QueueAdapter): Promise<QueueResult> {
+  try {
+    return await implementationQueueStep(config, adapter);
+  } catch (error) {
+    if (error instanceof PlanningYield) return error.result;
+    throw error;
+  }
+}
+async function implementationQueueStep(
+  config: QueueConfig,
+  adapter: QueueAdapter,
+): Promise<QueueResult> {
   if (!config.items[0]?.verificationOnly) return runQueueStep(config, adapter);
   const stopped = await optionalRecord(config.stateDirectory, "verification-stop");
   if (stopped !== ABSENT) throw new QueueBlocked(stopped.reason, stopped.diagnostics);
   try {
     return await runQueueStep(config, adapter);
   } catch (error) {
+    if (error instanceof PlanningYield) throw error;
     let reason =
       error instanceof QueueBlocked || error instanceof DeliveryBlocked
         ? error.reason
@@ -4623,13 +4668,30 @@ async function runQueueStep(config: QueueConfig, adapter: QueueAdapter): Promise
   if (saved === ABSENT) await record(directory, "attempt", attempt);
   else validateAttempt(attempt, config);
 
+  const planning = async (item: QueueItem) => {
+    const result = await adapter.planning?.(item);
+    if (result)
+      throw new PlanningYield({
+        ...result,
+        run: config.run,
+        item: item.id,
+        issue: item.issue,
+        cursor: attempt.index,
+      });
+  };
+  await planning(config.items[attempt.index]!);
+
   const finalStep = async <T>(item: QueueItem, operation: () => Promise<T>): Promise<T> => {
     const executed =
       config.gateStopAuthorization?.hostedExecutedFailure &&
       config.gateStopAuthorization.stateDirectory === item.source.stateDirectory;
     try {
-      return await operation();
+      const result = await operation();
+      await planning(item);
+      return result;
     } catch (error) {
+      if (error instanceof PlanningYield) throw error;
+      await planning(item);
       if (
         (item.acceptedReplan ||
           item.conflictContinuation ||
@@ -5896,7 +5958,9 @@ export function repositoryQueueAdapter(
       const attempt = await native.launch(
         role,
         current,
-        `${repairCompatiblePrompt}${await priorAttemptRecords(item, role)}${await correctiveEvidence(item)}`,
+        current.purpose === "planning"
+          ? prompt
+          : `${repairCompatiblePrompt}${await priorAttemptRecords(item, role)}${await correctiveEvidence(item)}`,
       );
       demand(
         typeof attempt.id === "string" && /^[A-Za-z0-9._:-]{1,128}$/.test(attempt.id),
@@ -6201,6 +6265,226 @@ export function repositoryQueueAdapter(
   };
 
   return {
+    async planning(item) {
+      const saved = await optionalRecord(state, "planning-recovery");
+      const history = await readHistory();
+      const latest = history.findLast((row) => row.item === item.id && row.stage !== "planning");
+      if (saved === ABSENT && latest?.outcome !== "failed") return undefined;
+      const evidence: PlanningInput["evidence"] = [];
+      const collect = async (directory: string) => {
+        const entries = await readdir(directory, { withFileTypes: true }).catch(
+          (error: NodeJS.ErrnoException) => {
+            if (error.code === "ENOENT") return [];
+            throw error;
+          },
+        );
+        for (const entry of entries) {
+          const path = resolve(directory, entry.name);
+          if (
+            entry.isDirectory() &&
+            /^(source|repair|integration|spent-resolution|verification|gate-correction|gate-stop-continuation|refresh-[a-f0-9]{40})$/.test(
+              entry.name,
+            )
+          )
+            await collect(path);
+          else if (
+            entry.isFile() &&
+            /^(attempt|config|candidate|native-refresh|planning-recovery|author-attempt|author-terminal|reviewer-attempt|reviewer-terminal|outcome-[a-f0-9]{64})\.json$/.test(
+              entry.name,
+            )
+          ) {
+            const bytes = await readFile(path);
+            evidence.push({
+              path,
+              sha256: createHash("sha256").update(bytes).digest("hex"),
+              value: JSON.parse(bytes.toString("utf8")),
+            });
+          }
+        }
+      };
+      await collect(state);
+      const outcome =
+        saved === ABSENT
+          ? evidence.find(
+              (row) =>
+                row.value.schemaVersion === "dogfood-outcome/v1" &&
+                row.value.identity === `${latest!.role}:${latest!.id}` &&
+                ["brief", "slice", "design"].includes(row.value.defectClass) &&
+                row.value.evidenceStatus === "established",
+            )
+          : saved.outcome;
+      if (!outcome) return undefined;
+      const repository = options.repository;
+      const policy = item.delivery.policy as { key: string; number: number };
+      const { key, number } = policy;
+      const acquire = async (): Promise<PlanningInput> => {
+        const observationStart = new Date().toISOString();
+        demand(repository?.planningContext, "planning-context-unavailable");
+        const main = await currentMain((args: string[]) =>
+          native.git(item.setup.repositoryRoot, args),
+        );
+        let authority;
+        try {
+          authority = await repository!.planningContext!({
+            repository: item.source.repository,
+            key,
+            number,
+            executorRoot: item.setup.repositoryRoot,
+            gitExecutable,
+            main,
+          });
+        } catch (error) {
+          throw new QueueBlocked("planning-context-unavailable", String(error));
+        }
+        authority.issues = authority.issues.map((row) => ({
+          ...row,
+          key:
+            row.number === number
+              ? key
+              : item.source.repository === "todd-skelton/orchestration-platform"
+                ? (planningKeyOf(row.body) ?? `issue-${row.number}`)
+                : `cs-${row.number}`,
+        }));
+        const selected = authority.issues.find((row) => row.number === number);
+        demand(selected, "planning-context-unavailable");
+        const siblings = authority.issues.filter(
+          (row) =>
+            row.number === number ||
+            (selected.parent &&
+              (row.parent?.number === selected.parent.number ||
+                row.number === selected.parent.number)) ||
+            (selected.milestone && row.milestone?.number === selected.milestone.number),
+        );
+        // Prior same-lineage and sibling records are input evidence, never another
+        // ledger or a source of implementation acceptance.
+        const retained: PlanningInput["evidence"] = [...evidence];
+        const lineageHistory: QueueParticipant[] = [];
+        let attemptRoot = state;
+        while (
+          !/-attempt-[1-9]\d*$/.test(basename(attemptRoot)) &&
+          dirname(attemptRoot) !== attemptRoot
+        )
+          attemptRoot = dirname(attemptRoot);
+        const runRoot = dirname(attemptRoot);
+        const runRoots =
+          config.controller === `loop:${config.run}`
+            ? (await readdir(dirname(runRoot), { withFileTypes: true }))
+                .filter((entry) => entry.isDirectory())
+                .map((entry) => resolve(runRoot, "..", entry.name))
+                .sort()
+            : [dirname(state)];
+        for (const lineageRun of runRoots)
+          for (const entry of await readdir(lineageRun, { withFileTypes: true })) {
+            if (
+              !entry.isDirectory() ||
+              !/-attempt-[1-9]\d*$/.test(entry.name) ||
+              resolve(lineageRun, entry.name) === state
+            )
+              continue;
+            if (!siblings.some((row) => entry.name.startsWith(`${row.key.toLowerCase()}-attempt-`)))
+              continue;
+            const start = evidence.length;
+            await collect(resolve(lineageRun, entry.name));
+            retained.push(...evidence.splice(start));
+            lineageHistory.push(
+              ...(await readQueueHistory({
+                stateDirectory: resolve(lineageRun, entry.name),
+                nativeLaunchCeiling: config.nativeLaunchCeiling,
+                initialHistory: [],
+              })),
+            );
+          }
+        const hypotheses = retained.filter(
+          (row) =>
+            row.value.schemaVersion === "planning-recovery/v1" &&
+            row.path !== resolve(state, "planning-recovery.json"),
+        );
+        // Earlier runs inform independence and work hypotheses; they do not
+        // change this run's charged ordinals or native allowance.
+        const history = [
+          ...new Map<string, QueueParticipant>(
+            [
+              ...retained.flatMap((row) =>
+                Array.isArray(row.value.history) ? row.value.history : [],
+              ),
+              ...lineageHistory,
+              ...(await readHistory()),
+            ].map((row: QueueParticipant) => [row.id, row]),
+          ).values(),
+        ];
+        const stopped = [
+          { key, outcome },
+          ...siblings
+            .filter((row) => row.key !== key && row.state !== "CLOSED")
+            .flatMap((row) => {
+              const last = history.findLast(
+                (participant) =>
+                  participantIssue(participant.item) === row.key &&
+                  participant.stage !== "planning",
+              );
+              const failure =
+                last?.outcome === "failed"
+                  ? retained.find(
+                      (record) =>
+                        record.value.identity === `${last.role}:${last.id}` &&
+                        record.value.schemaVersion === "dogfood-outcome/v1",
+                    )
+                  : undefined;
+              return failure ? [{ key: row.key, outcome: failure }] : [];
+            }),
+        ];
+        const lineages = stopped.map((lineage) => ({
+          key: lineage.key,
+          lastFailure: lineage.outcome.sha256,
+          priorHypotheses: [
+            ...new Set<string>(
+              hypotheses.flatMap((row) =>
+                row.value.proposal
+                  ? JSON.parse(row.value.proposal.raw)
+                      .lineages.filter((prior: any) => prior.key === lineage.key)
+                      .map((prior: any) => recoveryHypothesis(prior.body).newHypothesis)
+                  : [],
+              ),
+            ),
+          ],
+        }));
+        const candidate = await optionalRecord(item.source.stateDirectory, "candidate");
+        return {
+          observationStart,
+          observationEnd: new Date().toISOString(),
+          main,
+          outcome,
+          authority,
+          evidence: retained,
+          siblings: siblings.map((row) => row.key).sort(),
+          lineages,
+          history,
+          branch: item.setup.sourceBranch,
+          head: outcome.value.head ?? (candidate === ABSENT ? item.source.base : candidate.head),
+        };
+      };
+      const bounded = boundedNative(item, "planning");
+      const cursor = await optionalRecord(state, "attempt");
+      const source = {
+        ...item.source,
+        inheritedWorkerRetry:
+          !!item.source.inheritedWorkerRetry ||
+          (cursor !== ABSENT && cursor.retries > 0) ||
+          evidence.some(
+            (row) => /(?:author|reviewer)-attempt\.json$/.test(row.path) && row.value.retries === 1,
+          ),
+      };
+      return planningStep({
+        directory: state,
+        source,
+        native: { ...bounded, observe: native.observe },
+        outcome,
+        acquire,
+        history: readHistory,
+        terminal: (role, attempt, terminal) =>
+          syncParticipant(item, "planning", role, attempt, terminal),
+      });
+    },
     async assertExecutor() {
       demand(isAbsolute(executingRoot), "controller-executor-unverified");
       const [executor, ...roots] = await Promise.all(

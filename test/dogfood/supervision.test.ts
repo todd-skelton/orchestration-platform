@@ -83,9 +83,11 @@ it("ISS-236 reuses the native author's cause and exact terminal despite a later 
   roots.push(f.root);
   const observe = f.native.observe;
   const defect: Defect = {
-    defectClass: "brief",
-    rootCause: "contradictory-acceptance",
-    explanation: "The two required behaviors contradict each other.",
+    // ISS-237 now routes brief failures to planning before the parking observer.
+    // Keep this legacy stop-binding test on an ordinary implementation failure.
+    defectClass: "implementation-known-remedy",
+    rootCause: "incorrect-comparison",
+    explanation: "The implementation reverses the required comparison.",
     evidenceStatus: "established",
     evidence: ["brief.md:1"],
   };
