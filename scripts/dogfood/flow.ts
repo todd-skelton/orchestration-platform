@@ -6,6 +6,9 @@ import { MAX_TERMINAL_SUMMARY_LENGTH, terminalSummary } from "./terminal-summary
 // @ts-expect-error Node 24 executes this private TypeScript composition directly.
 import * as continuation from "./continuation.ts";
 import type { PreReviewEvidence } from "./continuation.js";
+// @ts-expect-error Node 24 executes this private TypeScript module directly.
+import { defectPrompt, retainWorkerOutcome } from "./outcome.ts";
+import type { Defect } from "./outcome.js";
 
 export type Role = "author" | "reviewer";
 export const CHASE_REVIEW_DELIVERY_BOUNDARY =
@@ -59,6 +62,7 @@ export interface Attempt {
   retryContext?: string;
 }
 export interface Terminal {
+  defect?: Defect;
   status: "running" | "passed" | "failed" | "malformed" | "dead";
   id: string;
   head?: string;
@@ -276,6 +280,7 @@ export function workerPrompt(config: Config, role: Role, head: string, prompt: s
     `${prompt}\n\nPilot run ${config.run}; role ${role}; exact ${role === "author" ? "base" : "review head"}: ${head}.\n` +
     `Allowed author paths: ${JSON.stringify(config.correctionPaths ?? config.allowedPaths)}. Author may edit source only: do not stage, commit, or change Git metadata; leave HEAD at the exact base. Reviewer must leave its worktree unchanged. Never push, publish, merge, or change credentials.\n` +
     `Explain substantive findings in progress messages before the final response; these remain in the captured trace. ${report} Review every changed assertion independently.${localVerification}\n` +
+    `${defectPrompt}\n` +
     (role === "author" && config.mainBase && config.mainBase !== config.base
       ? "This corrective base already contains implementation work. If inspection and executed checks support the existing source, report PASS without manufacturing source changes; the unchanged candidate still requires independent review and all delivery gates.\n"
       : "")
@@ -625,6 +630,7 @@ async function runStep(
         if (terminal.status === "running") return finish(`observing-${role}`, { attempt });
       }
       if (terminal.status === "dead") {
+        await retainWorkerOutcome(config, role, attempt, terminal);
         const diagnostics = terminalSummary(terminal.summary);
         await replace(directory, `${role}-terminal`, terminal);
         if (terminal.modelRefused) {
@@ -648,7 +654,8 @@ async function runStep(
       }
       if (role === "reviewer" && ["passed", "failed"].includes(terminal.status)) {
         try {
-          parseReview(terminal.summary, config.run, reviewed.head);
+          const report = parseReview(terminal.summary, config.run, reviewed.head);
+          if (report.defect) terminal.defect = report.defect;
         } catch (error) {
           terminal = { ...terminal, status: "malformed" };
           parseError =
@@ -656,6 +663,7 @@ async function runStep(
         }
       }
       if (terminal.status === "malformed") {
+        await retainWorkerOutcome(config, role, attempt, terminal);
         parseError ??= "malformed-worker-verdict";
         await replace(directory, `${role}-terminal`, terminal);
         if (!retry) {
@@ -669,6 +677,7 @@ async function runStep(
         }
         throw new QueueBlocked(`${role}-malformed`, terminal.summary ?? parseError, retries);
       }
+      await retainWorkerOutcome(config, role, attempt, terminal);
       await replace(directory, `${role}-terminal`, terminal);
       break;
     }

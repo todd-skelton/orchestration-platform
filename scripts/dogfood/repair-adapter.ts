@@ -34,7 +34,7 @@ const advisoryContext = (handoff: RepairHandoff) =>
 
 export function sourceReviewerReportPrompt(reviewPaths: string[]) {
   return (
-    "The final reviewer report has exactly run, role, head, verdict, findings and g0. " +
+    "The final reviewer report has exactly run, role, head, verdict, findings, g0 and defect. " +
     'Use verdict "PASS" or "FAIL" and findings shaped exactly {file,line,severity,text}, where severity is "blocking" or "note". ' +
     'Answer G0 with a string: "Is there a simpler shape that still satisfies every acceptance criterion and every stated not-built reason? Answer No with one reason, or name the shape and the constraint you checked it against." A blocking finding requires FAIL; notes never block. ' +
     reviewLocationContract(reviewPaths) +
@@ -47,7 +47,7 @@ function reviewerReportPrompt(handoff: RepairHandoff) {
     `This is a DELTA review inheriting complete predecessor ${handoff.predecessorCompleteSweep}. ` +
     `Delivery main base: ${handoff.mainBase}; corrective author base: ${handoff.correctiveBase}; implementation candidate ${handoff.implementation.attempts} of ${handoff.implementation.ceiling}. ` +
     `Inspect only the prescribed remedies ${JSON.stringify(blockingFindings(handoff))} and their direct callers; preserve all acceptance criteria and assertions. ${advisoryContext(handoff)}\n` +
-    "The final reviewer report has exactly run, role, head, verdict, findings and g0. " +
+    "The final reviewer report has exactly run, role, head, verdict, findings, g0 and defect. " +
     'Use verdict "PASS" or "FAIL" and findings shaped exactly {file,line,severity,text}, where severity is "blocking" or "note". ' +
     'Answer G0 with a string: "Is there a simpler shape that still satisfies every acceptance criterion and every stated not-built reason? Answer No with one reason, or name the shape and the constraint you checked it against." A blocking finding requires FAIL; notes never block. ' +
     reviewLocationContract(handoff.sourcePaths) +

@@ -8,6 +8,8 @@ import { promisify } from "node:util";
 import { QueueBlocked } from "./flow.ts";
 import type { Adapter, Attempt, Config, Role, Terminal } from "./flow.js";
 import { MAX_TERMINAL_SUMMARY_LENGTH, terminalSummary } from "./terminal-summary.mjs";
+// @ts-expect-error Node 24 executes this private TypeScript module directly.
+import { defectSchema, validReportDefect } from "./outcome.ts";
 
 const exec = promisify(execFile);
 const EXIT_RECEIPT_WINDOW_MS = 30_000;
@@ -398,6 +400,7 @@ export function parseTrace(
   expected?: string,
   launcherFailed = false,
   providerBaseUrl = process.env.CODEX_PROVIDER_BASE_URL,
+  requireDefect = false,
 ): Terminal {
   const rows = events(trace, complete && !launcherFailed);
   const ids = rows.filter((row) => row.type === "thread.started").map((row) => row.thread_id);
@@ -480,22 +483,25 @@ export function parseTrace(
     verdict.run === config.run && verdict.role === role,
     "worker-verdict-identity-mismatch:malformed-worker-verdict-compatibility",
   );
+  if (requireDefect) demand(validReportDefect(verdict, true), "malformed-worker-defect");
+  const causalKeys = requireDefect ? 1 : 0;
   demand(
     role === "reviewer"
-      ? Object.keys(verdict).length === 6 &&
+      ? Object.keys(verdict).length === 6 + causalKeys &&
           ["run", "role", "head", "verdict", "findings", "g0"].every((key) =>
             Object.hasOwn(verdict, key),
           ) &&
           Array.isArray(verdict.findings) &&
           typeof verdict.g0 === "string"
-      : Object.keys(verdict).length === 5 &&
+      : Object.keys(verdict).length === 5 + causalKeys &&
           ["run", "role", "head", "verdict", "summary"].every((key) =>
             Object.hasOwn(verdict, key),
           ) &&
           typeof verdict.summary === "string",
-    role === "reviewer"
-      ? "The reviewer object must have exactly run, role, head, verdict, findings (array) and g0 (string)."
-      : "The author object must have exactly run, role, head, verdict and summary (string).",
+    (role === "reviewer"
+      ? "The reviewer object must have exactly run, role, head, verdict, findings (array) and g0 (string)"
+      : "The author object must have exactly run, role, head, verdict and summary (string)") +
+      (requireDefect ? ", plus defect (null on PASS, one causal object on FAIL)." : "."),
   );
   if (role === "author" && verdict.summary.length > MAX_TERMINAL_SUMMARY_LENGTH)
     throw malformed(
@@ -511,6 +517,7 @@ export function parseTrace(
     status: verdict.verdict === "PASS" ? "passed" : "failed",
     head: verdict.head,
     usage: turns[0].usage,
+    ...(verdict.defect ? { defect: verdict.defect } : {}),
     ...(summary ? { summary } : {}),
   };
 }
@@ -519,8 +526,9 @@ export function outputSchema(config: Config, role: Role) {
     return {
       type: "object",
       additionalProperties: false,
-      required: ["run", "role", "head", "verdict", "findings", "g0"],
+      required: ["run", "role", "head", "verdict", "findings", "g0", "defect"],
       properties: {
+        defect: defectSchema,
         run: { type: "string", enum: [config.run] },
         role: { type: "string", enum: [role] },
         head: { type: "string", pattern: "^[a-f0-9]{40}$" },
@@ -545,8 +553,9 @@ export function outputSchema(config: Config, role: Role) {
   return {
     type: "object",
     additionalProperties: false,
-    required: ["run", "role", "head", "verdict", "summary"],
+    required: ["run", "role", "head", "verdict", "summary", "defect"],
     properties: {
+      defect: defectSchema,
       run: { type: "string", enum: [config.run] },
       role: { type: "string", enum: [role] },
       head: { type: "string", enum: [config.base] },
@@ -638,7 +647,20 @@ export function codexAdapter(gitExecutable = "git", now = Date.now): Adapter {
       const launcherFailed = Boolean(exit) && JSON.parse(exit).code !== 0;
       let terminal: Terminal;
       try {
-        terminal = parseTrace(trace, Boolean(exit), role, config, attempt.id, launcherFailed);
+        // Saved launches own their original schema; do not change their prompts
+        // or config fingerprint when observing them with a newer executor.
+        const schema = await optionalText(attemptArtifact(attempt, "output-schema.json"));
+        const requireDefect = schema ? JSON.parse(schema).required.includes("defect") : false;
+        terminal = parseTrace(
+          trace,
+          Boolean(exit),
+          role,
+          config,
+          attempt.id,
+          launcherFailed,
+          undefined,
+          requireDefect,
+        );
         if (
           launcherFailed &&
           terminal.status === "dead" &&

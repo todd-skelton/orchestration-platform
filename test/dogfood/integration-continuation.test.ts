@@ -396,11 +396,24 @@ async function exhaustedFixture(shape: Shape = "conflict", spentRetry = false, a
     for (const [path, bytes] of retained) expect(await readFile(path, "utf8")).toBe(bytes);
     // New run-state files belong to the integration directory or later supervision cycles.
     for (const path of (await snapshot(runState)).keys())
-      if (!retained.has(path))
+      if (!retained.has(path)) {
+        if (path.startsWith(resolve(runState, "outcome-"))) {
+          const outcome = JSON.parse(await readFile(path, "utf8"));
+          expect(outcome).toMatchObject({
+            schemaVersion: "dogfood-outcome/v1",
+            run: RUN,
+            kind: "stop",
+            stage: runState,
+          });
+          expect(outcome.identity).toMatch(new RegExp(`^loop-stop:${RUN}:`));
+          expect(Number(outcome.identity.split(":").at(-2))).toBeGreaterThanOrEqual(4);
+          continue;
+        }
         expect(
           path.startsWith(`${resolve(attemptDirectory, "integration")}${sep}`) ||
             Number(/cycle-(\d+)-/.exec(path.slice(runState.length))?.[1]) >= 4,
         ).toBe(true);
+      }
     expect(await readdir(refreshDirectory)).toEqual([]);
     expect(await git(["rev-parse", "HEAD"], preserved)).toBe(reviewed);
     expect(await git(["status", "--porcelain"], preserved)).toBe("");
@@ -2527,7 +2540,9 @@ async function terminalAdmissionFixture() {
     head: f.reviewed,
     resolutionUsed: true,
   });
-  await f.put(f.sourceDirectory, "gate-correction", { directory: "synthetic consumed correction" });
+  await f.put(f.sourceDirectory, "gate-correction", {
+    directory: resolve(f.sourceDirectory, "gate-correction"),
+  });
   const priorPublication = {
     number: 9001,
     url: "https://github.com/fixture/repository/pull/9001",
