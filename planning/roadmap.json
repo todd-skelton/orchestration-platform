@@ -950,7 +950,7 @@
       "title": "Author and independently review bounded planning repairs inside the loop",
       "summary": "Reuse native worker execution for ISSUE, SET and EPIC planning proposals with independent exact-body review.",
       "milestone": "M1",
-      "blockedBy": ["ISS-236"]
+      "blockedBy": ["ISS-236", "ISS-252"]
     },
     {
       "key": "ISS-238",
@@ -1063,6 +1063,14 @@
       "summary": "Bridge the retained v2 published spent-resolution lineage into ordinary reviewed recovery after ISS-241, preserving every ISS-247 obligation, count and current-head delivery gate without a new grant.",
       "milestone": "M1",
       "blockedBy": ["ISS-241"]
+    },
+    {
+      "key": "ISS-252",
+      "file": "planning/drafts/ISS-252.md",
+      "title": "Preserve registry configuration through retained planning replay",
+      "summary": "Relocate the unchanged optional Config registry member on main and prove first-replay compatibility through the existing native unpublished accepted-replan fixture without new execution authority.",
+      "milestone": "M1",
+      "blockedBy": []
     }
   ]
 }
