@@ -7460,11 +7460,19 @@ async function unpublishedReplanFixture(mainFlow?: string) {
   return { ...f, loop, selected, head, history, prior, priorSource, file, compose, policy };
 }
 
-it.each(["baseline", "production", "planning already on main"])(
-  "ISS-252 replays FIRST planning insertion through unpublished native delivery: %s",
-  async (mode) => {
+it.each(
+  ["baseline", "production", "planning already on main"].flatMap((mode) =>
+    ["checkout", "CRLF"].map((eol) => [mode, eol]),
+  ),
+)(
+  "ISS-252 replays FIRST planning insertion through unpublished native delivery: %s (%s)",
+  async (mode, eol) => {
     const path = "scripts/dogfood/flow.ts";
-    const production = await readFile(resolve(import.meta.dirname, "../..", path), "utf8");
+    let production = await readFile(resolve(import.meta.dirname, "../..", path), "utf8");
+    if (eol === "CRLF") production = production.replace(/\r?\n/g, "\r\n");
+    // Git stores LF blobs, but a Windows checkout can supply CRLF. Normalize
+    // before modeling the insertions or the FIRST commit becomes empty.
+    production = production.replace(/\r\n/g, "\n");
     // Reconstruct the pre-planning baseline with the old registry location.
     // The day-after control applies the first commit's entire flow.ts change.
     const mainFlow =
@@ -7721,6 +7729,7 @@ it.each(["baseline", "production", "planning already on main"])(
     ).toEqual([resolve(item.source.stateDirectory, "author-attempt.json")]);
     console.info("ISS-252 native replay", {
       mode,
+      eol,
       ancestor: f.selected.base,
       first,
       failedHead: f.head,
