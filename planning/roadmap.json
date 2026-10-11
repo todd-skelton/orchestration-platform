@@ -1071,6 +1071,14 @@
       "summary": "Relocate the unchanged optional Config registry member on main and prove first-replay compatibility through the existing native unpublished accepted-replan fixture without new execution authority.",
       "milestone": "M1",
       "blockedBy": []
+    },
+    {
+      "key": "ISS-253",
+      "file": "planning/drafts/ISS-253.md",
+      "title": "Retain safe diagnostics when a squash merge fails",
+      "summary": "Retain bounded safe nonqueued merge-failure diagnostics through existing native stop records without changing reconciliation, retry authority or historical accounting.",
+      "milestone": "M1",
+      "blockedBy": []
     }
   ]
 }
