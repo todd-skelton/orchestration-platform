@@ -15,7 +15,6 @@ export type Role = "author" | "reviewer";
 export const CHASE_REVIEW_DELIVERY_BOUNDARY =
   "Publication, required hosted final-head checks, merge and deployment run only after review PASS and are enforced by the loop on the exact landing head. Their absence before the verdict is not a finding; a red required hosted check after PASS stops delivery. All pre-PASS evidence obligations, including executor-native gate evidence and focused tests, remain findings when missing (ISS-139).";
 export interface Config {
-  modelRegistry?: string;
   authorFailures?: { count: number; ids: string[]; diagnostics?: Record<string, string> };
   routing?: import("./routing.mjs").RoutingSelection;
   owner: string;
@@ -28,6 +27,7 @@ export interface Config {
   worktree: string;
   reviewWorktree: string;
   stateDirectory: string;
+  modelRegistry?: string;
   allowedPaths: string[];
   correctionPaths?: string[];
   preReviewEvidence?: PreReviewEvidence;
