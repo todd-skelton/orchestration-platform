@@ -7222,14 +7222,28 @@ it.each(
   }
 });
 
-async function acceptedReplanFixture() {
+async function acceptedReplanFixture(planningFlow?: string) {
   const f = await loopFixture();
   const git = async (args: string[]) =>
     (await execute(f.gitExecutable, ["-C", f.repository, ...args])).stdout.trim();
+  const flowPath = "scripts/dogfood/flow.ts";
+  if (planningFlow !== undefined) {
+    await mkdir(resolve(f.repository, "scripts/dogfood"), { recursive: true });
+    await writeFile(resolve(f.repository, flowPath), planningFlow);
+    await git(["add", flowPath]);
+    await git(["commit", "-m", "synthetic pre-registry planning ancestor"]);
+    f.selected.base = await git(["rev-parse", "HEAD"]);
+  }
   await git(["checkout", "-b", "codex/7766-jpeg-g4"]);
-  await writeFile(resolve(f.repository, "jpeg.txt"), "preserved JPEG implementation\n");
+  if (planningFlow !== undefined)
+    await writeFile(resolve(f.repository, flowPath), planningPurpose(planningFlow));
+  else await writeFile(resolve(f.repository, "jpeg.txt"), "preserved JPEG implementation\n");
   await git(["add", "."]);
-  await git(["commit", "-m", "rejected candidate"]);
+  await git([
+    "commit",
+    "-m",
+    planningFlow === undefined ? "rejected candidate" : "synthetic FIRST planning Config insertion",
+  ]);
   const head = await git(["rev-parse", "HEAD"]);
   await git(["checkout", "main"]);
   const loop: LoopConfig = {
@@ -7344,8 +7358,21 @@ async function acceptedReplanFixture() {
   return { ...f, loop, selected, head, history, preserved, oldSource, git, compose, setup, policy };
 }
 
-async function unpublishedReplanFixture() {
-  const f = await acceptedReplanFixture();
+// ISS-252: explicitly synthetic equivalent of 5da2b5aa's complete flow.ts change.
+// The later two commits are stand-ins, not copies of ISS-237's retained feature.
+function planningPurpose(flow: string) {
+  return flow.includes('  purpose?: "planning";\n')
+    ? flow
+    : flow.replace(
+        "export interface Config {\n",
+        'export interface Config {\n  purpose?: "planning";\n',
+      );
+}
+
+async function unpublishedReplanFixture(mainFlow?: string) {
+  const f = await acceptedReplanFixture(
+    mainFlow?.replace('  purpose?: "planning";\n', "").replace("  modelRegistry?: string;\n", ""),
+  );
   const key = "cs-7844";
   const number = 7844;
   const priorRun = "m2-ordering-prior";
@@ -7356,8 +7383,24 @@ async function unpublishedReplanFixture() {
   await writeFile(resolve(f.repository, file), "prior two unsupported reads\n");
   await f.git(["add", file]);
   await f.git(["commit", "-m", "unpublished ordering candidate"]);
+  if (mainFlow !== undefined) {
+    await appendFile(resolve(f.repository, file), "synthetic third retained commit\n");
+    await f.git(["add", file]);
+    await f.git(["commit", "-m", "synthetic third retained commit"]);
+  }
   const head = await f.git(["rev-parse", "HEAD"]);
   await f.git(["checkout", "main"]);
+  if (mainFlow !== undefined) {
+    await writeFile(resolve(f.repository, "scripts/dogfood/flow.ts"), mainFlow);
+    // Main-only production callers must survive automatic integration byte for byte.
+    for (const file of ["queue.ts", "routing.ts"])
+      await cp(
+        resolve(import.meta.dirname, "../../scripts/dogfood", file),
+        resolve(f.repository, "scripts/dogfood", file),
+      );
+    await f.git(["add", "scripts/dogfood"]);
+    await f.git(["commit", "-m", "synthetic registry main with production callers"]);
+  }
   const packet = replanPacket(f.loop.stateRoot, head);
   const history = f.history.slice(0, 8).map((p, index) => ({
     ...p,
@@ -7376,7 +7419,10 @@ async function unpublishedReplanFixture() {
     attemptSlug: `${key}-final-attempt-5`,
     publication: null,
     allowedPaths: [file],
-    preReviewEvidence: evidenceDescriptor(resolve(f.loop.stateRoot, "host-evidence")),
+    preReviewEvidence:
+      mainFlow === undefined
+        ? evidenceDescriptor(resolve(f.loop.stateRoot, "host-evidence"))
+        : null,
     scope:
       "Correct only the two unsupported event-store reads before the day +0/+1 cancellation proof",
   });
@@ -7413,6 +7459,286 @@ async function unpublishedReplanFixture() {
   const compose = (config = loop) => queueConfigFromLoop(config, f.repository, selected, policy);
   return { ...f, loop, selected, head, history, prior, priorSource, file, compose, policy };
 }
+
+it.each(
+  ["baseline", "production", "planning already on main"].flatMap((mode) =>
+    ["checkout", "CRLF"].map((eol) => [mode, eol]),
+  ),
+)(
+  "ISS-252 replays FIRST planning insertion through unpublished native delivery: %s (%s)",
+  async (mode, eol) => {
+    const path = "scripts/dogfood/flow.ts";
+    let production = await readFile(resolve(import.meta.dirname, "../..", path), "utf8");
+    if (eol === "CRLF") production = production.replace(/\r?\n/g, "\r\n");
+    // Git stores LF blobs, but a Windows checkout can supply CRLF. Normalize
+    // before modeling the insertions or the FIRST commit becomes empty.
+    production = production.replace(/\r\n/g, "\n");
+    // Reconstruct the pre-planning baseline with the old registry location.
+    // The day-after control applies the first commit's entire flow.ts change.
+    const mainFlow =
+      mode === "baseline"
+        ? production
+            .replace('  purpose?: "planning";\n', "")
+            .replace("  modelRegistry?: string;\n", "")
+            .replace(
+              "export interface Config {\n",
+              "export interface Config {\n  modelRegistry?: string;\n",
+            )
+        : mode === "production"
+          ? production
+          : planningPurpose(production);
+    const f = await unpublishedReplanFixture(mainFlow);
+    const main = await f.git(["rev-parse", "main"]);
+    const retained = (
+      await f.git(["rev-list", "--reverse", `${f.selected.base}..${f.head}`])
+    ).split("\n");
+    expect(retained).toHaveLength(3);
+    const first = retained[0]!;
+    const firstBefore = await f.git(["show", `${first}^:${path}`]);
+    const firstAfter = await f.git(["show", `${first}:${path}`]);
+    expect(firstAfter).toBe(planningPurpose(firstBefore));
+    expect(await f.git(["diff-tree", "--no-commit-id", "--name-only", "-r", first])).toBe(path);
+    const originalCommits = await Promise.all(
+      retained.map((sha) => f.git(["cat-file", "commit", sha])),
+    );
+    const oldRecords = await snapshot(f.loop.acceptedReplan.priorAttemptDirectory);
+    await f.git(["remote", "add", "origin", "https://github.com/chase-sets/chase-sets.git"]);
+    const launcher = resolve(f.stateRoot, "iss252-synthetic-pnpm.mjs");
+    await writeFile(
+      launcher,
+      'console.log("Synthetic lifecycle gate; not implementation gate evidence");\n',
+    );
+    vi.stubEnv("npm_execpath", launcher);
+    let q = await f.compose();
+    const item = q.items[0]!;
+    expect(item.source.base).toBe(f.head);
+    expect(item.delivery.refresh).toBeUndefined();
+    expect(item.acceptedReplan?.publication).toBeNull();
+    expect(q.initialHistory).toEqual(f.history);
+    const launches: { role: string; directory: string; head: string }[] = [];
+    const rebases: {
+      args: string[];
+      stdout: string;
+      stderr: string;
+      firstConflict?: string;
+      conflicts?: string;
+    }[] = [];
+    let reviewReady = false;
+    let loseIntegrationResponse = mode !== "baseline";
+    const native: Adapter = {
+      async preflight() {},
+      async git(tree, args) {
+        const actual =
+          args[0] === "fetch" ? args.map((arg) => (arg === "origin" ? f.repository : arg)) : args;
+        let result;
+        try {
+          result = await execute(f.gitExecutable, ["-C", tree, ...actual]);
+        } catch (error: any) {
+          if (args[0] === "rebase" && args[1] !== "--abort")
+            rebases.push({
+              args,
+              stdout: error.stdout,
+              stderr: error.stderr,
+              firstConflict: (
+                await execute(f.gitExecutable, ["-C", tree, "rev-parse", "REBASE_HEAD"])
+              ).stdout.trim(),
+              conflicts: (
+                await execute(f.gitExecutable, [
+                  "-C",
+                  tree,
+                  "diff",
+                  "--name-only",
+                  "--diff-filter=U",
+                ])
+              ).stdout.trim(),
+            });
+          throw error;
+        }
+        if (args[0] === "rebase" && args[1] !== "--abort") {
+          rebases.push({ args, ...result });
+          if (loseIntegrationResponse) {
+            loseIntegrationResponse = false;
+            throw new Error("Synthetic lost response after successful native rebase");
+          }
+        }
+        return args.includes("-z") ? result.stdout : result.stdout.trim();
+      },
+      async launch(role, config) {
+        launches.push({
+          role,
+          directory: config.stateDirectory,
+          head:
+            role === "author"
+              ? config.base
+              : await native.git(config.reviewWorktree, ["rev-parse", "HEAD"]),
+        });
+        if (role === "author") {
+          expect(config.stateDirectory).toBe(item.source.stateDirectory);
+          expect(config.base).toBe(f.head);
+          await appendFile(resolve(config.worktree, f.file), "synthetic ordinary correction\n");
+        }
+        const trace = resolve(config.stateDirectory, `${role}.jsonl`);
+        await writeFile(trace, "Synthetic worker evidence; not an implementation verdict.\n");
+        return { id: randomUUID(), pid: 111, trace, launchedAt: 1 };
+      },
+      async observe(role, config, attempt) {
+        if (
+          role === "reviewer" &&
+          config.stateDirectory !== item.source.stateDirectory &&
+          !reviewReady
+        )
+          return { id: attempt.id, status: "running" };
+        const head =
+          role === "author"
+            ? config.base
+            : await native.git(config.worktree, ["rev-parse", "HEAD"]);
+        return {
+          id: attempt.id,
+          status: "passed",
+          head,
+          ...(role === "reviewer"
+            ? {
+                summary: JSON.stringify({
+                  run: config.run,
+                  role,
+                  head,
+                  verdict: "PASS",
+                  findings: [],
+                  g0: "Synthetic independent review.",
+                  defect: null,
+                }),
+              }
+            : {}),
+        };
+      },
+      async checks() {
+        throw new Error("No source publication");
+      },
+    };
+    const adapter = () =>
+      repositoryQueueAdapter(q, f.repository, {
+        native,
+        setup: f.setup,
+        gitExecutable: f.gitExecutable,
+        async assertExecutor() {},
+        deliveryPolicy: {
+          async plan() {
+            throw new DeliveryBlocked("Synthetic final-head delivery boundary");
+          },
+        },
+      });
+    await expect(
+      queueStep(q, {
+        ...adapter(),
+        async delivery() {
+          throw new Error("Synthetic source boundary");
+        },
+      }),
+    ).rejects.toThrow("Synthetic source boundary");
+    const accepted = JSON.parse(await readFile(resolve(q.stateDirectory, "attempt.json"), "utf8"));
+    const corrected = accepted.head as string;
+    expect(await native.git(item.source.worktree, ["rev-parse", `${corrected}^`])).toBe(f.head);
+    expect(await native.git(item.source.worktree, ["diff", "--name-only", f.head, corrected])).toBe(
+      f.file,
+    );
+    const sourceEvidence = await snapshot(item.source.stateDirectory);
+    const reservation = [...(await snapshot(f.loop.stateRoot))].filter(([file]) =>
+      /accepted-replan-[a-f0-9]+\.json$/.test(file),
+    );
+    expect(reservation).toHaveLength(1);
+    const deliver = () => adapter().delivery(item, accepted);
+    if (mode === "baseline") {
+      await expect(deliver()).rejects.toThrow("conflict-resolution-scope-escape");
+      expect(rebases).toHaveLength(1);
+      expect(rebases[0]).toMatchObject({
+        args: ["rebase", main],
+        firstConflict: first,
+        conflicts: path,
+      });
+      expect(await native.git(item.source.worktree, ["rev-parse", "HEAD"])).toBe(corrected);
+    } else {
+      // A lost successful integration response reconciles on restart, without a
+      // second rebase, source author, old PASS substitution, or resolution author.
+      await expect(deliver()).rejects.toThrow("rebase-conflict");
+      q = await f.compose();
+      expect(q.items[0]!.source.base).toBe(f.head);
+      await expect(deliver()).resolves.toMatchObject({ status: "observing-reviewer" });
+      const integrated = await native.git(item.source.worktree, ["rev-parse", "HEAD"]);
+      await expect(deliver()).resolves.toMatchObject({ status: "observing-reviewer" });
+      expect(rebases).toHaveLength(1);
+      expect(rebases[0]!.args).toEqual(["rebase", main]);
+      const alreadyPresent = mainFlow.includes('  purpose?: "planning";\n');
+      const replayed = (
+        await native.git(item.source.worktree, ["rev-list", "--reverse", `${main}..${integrated}`])
+      ).split("\n");
+      expect(replayed).toHaveLength(alreadyPresent ? 3 : 4);
+      const originals = [...retained.slice(alreadyPresent ? 1 : 0), corrected];
+      for (const [index, sha] of replayed.entries()) {
+        expect(await native.git(item.source.worktree, ["show", "-s", "--format=%s", sha])).toBe(
+          await f.git(["show", "-s", "--format=%s", originals[index]!]),
+        );
+        expect(await native.git(item.source.worktree, ["rev-parse", `${sha}^`])).toBe(
+          index ? replayed[index - 1] : main,
+        );
+      }
+      if (alreadyPresent)
+        expect(rebases[0]!.stderr).toMatch(
+          /skipped previously applied commit|dropping .*patch contents already upstream/,
+        );
+      expect(await native.git(item.source.worktree, ["show", `${integrated}:${path}`])).toBe(
+        planningPurpose(mainFlow).trim(),
+      );
+      for (const file of ["queue.ts", "routing.ts"])
+        expect(
+          await native.git(item.source.worktree, [
+            "rev-parse",
+            `${integrated}:scripts/dogfood/${file}`,
+          ]),
+        ).toBe(await f.git(["rev-parse", `${main}:scripts/dogfood/${file}`]));
+      expect(await native.git(item.source.worktree, ["show", `${integrated}:${f.file}`])).toBe(
+        "prior two unsupported reads\nsynthetic third retained commit\nsynthetic ordinary correction",
+      );
+      reviewReady = true;
+      await expect(deliver()).rejects.toThrow("Synthetic final-head delivery boundary");
+      await expect(deliver()).rejects.toThrow("Synthetic final-head delivery boundary");
+      expect(launches.at(-1)).toMatchObject({ role: "reviewer", head: integrated });
+      const delta = JSON.parse(
+        await readFile(resolve(launches.at(-1)!.directory, "reviewer-terminal.json"), "utf8"),
+      );
+      expect(delta).toMatchObject({ status: "passed", head: integrated });
+      expect(delta.id).not.toBe(accepted.reviewId);
+    }
+    expect(launches.map((l) => l.role)).toEqual(
+      mode === "baseline" ? ["author", "reviewer"] : ["author", "reviewer", "reviewer"],
+    );
+    const history = await adapter().history();
+    expect(history.slice(0, f.history.length)).toEqual(f.history);
+    expect(history).toHaveLength(f.history.length + launches.length);
+    expect(new Set(history.map((p) => p.id)).size).toBe(history.length);
+    expect(await snapshot(f.loop.acceptedReplan.priorAttemptDirectory)).toEqual(oldRecords);
+    for (const [file, bytes] of sourceEvidence) expect(await readFile(file, "utf8")).toBe(bytes);
+    for (const [file, bytes] of reservation) expect(await readFile(file, "utf8")).toBe(bytes);
+    expect(await Promise.all(retained.map((sha) => f.git(["cat-file", "commit", sha])))).toEqual(
+      originalCommits,
+    );
+    const records = await snapshot(item.source.stateDirectory);
+    expect(
+      [...records.keys()].filter((file) =>
+        /(?:publication(?:-intent)?|gate-correction|author-attempt)\.json$/.test(file),
+      ),
+    ).toEqual([resolve(item.source.stateDirectory, "author-attempt.json")]);
+    console.info("ISS-252 native replay", {
+      mode,
+      eol,
+      ancestor: f.selected.base,
+      first,
+      failedHead: f.head,
+      main,
+      corrected,
+      rebases,
+    });
+  },
+);
 
 it("ISS-236 preserves a typed continuation cause through queue wrapping and supervision replay", async () => {
   const f = await unpublishedReplanFixture();
