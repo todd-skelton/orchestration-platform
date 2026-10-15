@@ -15,7 +15,7 @@ import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { PassThrough } from "node:stream";
 import { promisify } from "node:util";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, expect, it, onTestFinished, vi } from "vitest";
 import {
   sha,
   step,
@@ -48,7 +48,15 @@ import {
 } from "../../adapters/self.mjs";
 import { pullRequest as chaseSetsPullRequest } from "../../adapters/chase-sets.mjs";
 import { repositoryDeliveryPolicy } from "../../scripts/dogfood/repository-adapter.mjs";
-import { isItemStopReason } from "../../scripts/dogfood/supervision.js";
+import {
+  isItemStopReason,
+  persistCycle,
+  stopCycle,
+  repositorySupervisionAdapter,
+} from "../../scripts/dogfood/supervision.js";
+import type { LoopConfig } from "../../scripts/dogfood/queue.js";
+import { loadRepositoryAdapter } from "../../scripts/dogfood/repository-adapter.js";
+import { retainedFiles } from "./fixtures/planning-selection.js";
 import { MAX_TERMINAL_SUMMARY_LENGTH } from "../../scripts/dogfood/terminal-summary.mjs";
 import * as boardSnapshot from "../../scripts/planning/board-check.mjs";
 import {
@@ -3782,9 +3790,22 @@ it("does not infer admission from the legacy failed merge intent", async () => {
 it("keeps the queue on its accepted delivery without another author or attempt after native admission failure", async () => {
   const f = await preUpgradeDeliveryFixture("failed");
   f.pass();
-  const current = f.current;
-  const stateDirectory = resolve(current.stateDirectory, "..", "queue");
-  await mkdir(stateDirectory);
+  const q = await acceptedDeliveryQueue(f.current, f.resume);
+  await expect(queueStep(q.queue, q.adapter)).rejects.toMatchObject({
+    reason: "merge-queue-admission-failed",
+    diagnostics: expect.stringContaining("enablePullRequestAutoMerge"),
+  });
+  expect(await readFile(q.path, "utf8")).toBe(JSON.stringify(q.saved));
+  expect(q.authors()).toBe(0);
+  expect(isItemStopReason("merge-queue-admission-failed")).toBe(false);
+});
+
+async function acceptedDeliveryQueue(
+  current: DeliveryConfig,
+  resume: () => ReturnType<typeof deliveryStep>,
+  stateDirectory = resolve(current.stateDirectory, "..", "queue"),
+) {
+  await mkdir(stateDirectory, { recursive: true });
   const actor = { model: "fixture", effort: "high", prompt: "fixture" };
   const queue: QueueConfig = {
     schemaVersion: "dogfood-bounded-queue-config/v1",
@@ -3798,7 +3819,7 @@ it("keeps the queue on its accepted delivery without another author or attempt a
     initialHistory: [],
     items: [
       {
-        id: "fixture",
+        id: "ISS-074:1",
         issue: current.issue,
         base: current.candidateHead,
         implementationAttempt: 1,
@@ -3849,7 +3870,7 @@ it("keeps the queue on its accepted delivery without another author or attempt a
   const history: QueueParticipant[] = ["author", "reviewer"].map((role, index) => ({
     ordinal: index + 1,
     id: role === "author" ? authorId : reviewId,
-    item: "fixture",
+    item: "ISS-074:1",
     stage: "source",
     role: role as "author" | "reviewer",
     outcome: "passed",
@@ -3860,7 +3881,7 @@ it("keeps the queue on its accepted delivery without another author or attempt a
     phase: "delivery",
     run: queue.run,
     index: 0,
-    item: "fixture",
+    item: "ISS-074:1",
     issue: current.issue,
     base: current.candidateHead,
     candidateAttempt: 1,
@@ -3892,17 +3913,11 @@ it("keeps the queue on its accepted delivery without another author or attempt a
       throw new Error("unexpected repair");
     },
     async delivery() {
-      return f.resume();
+      return resume();
     },
   };
-  await expect(queueStep(queue, adapter)).rejects.toMatchObject({
-    reason: "merge-queue-admission-failed",
-    diagnostics: expect.stringContaining("enablePullRequestAutoMerge"),
-  });
-  expect(await readFile(path, "utf8")).toBe(JSON.stringify(saved));
-  expect(authors).toBe(0);
-  expect(isItemStopReason("merge-queue-admission-failed")).toBe(false);
-});
+  return { queue, adapter, saved, path, authors: () => authors };
+}
 
 it.each([
   "candidate",
@@ -3936,101 +3951,321 @@ it.each([
   expect(f.calls).toEqual([]);
 });
 
-it("reconciles a lost merge through the engine and the real OPEN-only checks adapter", async () => {
-  const { current } = await repositoryFixture(
-    "https://github.com/todd-skelton/orchestration-platform.git",
-  );
-  await writePilotEvidence(current);
-  const publication = publicationEvidence(current);
-  const plan: DeliveryPlan = {
-    gates: {
-      beforeMirror: ["typecheck", "format:check", "planning:check"],
-      afterMirror: ["planning:board-check"],
-    },
-    drafts: [{ key: "ISS-074", issue: 332, title: "issue", body: "body", attributes: {} }],
-    publication: {
-      sourceBranch: publication.sourceBranch,
-      baseBranch: publication.baseBranch,
-      title: publication.title,
-      body: publication.body,
-      draft: true,
-    },
-    mergePolicy: { method: "squash" },
-    cleanup: {
-      worktrees: [current.worktree, current.reviewWorktree],
-      branch: publication.sourceBranch,
-    },
-  };
-  const effects: string[][] = [];
-  let merged = false,
-    lostObservation = false,
-    ready = false,
-    cleaned = false;
-  const adapter = githubDeliveryAdapter({
-    async gh(_config, args) {
-      effects.push(args);
-      if (args[1] === "checks")
-        return JSON.stringify(
-          current.requiredChecks.map((name) => ({
-            name,
-            bucket: "pass",
-            link: `https://example.test/check/${encodeURIComponent(name)}`,
-          })),
-        );
-      if (args[1] === "ready") ready = true;
-      if (args[1] === "merge") {
-        merged = true;
-        lostObservation = true;
-        throw new Error("lost merge response");
-      }
-      return "";
-    },
-    async ghJson(_config, args) {
-      const hosted = hostedResponse(current, publication, args);
-      if (hosted) {
-        if (args[1]!.includes("runs?")) effects.push(args);
-        return hosted;
-      }
-      if (lostObservation) {
-        lostObservation = false;
-        throw new Error("lost observation");
-      }
-      const row = publicationRow(publication, {
-        state: merged ? "MERGED" : "OPEN",
-        isDraft: !ready,
-        mergeCommit: merged ? { oid: "b".repeat(40) } : null,
+it.each(["OPEN", "unknown", "immediate", "arbitrary Error", "transport"])(
+  "reconciles a lost merge through the engine and the real OPEN-only checks adapter: ISS-253 %s",
+  async (mode) => {
+    const { current } = await repositoryFixture(
+      "https://github.com/todd-skelton/orchestration-platform.git",
+    );
+    const stateRoot = resolve(current.stateDirectory, "native");
+    const runState = resolve(stateRoot, current.run);
+    const attemptDirectory = resolve(runState, "iss-074-attempt-1");
+    current.stateDirectory = resolve(attemptDirectory, "source");
+    await mkdir(current.stateDirectory, { recursive: true });
+    await writePilotEvidence(current);
+    const publication = publicationEvidence(current);
+    const plan: DeliveryPlan = {
+      gates: {
+        beforeMirror: ["typecheck", "format:check", "planning:check"],
+        afterMirror: ["planning:board-check"],
+      },
+      drafts: [{ key: "ISS-074", issue: 332, title: "issue", body: "body", attributes: {} }],
+      publication: {
+        sourceBranch: publication.sourceBranch,
+        baseBranch: publication.baseBranch,
+        title: publication.title,
+        body: publication.body,
+        draft: true,
+      },
+      mergePolicy: { method: "squash" },
+      cleanup: {
+        worktrees: [current.worktree, current.reviewWorktree],
+        branch: publication.sourceBranch,
+      },
+    };
+    const effects: string[][] = [];
+    const secrets = ["BEARER_SENTINEL_253", "URL_PASSWORD_SENTINEL_253", "BODY_SENTINEL_253"];
+    const raw = `Authorization: Bearer ${secrets[0]} https://user:${secrets[1]}@provider.test ${secrets[2]}`;
+    const failure =
+      mode === "arbitrary Error"
+        ? new Error(raw)
+        : Object.assign(new Error(raw), {
+            code: 1,
+            stdout: mode === "transport" ? "" : raw,
+            stderr:
+              mode === "transport"
+                ? `Post "https://api.github.com/graphql?token=${secrets[0]}": EOF`
+                : raw,
+          });
+    const category =
+      mode === "transport"
+        ? "GitHub transport response unavailable"
+        : "GitHub command outcome unknown";
+    const logs: unknown[][] = [];
+    for (const method of ["log", "warn", "error"] as const) {
+      const capture = vi.spyOn(console, method).mockImplementation((...args) => {
+        logs.push(args);
       });
-      return args[1] === "list" ? [row] : row;
-    },
-  });
-  adapter.runGate = async () => "passed";
-  adapter.observeDraft = async (_config, draft) => ({
-    state: "confirmed",
-    value: { issue: draft.issue },
-  });
-  adapter.observeCleanup = async () =>
-    cleaned ? { state: "confirmed", value: plan.cleanup } : { state: "needs-mutation" };
-  adapter.cleanup = async () => {
-    cleaned = true;
-  };
-  const policy = { plan: async () => plan };
-  await expect(deliveryStep(current, adapter, policy)).rejects.toThrow("merge-outcome-unknown");
-  expect(merged).toBe(true);
-  await expect(
-    readFile(resolve(current.stateDirectory, "merge.json"), "utf8"),
-  ).rejects.toMatchObject({ code: "ENOENT" });
-  // The real checks adapter refuses MERGED. The engine must reconcile before calling it.
-  await expect(adapter.checks(current, publication)).rejects.toThrow(
-    "hosted-observation-unavailable",
-  );
-  await expect(deliveryStep(current, adapter, policy)).resolves.toMatchObject({
-    status: "complete",
-  });
-  expect(effects.filter((args) => args[1] === "merge")).toHaveLength(1);
-  expect(effects.filter((args) => args[1]?.includes("runs?"))).toHaveLength(2);
-  expect(cleaned).toBe(true);
-  // Two engine cycles perform real Git identity checks; Windows CI exceeds the 5s default.
-}, 30_000);
+      onTestFinished(() => capture.mockRestore());
+    }
+    const expectedIntent = {
+      head: current.candidateHead,
+      operation: sha(JSON.stringify({ name: "merge", head: current.candidateHead })),
+    };
+    const mutationSnapshots: Record<string, string>[] = [];
+    let merged = false,
+      lostObservation = false,
+      unavailable = false,
+      ready = false,
+      cleaned = false;
+    const adapter = githubDeliveryAdapter({
+      async gh(_config, args) {
+        effects.push(args);
+        if (args[1] === "checks")
+          return JSON.stringify(
+            current.requiredChecks.map((name) => ({
+              name,
+              bucket: "pass",
+              link: `https://example.test/check/${encodeURIComponent(name)}`,
+            })),
+          );
+        if (args[1] === "ready") ready = true;
+        if (args[1] === "merge") {
+          // Inspect the durable operation binding before the post-mutation read.
+          mutationSnapshots.push(await stateSnapshot(current.stateDirectory));
+          merged = mode === "unknown" || mode === "immediate";
+          lostObservation = mode === "unknown";
+          throw failure;
+        }
+        return "";
+      },
+      async ghJson(_config, args) {
+        const hosted = hostedResponse(current, publication, args);
+        if (hosted) {
+          if (args[1]!.includes("runs?")) effects.push(args);
+          return hosted;
+        }
+        if (unavailable || lostObservation) {
+          lostObservation = false;
+          throw new Error("lost observation");
+        }
+        const row = publicationRow(publication, {
+          state: merged ? "MERGED" : "OPEN",
+          isDraft: !ready,
+          mergeCommit: merged ? { oid: "b".repeat(40) } : null,
+        });
+        return args[1] === "list" ? [row] : row;
+      },
+    });
+    const gates: string[] = [];
+    adapter.runGate = async (_config, gate) => {
+      gates.push(gate);
+      return "passed";
+    };
+    adapter.observeDraft = async (_config, draft) => ({
+      state: "confirmed",
+      value: { issue: draft.issue },
+    });
+    adapter.observeCleanup = async () =>
+      cleaned ? { state: "confirmed", value: plan.cleanup } : { state: "needs-mutation" };
+    adapter.cleanup = async () => {
+      cleaned = true;
+    };
+    const policy = { plan: async () => plan };
+    const q = await acceptedDeliveryQueue(
+      current,
+      () => deliveryStep(current, adapter, policy),
+      attemptDirectory,
+    );
+    const step = () => queueStep(q.queue, q.adapter);
+    if (mode === "immediate") {
+      await expect(step()).resolves.toMatchObject({ status: "complete" });
+    } else {
+      const stopped = await step().catch((error: unknown) => error);
+      expect(stopped).toBeInstanceOf(DeliveryBlocked);
+      const blocked = stopped as DeliveryBlocked;
+      expect(blocked).toMatchObject({
+        reason:
+          mode === "unknown" ? "merge-outcome-unknown" : "merge-unconfirmed-reconcile-before-retry",
+      });
+      expect(blocked.diagnostics!.length).toBeLessThanOrEqual(500);
+      expect(effects.filter((args) => args[1] === "merge")).toHaveLength(1);
+      expect(await readFile(q.path, "utf8")).toBe(JSON.stringify(q.saved));
+      const loop: LoopConfig = {
+        schemaVersion: "dogfood-loop/v1",
+        run: current.run,
+        adapter: "self",
+        repository: current.repository,
+        stableExecutorRoot: current.controllerRoot,
+        stateRoot,
+        worktreeRoot: dirname(current.worktree),
+        author: { model: "author", effort: "high" },
+        reviewer: { model: "reviewer", effort: "high" },
+        codexExecutable: process.execPath,
+        gitExecutable: "git",
+        nativeLaunchCeiling: 8,
+        attemptCeiling: 4,
+      };
+      const cycle = {
+        selection: { cycle: 1, key: "ISS-074", number: 332, base: current.candidateHead },
+        initialHistory: q.saved.history,
+      };
+      await persistCycle(loop, cycle);
+      const comments: { body: string }[] = [];
+      const host = repositorySupervisionAdapter({
+        async run(_executable, args) {
+          if (args[1] === "view")
+            return {
+              stdout: JSON.stringify({
+                number: 332,
+                state: "OPEN",
+                body: "<!-- planning-key: ISS-074 -->",
+                labels: [{ name: "ready" }],
+                comments,
+              }),
+              stderr: "",
+            };
+          expect(args[1]).toBe("comment");
+          comments.push({ body: args[args.indexOf("--body") + 1]! });
+          return {
+            stdout:
+              "https://github.com/todd-skelton/orchestration-platform/issues/332#issuecomment-1",
+            stderr: "",
+          };
+        },
+      });
+      const repository = await loadRepositoryAdapter("self", process.cwd());
+      await expect(
+        stopCycle(loop, cycle, blocked.reason, 1, host, repository, blocked.diagnostics),
+      ).resolves.toBe("run");
+      const retained = await retainedFiles(runState);
+      const outcomes = [...retained.keys()].filter((path) =>
+        /outcome-[a-f0-9]{64}\.json$/.test(path),
+      );
+      expect(outcomes).toHaveLength(1);
+      expect(JSON.parse(await readFile(outcomes[0]!, "utf8"))).toMatchObject({
+        repository: current.repository,
+        run: current.run,
+        issue: current.issue,
+        stage: current.stateDirectory,
+        head: current.candidateHead,
+        identity: `loop-stop:${current.run}:1:1`,
+        terminal: {
+          attempt: { path: q.path, sha256: sha(JSON.stringify(q.saved)) },
+          diagnostics: blocked.diagnostics,
+        },
+      });
+      const stop = JSON.parse(await readFile(resolve(runState, "cycle-1-stop-1.json"), "utf8"));
+      expect(stop).toMatchObject({
+        marker: `loop-stop:${current.run}:1:1`,
+        attempts: 1,
+        history: q.saved.history,
+      });
+      expect(stop.body).toContain(`Diagnostic: ${JSON.stringify(blocked.diagnostics)}.`);
+      expect(comments).toEqual([{ body: stop.body }]);
+      await stopCycle(loop, cycle, blocked.reason, 1, host, repository, undefined, 1);
+      expect(await retainedFiles(runState)).toEqual(retained);
+      expect(comments).toHaveLength(1);
+      // All retained runtime bytes, thrown diagnostics, logs and the actual comment
+      // sink are covered. The raw execFile failure is deliberately never serialized.
+      const sinks = JSON.stringify([
+        logs,
+        blocked,
+        comments,
+        await Promise.all([...retained.keys()].map((path) => readFile(path, "utf8"))),
+      ]);
+      for (const secret of secrets) expect(sinks).not.toContain(secret);
+      expect(blocked.diagnostics).toBe(category);
+      await expect(
+        readFile(resolve(current.stateDirectory, "merge.json"), "utf8"),
+      ).rejects.toMatchObject({ code: "ENOENT" });
+      const beforeUnknown = await stateSnapshot(current.stateDirectory);
+      unavailable = true;
+      const effectsBeforeUnknown = [...effects];
+      await expect(step()).rejects.toMatchObject({ reason: "merge-state-unknown" });
+      expect(effects).toEqual(effectsBeforeUnknown);
+      expect(await stateSnapshot(current.stateDirectory)).toEqual(beforeUnknown);
+      unavailable = false;
+      if (mode !== "unknown") {
+        // Existing nonqueued intent + OPEN keeps the existing one-mutation entry.
+        await expect(step()).rejects.toMatchObject({
+          reason: blocked.reason,
+          diagnostics: category,
+        });
+        expect(effects.filter((args) => args[1] === "merge")).toHaveLength(2);
+        expect(await readFile(q.path, "utf8")).toBe(JSON.stringify(q.saved));
+      }
+      merged = true;
+      // The real checks adapter refuses MERGED. The engine must reconcile before calling it.
+      await expect(adapter.checks(current, publication)).rejects.toThrow(
+        "hosted-observation-unavailable",
+      );
+      await expect(step()).resolves.toMatchObject({
+        status: "complete",
+      });
+    }
+    expect(effects.filter((args) => args[1] === "merge")).toEqual(
+      Array.from({ length: ["immediate", "unknown"].includes(mode) ? 1 : 2 }, () => [
+        "pr",
+        "merge",
+        "44",
+        "--squash",
+        "--match-head-commit",
+        current.candidateHead,
+      ]),
+    );
+    expect(effects.filter((args) => args[1]?.includes("runs?"))).toHaveLength(
+      ["immediate", "unknown"].includes(mode) ? 2 : 4,
+    );
+    expect(gates).toEqual([...plan.gates.beforeMirror, ...plan.gates.afterMirror]);
+    expect(q.authors()).toBe(0);
+    expect(cleaned).toBe(true);
+    expect(
+      JSON.parse(await readFile(resolve(current.stateDirectory, "merge.json"), "utf8")),
+    ).toEqual({
+      number: 44,
+      head: current.candidateHead,
+      mergeCommit: "b".repeat(40),
+    });
+    expect(mutationSnapshots).toHaveLength(["immediate", "unknown"].includes(mode) ? 1 : 2);
+    for (const saved of mutationSnapshots) {
+      expect(JSON.parse(saved["merge-intent.json"]!)).toEqual(expectedIntent);
+      expect(JSON.parse(saved["delivery-source.json"]!)).toMatchObject({
+        repository: current.repository,
+        run: current.run,
+        issue: current.issue,
+        head: current.candidateHead,
+        stateDirectory: current.stateDirectory,
+      });
+      expect(JSON.parse(saved["publication.json"]!)).toMatchObject({
+        number: publication.number,
+        head: current.candidateHead,
+        repository: current.repository,
+      });
+      for (const [name, bytes] of Object.entries(saved))
+        expect(await readFile(resolve(current.stateDirectory, name), "utf8"), name).toBe(bytes);
+    }
+    const completed = await retainedFiles(runState);
+    if (mode === "immediate")
+      expect(
+        [...completed.keys()].filter((path) => /outcome-[a-f0-9]{64}\.json$/.test(path)),
+      ).toEqual([]);
+    const completedEffects = [...effects];
+    await expect(step()).resolves.toMatchObject({ status: "complete" });
+    await expect(deliveryStep(current, adapter, policy)).resolves.toMatchObject({
+      status: "complete",
+    });
+    expect(effects).toEqual(completedEffects);
+    expect(await retainedFiles(runState)).toEqual(completed);
+    const completedSinks = JSON.stringify([
+      logs,
+      await Promise.all([...completed.keys()].map((path) => readFile(path, "utf8"))),
+    ]);
+    for (const secret of secrets) expect(completedSinks).not.toContain(secret);
+    // Two engine cycles perform real Git identity checks; Windows CI exceeds the 5s default.
+  },
+  30_000,
+);
 
 it("cleans real Git state, confirms exact absence, and restarts without effects", async () => {
   const { current, git } = await localRemoteRepositoryFixture();

@@ -4,6 +4,8 @@ import { isAbsolute, relative, resolve, sep } from "node:path";
 import type { ReviewFinding } from "./repair-policy.mjs";
 // @ts-expect-error Node 24 executes this private TypeScript module directly.
 import { retainGateOutcome, retainOutcome, unresolved } from "./outcome.ts";
+// @ts-expect-error Node 24 executes this private TypeScript module directly.
+import { GithubCommandFailure } from "./github-command-failure.ts";
 
 const SHA = /^[a-f0-9]{40}$/;
 const ABSENT_RECORD = Symbol("absent-record");
@@ -591,10 +593,12 @@ async function confirmMerge(
     operation: digest({ name: "merge", head: config.candidateHead }),
   });
   let mutationError: unknown;
+  let mutationDiagnostic: string | undefined;
   try {
     await adapter.merge(config, publication, policy);
   } catch (error) {
     mutationError = error;
+    if (!queued) mutationDiagnostic = new GithubCommandFailure(error).message;
   }
   observation = await adapter.observeMerge(config, publication, policy);
   if (queued && mutationError && !["pending", "confirmed"].includes(observation.state)) {
@@ -605,7 +609,8 @@ async function confirmMerge(
       (failure.stderr || failure.message || String(mutationError)).trim().slice(0, 4_000),
     );
   }
-  demand(observation.state !== "unknown", "merge-outcome-unknown");
+  if (observation.state === "unknown")
+    throw new DeliveryBlocked("merge-outcome-unknown", mutationDiagnostic);
   if (observation.state === "pending") {
     await recordPending();
     return undefined;
@@ -615,7 +620,8 @@ async function confirmMerge(
       "merge-queue-admission-unconfirmed",
       "The enqueue request did not produce an observed queue entry.",
     );
-  demand(observation.state === "confirmed", "merge-unconfirmed-reconcile-before-retry");
+  if (observation.state !== "confirmed")
+    throw new DeliveryBlocked("merge-unconfirmed-reconcile-before-retry", mutationDiagnostic);
   const value = observation.value;
   validateMergeRecord(config, value);
   await record(directory, "merge", value);
