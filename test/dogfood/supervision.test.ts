@@ -148,6 +148,91 @@ async function outcomeStopFixture(stage = "source") {
   return { ...f, directory, source, issue, head, attempt, stop, policy };
 }
 
+it.each([
+  ["merge-unconfirmed-reconcile-before-retry", undefined],
+  ["merge-outcome-unknown", undefined],
+  ["merge-unconfirmed-reconcile-before-retry", "GitHub command outcome unknown"],
+  ["merge-outcome-unknown", "GitHub transport response unavailable"],
+])(
+  "ISS-253 retains old/new %s stops across interrupted note observation (%s)",
+  async (reason, diagnostic) => {
+    const f = await outcomeStopFixture();
+    const intent = {
+      head: f.head,
+      operation: createHash("sha256")
+        .update(JSON.stringify({ name: "merge", head: f.head }))
+        .digest("hex"),
+    };
+    for (const [name, value] of Object.entries({
+      "delivery-source": {
+        repository: f.config.repository,
+        run: f.config.run,
+        issue: f.issue,
+        head: f.head,
+        stateDirectory: f.source,
+      },
+      publication: { number: 44, head: f.head, repository: f.config.repository },
+      "merge-intent": intent,
+    }))
+      await writeFile(resolve(f.source, `${name}.json`), JSON.stringify(value));
+    const original = await snapshot(f.directory);
+    const interrupted: SupervisionAdapter = {
+      ...f.adapter,
+      async comment(...args) {
+        await f.adapter.comment(...args);
+        throw new Error("lost stop receipt");
+      },
+    };
+    await expect(
+      stopCycle(f.config, f.cycle, reason!, 2, interrupted, f.policy, diagnostic),
+    ).rejects.toThrow("lost stop receipt");
+    const stopPath = resolve(f.config.stateRoot, f.config.run, "cycle-1-stop-1.json");
+    const bytes = await readFile(stopPath, "utf8");
+    const stop = JSON.parse(bytes);
+    expect(Object.keys(stop).sort()).toEqual([
+      "attempts",
+      "body",
+      "history",
+      "marker",
+      "reason",
+      "selection",
+      "stop",
+    ]);
+    expect(stop).toMatchObject({
+      reason,
+      attempts: 2,
+      history: f.cycle.initialHistory,
+      marker: `loop-stop:${f.config.run}:1:1`,
+      selection: f.cycle.selection,
+    });
+    if (diagnostic) expect(stop.body).toContain(`Diagnostic: ${JSON.stringify(diagnostic)}.`);
+    else expect(stop.body).not.toContain("Diagnostic:");
+    const pending = await snapshot(resolve(f.config.stateRoot, f.config.run));
+    const outcomes = [...pending].filter(([path]) => /outcome-[a-f0-9]{64}\.json$/.test(path));
+    expect(outcomes).toHaveLength(1);
+    expect(JSON.parse(outcomes[0]![1])).toMatchObject({
+      run: f.config.run,
+      repository: f.config.repository,
+      head: f.head,
+      stage: f.source,
+    });
+    await expect(f.reconcile()).resolves.toEqual({ scope: "run", reason });
+    const completed = await snapshot(resolve(f.config.stateRoot, f.config.run));
+    for (const [path, value] of pending) expect(completed.get(path), path).toBe(value);
+    for (const [path, value] of original) expect(completed.get(path), path).toBe(value);
+    await expect(f.reconcile()).resolves.toBeUndefined();
+    // A supplied diagnostic on replay never backfills or replaces retained prose.
+    await f.stop(reason!, "GitHub connection failed before send", 1);
+    expect(await snapshot(resolve(f.config.stateRoot, f.config.run))).toEqual(completed);
+    expect(await readFile(stopPath, "utf8")).toBe(bytes);
+    expect(f.row.comments).toEqual([{ body: stop.body }]);
+    expect(f.post).toHaveBeenCalledTimes(1);
+    expect(f.policy.park).not.toHaveBeenCalled();
+    expect(f.row.labels).toEqual([{ name: "ready" }]);
+    expect(f.row.state).toBe("OPEN");
+  },
+);
+
 it.each(["source", "repair", "source/refresh-" + "c".repeat(40), "source/gate-correction"])(
   "ISS-236 retains one legacy/new worker cause at its actual %s stage",
   async (stage) => {
