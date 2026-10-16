@@ -1078,7 +1078,7 @@
       "title": "Retain safe diagnostics when a squash merge fails",
       "summary": "Retain bounded safe nonqueued merge-failure diagnostics through existing native stop records without changing reconciliation, retry authority or historical accounting.",
       "milestone": "M1",
-      "blockedBy": []
+      "blockedBy": ["ISS-221", "ISS-241"]
     }
   ]
 }
