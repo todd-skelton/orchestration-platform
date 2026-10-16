@@ -39,6 +39,29 @@ jobs:
       - run: corepack enable
       - run: corepack prepare pnpm@11.22.0 --activate
       - run: corepack pnpm install --frozen-lockfile
+      - name: Pin Git for Windows 2.55.0(5)
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP 'MinGit-2.55.0.5-64-bit.zip'
+          $directory = Join-Path $env:RUNNER_TEMP 'MinGit-2.55.0.5'
+          Invoke-WebRequest 'https://github.com/git-for-windows/git/releases/download/v2.55.0.windows.5/MinGit-2.55.0.5-64-bit.zip' -OutFile $archive
+          # SHA-256 published in the official v2.55.0.windows.5 release's asset table.
+          if ((Get-FileHash $archive -Algorithm SHA256).Hash -ne '56d7b226b7693196cfc71fef26568f536c4a021ab6c37ff2db4287bed908e96e') {
+            throw 'MinGit archive SHA-256 mismatch'
+          }
+          Expand-Archive -LiteralPath $archive -DestinationPath $directory
+          Join-Path $directory 'cmd' | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+      - name: Verify pinned Git for Windows
+        shell: pwsh
+        run: |
+          $version = git --version
+          if ($LASTEXITCODE -ne 0) { throw 'git --version failed' }
+          Write-Output $version
+          where.exe git
+          if ($LASTEXITCODE -ne 0) { throw 'where git failed' }
+          if ($version -cne 'git version 2.55.0.windows.5') {
+            throw "Unexpected Git version: $version"
+          }
       - run: pnpm run verify:bootstrap --windows-shard refresh
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: ${{ always() }}
@@ -59,6 +82,29 @@ jobs:
       - run: corepack enable
       - run: corepack prepare pnpm@11.22.0 --activate
       - run: corepack pnpm install --frozen-lockfile
+      - name: Pin Git for Windows 2.55.0(5)
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP 'MinGit-2.55.0.5-64-bit.zip'
+          $directory = Join-Path $env:RUNNER_TEMP 'MinGit-2.55.0.5'
+          Invoke-WebRequest 'https://github.com/git-for-windows/git/releases/download/v2.55.0.windows.5/MinGit-2.55.0.5-64-bit.zip' -OutFile $archive
+          # SHA-256 published in the official v2.55.0.windows.5 release's asset table.
+          if ((Get-FileHash $archive -Algorithm SHA256).Hash -ne '56d7b226b7693196cfc71fef26568f536c4a021ab6c37ff2db4287bed908e96e') {
+            throw 'MinGit archive SHA-256 mismatch'
+          }
+          Expand-Archive -LiteralPath $archive -DestinationPath $directory
+          Join-Path $directory 'cmd' | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+      - name: Verify pinned Git for Windows
+        shell: pwsh
+        run: |
+          $version = git --version
+          if ($LASTEXITCODE -ne 0) { throw 'git --version failed' }
+          Write-Output $version
+          where.exe git
+          if ($LASTEXITCODE -ne 0) { throw 'where git failed' }
+          if ($version -cne 'git version 2.55.0.windows.5') {
+            throw "Unexpected Git version: $version"
+          }
       - run: pnpm run verify:bootstrap --windows-shard queue
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: ${{ always() }}
@@ -79,6 +125,29 @@ jobs:
       - run: corepack enable
       - run: corepack prepare pnpm@11.22.0 --activate
       - run: corepack pnpm install --frozen-lockfile
+      - name: Pin Git for Windows 2.55.0(5)
+        shell: pwsh
+        run: |
+          $archive = Join-Path $env:RUNNER_TEMP 'MinGit-2.55.0.5-64-bit.zip'
+          $directory = Join-Path $env:RUNNER_TEMP 'MinGit-2.55.0.5'
+          Invoke-WebRequest 'https://github.com/git-for-windows/git/releases/download/v2.55.0.windows.5/MinGit-2.55.0.5-64-bit.zip' -OutFile $archive
+          # SHA-256 published in the official v2.55.0.windows.5 release's asset table.
+          if ((Get-FileHash $archive -Algorithm SHA256).Hash -ne '56d7b226b7693196cfc71fef26568f536c4a021ab6c37ff2db4287bed908e96e') {
+            throw 'MinGit archive SHA-256 mismatch'
+          }
+          Expand-Archive -LiteralPath $archive -DestinationPath $directory
+          Join-Path $directory 'cmd' | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+      - name: Verify pinned Git for Windows
+        shell: pwsh
+        run: |
+          $version = git --version
+          if ($LASTEXITCODE -ne 0) { throw 'git --version failed' }
+          Write-Output $version
+          where.exe git
+          if ($LASTEXITCODE -ne 0) { throw 'where git failed' }
+          if ($version -cne 'git version 2.55.0.windows.5') {
+            throw "Unexpected Git version: $version"
+          }
       - run: pnpm run verify:bootstrap --windows-shard remainder
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         if: ${{ always() }}
