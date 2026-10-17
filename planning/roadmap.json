@@ -1079,6 +1079,22 @@
       "summary": "Retain bounded safe nonqueued merge-failure diagnostics through existing native stop records without changing reconciliation, retry authority or historical accounting.",
       "milestone": "M1",
       "blockedBy": ["ISS-221", "ISS-241"]
+    },
+    {
+      "key": "ISS-255",
+      "file": "planning/drafts/ISS-255.md",
+      "title": "Run bounded planning repairs for source, conflict and refresh failures inside the loop",
+      "summary": "Replace ISS-237 in part: land the proposal-only planning operation for source, conflict-author and refresh-review failures, keep repair stages on current-main behaviour behind negatives, and bound the both-adapter fake-GitHub proof under half its unchanged test budget.",
+      "milestone": "M1",
+      "blockedBy": ["ISS-236", "ISS-252"]
+    },
+    {
+      "key": "ISS-256",
+      "file": "planning/drafts/ISS-256.md",
+      "title": "Route repair author and reviewer failures into the loop's planning operation",
+      "summary": "Replace ISS-237 in part: route live and retained repair-author and repair-reviewer failures through the planning boundary, regression-first, without attempt allocation, parking, issue writes or delivery-guard changes.",
+      "milestone": "M1",
+      "blockedBy": ["ISS-255"]
     }
   ]
 }
