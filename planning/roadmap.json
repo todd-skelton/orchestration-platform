@@ -1103,6 +1103,14 @@
       "summary": "After ISS-255: port the unchanged both-adapter authority and re-derivation proof through fake GitHub, record per-planningStep cost, and bring every covered case under 15000 ms without timeout, configuration or assertion changes.",
       "milestone": "M1",
       "blockedBy": ["ISS-255"]
+    },
+    {
+      "key": "ISS-258",
+      "file": "planning/drafts/ISS-258.md",
+      "title": "Select Chase Sets work by handoff label and acknowledge a return request",
+      "summary": "Select Chase Sets work by handoff label, recheck eligibility through delivery effects, and durably acknowledge return requests without implementing worker cancellation or Chase Sets-side handoff rules.",
+      "milestone": "M2",
+      "blockedBy": []
     }
   ]
 }
