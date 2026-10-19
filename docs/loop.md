@@ -766,6 +766,21 @@ outside that kind. Shipping this repair grants no ISS-234 re-entry or live start
 
 ## Planning
 
+Classified `brief`, `slice`, and `design` failures retained at the
+source-author, source-reviewer, conflict-author, or refresh-review stage may
+enter the native author/reviewer lifecycle with a `planning` purpose. The
+author writes only a bounded `planning-repair/v1` proposal in an isolated
+drafts workspace; an independent reviewer judges the exact proposal bytes and
+captured planning context. Failed artifacts, findings, current main, decisions,
+sibling and dependency census, recovery hypotheses, and native participation
+remain evidence. A PASS is an application-pending handoff to ISS-238, never
+accepted implementation or automatic issue/GitHub mutation; changed authority
+invalidates the proposal and re-derives it at the same level.
+
+Repair-author and repair-reviewer failures stay on the ordinary failure,
+attempt, parking, and learning-note path. They do not enter planning in this
+slice; ISS-256 routes those repair roles after this core operation lands.
+
 ISS-149 implements Todd's routing ruling on #368: model placement comes from
 the adapter's planning row, before setup. For Chase Sets, the operator adds
 exactly one marker to the issue body when refining it:

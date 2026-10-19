@@ -202,6 +202,20 @@ it("ISS-236 derives the non-PASS producer ratchet from implementation sources", 
       values: ["status=malformed", "status=malformed"],
       boundary: "flow.ts:retainWorkerOutcome",
     },
+    "planning-repair.ts:planningStep": {
+      values: ["status=planning-pending-host-review", "status=malformed"],
+      boundary: "queue.ts:planning",
+    },
+    "planning-repair.ts:result": {
+      values: [
+        "status=planning-accepted|planning-rejected|planning-pending-host-review|observing-planning-reviewer|observing-planning-author",
+      ],
+      boundary: "supervise.mjs:isObject",
+    },
+    "planning-repair.ts:unavailable": {
+      values: ["status=planning-pending-host-review"],
+      boundary: "queue.ts:planning",
+    },
     "queue.ts:queueConfigFromLoop": {
       values: Array(4).fill("phase=failed"),
       boundary: "supervision.ts:retainStopOutcome",
@@ -358,6 +372,10 @@ it("ISS-236 derives the non-PASS producer ratchet from implementation sources", 
       boundary: "excluded: output schemas are not executions",
     },
     "flow.ts:finish": { values: ["status=<dynamic>"], boundary: "flow.ts:retainWorkerOutcome" },
+    "planning-repair.ts:planningStep": {
+      values: ["outcome=<dynamic>"],
+      boundary: "queue.ts:planning",
+    },
     "queue.ts:participantWithoutUsage": {
       values: ["outcome=<dynamic>"],
       boundary: "excluded: retained accounting projection",
@@ -371,6 +389,12 @@ it("ISS-236 derives the non-PASS producer ratchet from implementation sources", 
       boundary: "queue.ts:retainWorkerOutcome",
     },
     "queue.ts:source": { values: ["status=<dynamic>"], boundary: "flow.ts:retainWorkerOutcome" },
+    "queue.ts:acquire": { values: ["outcome=<dynamic>"], boundary: "queue.ts:planning" },
+    "queue.ts:planning": { values: ["outcome=<dynamic>"], boundary: "queue.ts:planning" },
+    "queue.ts:stopped": {
+      values: ["outcome=<dynamic>", "outcome=<dynamic>"],
+      boundary: "queue.ts:planning",
+    },
     "queue.ts:repair": { values: ["status=<dynamic>"], boundary: "flow.ts:retainWorkerOutcome" },
     "queue.ts:delivery": {
       values: ["status=<dynamic>", "status=<dynamic>"],
