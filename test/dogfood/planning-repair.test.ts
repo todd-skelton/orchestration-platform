@@ -1020,28 +1020,13 @@ it("resumes the failure-to-planning gap without parking or creating an implement
 });
 
 it.skipIf(process.platform === "win32")(
-  "reads planning authority through both production adapters",
+  "both production adapter readers scope authority and re-derive through fake GitHub",
   async () => {
-    const root = await mkdtemp(resolve(tmpdir(), "planning-adapters-light-"));
+    const root = await mkdtemp(resolve(tmpdir(), "planning-adapters-"));
     roots.push(root);
-    const chaseBody =
-      '<!-- routing: {"version":1,"row":2,"review":11} -->\n## Acceptance\n- Keep the proposal bounded.\n';
+    const queryLog = resolve(root, "queries.jsonl");
+    const response = resolve(root, "issues.json");
     const empty = { pageInfo: { hasNextPage: false }, nodes: [] };
-    const row = {
-      number: 756,
-      url: "https://github.com/fixture/repo/issues/756",
-      title: "Planning fixture",
-      body: chaseBody,
-      updatedAt: "2026-10-10T00:00:00Z",
-      state: "OPEN",
-      milestone: { number: 1, title: "Planning", description: "", state: "OPEN" },
-      labels: empty,
-      parent: null,
-      subIssues: empty,
-      blockedBy: empty,
-      blocking: empty,
-      comments: empty,
-    };
     const selfDraft = await readFile(
       resolve(import.meta.dirname, "../../planning/drafts/ISS-237.md"),
       "utf8",
@@ -1053,28 +1038,64 @@ it.skipIf(process.platform === "win32")(
       "",
       selfDraft,
     ].join("\n");
-    const writeGh = async (body: string) => {
-      const payload = JSON.stringify({
-        data: {
-          repository: {
-            issues: { pageInfo: { hasNextPage: false }, nodes: [{ ...row, body }] },
-            issue: { ...row, body },
-          },
+    const chaseBody =
+      '<!-- routing: {"version":1,"row":2,"review":11} -->\n## Acceptance\n- Keep the proposal bounded.\n';
+    const rows: any[] = [
+      {
+        number: 756,
+        url: "https://github.com/todd-skelton/orchestration-platform/issues/756",
+        title: "Plan",
+        body: selfBody,
+        updatedAt: "2026-10-10T00:00:00Z",
+        state: "OPEN",
+        parent: null,
+        milestone: { number: 1 },
+        labels: empty,
+        comments: {
+          pageInfo: { hasNextPage: false },
+          nodes: [{ id: "decision", body: "Keep publication host-owned." }],
         },
-      });
-      await writeFile(resolve(root, "gh"), `#!/bin/sh\ncat <<'JSON'\n${payload}\nJSON\n`);
-      await chmod(resolve(root, "gh"), 0o755);
-    };
-    await writeGh(selfBody);
-    await mkdir(resolve(root, ".agents/skills/delivery"), { recursive: true });
-    await writeFile(resolve(root, ".agents/skills/delivery/SKILL.md"), "fixture delivery rules\n");
-    await writeFile(resolve(root, "AGENTS.md"), "fixture product rules\n");
+        subIssues: empty,
+        blockedBy: empty,
+        blocking: empty,
+      },
+    ];
+    rows.push(
+      {
+        ...structuredClone(rows[0]),
+        number: 999,
+        body: "<!-- planning-key: ISS-999 -->\nUnrelated issue.",
+        milestone: { number: 2 },
+        blockedBy: { ...empty, nodes: [{ number: 755, state: "OPEN" }] },
+      },
+      {
+        ...structuredClone(rows[0]),
+        number: 755,
+        body: "<!-- planning-key: ISS-236 -->\nRetained dependency.",
+        milestone: { number: 2 },
+        blocking: { ...empty, nodes: [{ number: 756 }, { number: 999 }] },
+      },
+    );
+    await writeFile(response, JSON.stringify(rows));
+    await writeFile(
+      resolve(root, "gh"),
+      `#!${process.execPath}
+const fs=require('fs');
+const args=process.argv.slice(2);
+fs.appendFileSync(${JSON.stringify(queryLog)},JSON.stringify(args)+'\\n');
+const rows=JSON.parse(fs.readFileSync(${JSON.stringify(response)},'utf8'));
+const q=args.find(a=>a.startsWith('query='));
+if(!q||args[0]!=='api')process.exit(4);
+fs.writeFileSync(1,JSON.stringify({data:{repository:q.includes('issues(first:')?{issues:{pageInfo:{hasNextPage:false},nodes:rows}}:{issue:rows[0]}}}));
+`,
+    );
+    await chmod(resolve(root, "gh"), 0o755);
     vi.stubEnv("PATH", `${root}${delimiter}${process.env.PATH ?? ""}`);
     const repositoryRoot = resolve(import.meta.dirname, "../..");
     const { execFile } = await import("node:child_process");
     const { promisify } = await import("node:util");
     const head = (
-      await promisify(execFile)("git", ["-C", repositoryRoot, "rev-parse", "HEAD"])
+      await promisify(execFile)("git", ["rev-parse", "HEAD"], { cwd: repositoryRoot })
     ).stdout.trim();
     const selfContext = await self.planningContext({
       repository: "todd-skelton/orchestration-platform",
@@ -1084,8 +1105,17 @@ it.skipIf(process.platform === "win32")(
       executorRoot: repositoryRoot,
       gitExecutable: "git",
     });
-    expect(selfContext.issues.find((issue: any) => issue.number === 756)?.number).toBe(756);
-    await writeGh(chaseBody);
+    expect(selfContext.planning.issueDrafts["ISS-237"]).toContain(
+      "Author and independently review bounded planning repairs",
+    );
+    expect(selfContext.issues.find((row: any) => row.number === 756).updatedAt).toBe(
+      rows[0]!.updatedAt,
+    );
+    await mkdir(resolve(root, ".agents/skills/delivery"), { recursive: true });
+    await writeFile(resolve(root, ".agents/skills/delivery/SKILL.md"), "Synthetic delivery skill.");
+    await writeFile(resolve(root, "AGENTS.md"), "Synthetic product rules.");
+    rows[0].body = chaseBody;
+    await writeFile(response, JSON.stringify(rows));
     const chaseContext = await chase.planningContext({
       repository: "chase-sets/chase-sets",
       key: "cs-756",
@@ -1094,8 +1124,96 @@ it.skipIf(process.platform === "win32")(
       executorRoot: root,
       gitExecutable: "git",
     });
-    expect(chaseContext.context.body).toBe(chaseBody);
-    expect(chaseContext.issues).toHaveLength(1);
+    expect(chaseContext.issues.find((row: any) => row.number === 756).comments.nodes[0].body).toBe(
+      "Keep publication host-owned.",
+    );
+    expect(chaseContext.context.body).toBe(rows[0]!.body);
+    // The context and full authority census share one issue read; the former
+    // duplicate context query is the measured production cut.
+    expect((await readFile(queryLog, "utf8")).trim().split("\n")).toHaveLength(2);
+    for (const adapter of ["self", "chase-sets"] as const) {
+      const f = await fixture();
+      const isSelf = adapter === "self";
+      const repository = isSelf ? "todd-skelton/orchestration-platform" : "chase-sets/chase-sets";
+      const key = isSelf ? "ISS-237" : "cs-756";
+      rows[0].body = isSelf ? selfBody : chaseBody;
+      await writeFile(response, JSON.stringify(rows));
+      // Self dependencies come from immutable planning; product dependencies
+      // come from GitHub. The common prerequisite also has an unrelated consumer.
+      rows[0].blockedBy = { ...empty, nodes: isSelf ? [] : [{ number: 755, state: "OPEN" }] };
+      await writeFile(response, JSON.stringify(rows));
+      f.input.main = head;
+      f.input.outcome.value.repository = repository;
+      f.input.lineages[0]!.key = key;
+      f.input.siblings = [key];
+      f.operation.acquire = async () => {
+        const authority = await (isSelf ? self : chase).planningContext({
+          repository,
+          key,
+          number: 756,
+          main: head,
+          executorRoot: isSelf ? repositoryRoot : root,
+          gitExecutable: "git",
+        });
+        authority.issues = authority.issues.map((row: any) => ({
+          ...row,
+          key: isSelf ? /planning-key: (ISS-\d+)/.exec(row.body)![1] : `cs-${row.number}`,
+        }));
+        return { ...structuredClone(f.input), authority };
+      };
+      const p = proposal(f.input, "ISSUE");
+      p.disposition = "RECOMMEND_NOT_COMPLETING";
+      p.briefs = [];
+      f.setProposal(p);
+      const timings: { adapter: string; step: string; durationMs: number }[] = [];
+      const timedStep = async (step: string) => {
+        const started = performance.now();
+        const result = await planningStep(f.operation);
+        timings.push({
+          adapter,
+          step,
+          durationMs: Math.round((performance.now() - started) * 100) / 100,
+        });
+        return result;
+      };
+      const unrelatedEdit = async () => {
+        rows[1].body += "\nUnrelated edit.";
+        rows[1].updatedAt = new Date(Date.parse(rows[1].updatedAt) + 1000).toISOString();
+        rows[1].comments.nodes.push({ id: "unrelated", body: "Unrelated comment." });
+        rows[1].labels = { ...empty, nodes: [{ name: "ready" }] };
+        await writeFile(response, JSON.stringify(rows));
+      };
+      f.setRunning(true);
+      expect((await timedStep("author-pending")).status).toBe("observing-planning-author");
+      await unrelatedEdit();
+      f.setRunning(false);
+      expect((await timedStep("author-complete")).status).toBe("observing-planning-reviewer");
+      await unrelatedEdit();
+      f.onReview(unrelatedEdit);
+      expect((await timedStep("review-complete")).status).toBe("planning-accepted");
+      const accepted = await snapshot(f.directory);
+      for (let read = 0; read < 2; read++) {
+        await unrelatedEdit();
+        expect((await timedStep(`accepted-${read + 1}`)).status).toBe("planning-accepted");
+        expect(await snapshot(f.directory)).toEqual(accepted);
+      }
+      expect(f.history).toHaveLength(2);
+      rows[2].comments.nodes.push({ id: "changed-decision", body: "Change dependency ownership." });
+      await writeFile(response, JSON.stringify(rows));
+      expect((await timedStep("changed-authority")).status).toBe("observing-planning-author");
+      expect((await f.read()).nextLevel).toBeUndefined();
+      expect((await timedStep("changed-author")).status).toBe("observing-planning-reviewer");
+      expect((await timedStep("changed-reviewer")).status).toBe("planning-accepted");
+      expect(f.history).toHaveLength(4);
+      const dominant = timings.reduce((left, right) =>
+        right.durationMs > left.durationMs ? right : left,
+      );
+      await writeFile(
+        resolve(root, `${adapter}-planning-step-timings.json`),
+        JSON.stringify(timings, null, 2),
+      );
+      console.info(`[planningStep timings] ${JSON.stringify({ adapter, timings, dominant })}`);
+    }
   },
 );
 
