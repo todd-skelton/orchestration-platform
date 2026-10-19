@@ -1084,7 +1084,7 @@
       "key": "ISS-255",
       "file": "planning/drafts/ISS-255.md",
       "title": "Run bounded planning repairs for source, conflict and refresh failures inside the loop",
-      "summary": "Replace ISS-237 in part: land the proposal-only planning operation for source, conflict-author and refresh-review failures, keep repair stages on current-main behaviour behind negatives, and bound the both-adapter fake-GitHub proof under half its unchanged test budget.",
+      "summary": "Replace ISS-237 in part: land the proposal-only planning operation for source, conflict-author and refresh-review failures, and keep repair stages on current-main behaviour behind negatives; the both-adapter fake-GitHub proof follows in ISS-257.",
       "milestone": "M1",
       "blockedBy": ["ISS-236", "ISS-252"]
     },
@@ -1093,6 +1093,14 @@
       "file": "planning/drafts/ISS-256.md",
       "title": "Route repair author and reviewer failures into the loop's planning operation",
       "summary": "Replace ISS-237 in part: route live and retained repair-author and repair-reviewer failures through the planning boundary, regression-first, without attempt allocation, parking, issue writes or delivery-guard changes.",
+      "milestone": "M1",
+      "blockedBy": ["ISS-255", "ISS-257"]
+    },
+    {
+      "key": "ISS-257",
+      "file": "planning/drafts/ISS-257.md",
+      "title": "Bound the both-adapter fake-GitHub authority proof after ISS-255",
+      "summary": "After ISS-255: port the unchanged both-adapter authority and re-derivation proof through fake GitHub, record per-planningStep cost, and bring every covered case under 15000 ms without timeout, configuration or assertion changes.",
       "milestone": "M1",
       "blockedBy": ["ISS-255"]
     }
