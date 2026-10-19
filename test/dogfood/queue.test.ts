@@ -4789,9 +4789,11 @@ describe.each([
         expect((await fixture.next()).done).toBe(false); // correction DELTA pending
       });
     }
+    // The terminal replay drives the remaining native lifecycle; Windows runners
+    // measured 38 s here, past the 30 s default, while the outcome is unchanged.
     it("retains one native lineage through admission, review, attribution and terminal replay", async () => {
       expect((await fixture.next()).done).toBe(true);
-    });
+    }, 120_000);
   },
 );
 
