@@ -684,6 +684,22 @@ async function main() {
           await new Promise((done) => setTimeout(done, 10_000));
           continue;
         }
+        if (result.status.startsWith("planning-")) {
+          blocked(
+            new QueueBlocked(
+              result.status === "planning-accepted"
+                ? "planning-application-pending"
+                : result.status === "planning-rejected"
+                  ? "planning-repair-rejected"
+                  : "planning-review-required",
+              `${result.diagnostic ?? "Planning handoff"} Recovery: ${result.recovery}`.slice(
+                0,
+                500,
+              ),
+            ),
+          );
+          break;
+        }
         await completeCycle(loop, active, await queueAdapter.history(), supervisor);
         if (active.prerequisite) {
           blocked(new QueueBlocked("prerequisite-held"));

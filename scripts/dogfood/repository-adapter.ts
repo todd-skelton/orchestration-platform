@@ -64,6 +64,18 @@ export function validateOpsAdmission(input: {
 }
 
 export interface RepositoryAdapter {
+  planningContext?(input: {
+    repository: string;
+    key: string;
+    number: number;
+    executorRoot: string;
+    gitExecutable: string;
+    main: string;
+  }): Promise<{
+    context: RepositoryIssueContext;
+    planning: any;
+    issues: any[];
+  }>;
   verificationBrief?(input: { repository: string; number: number; executorRoot: string }): Promise<{
     number: number;
     url: string;
@@ -143,6 +155,8 @@ export function validateRepositoryAdapter(value: unknown): asserts value is Repo
     ].some((name) => typeof (value as Record<string, unknown>)[name] !== "function") ||
     (Object.hasOwn(value, "mirrorPlanning") &&
       typeof (value as Record<string, unknown>).mirrorPlanning !== "function") ||
+    (Object.hasOwn(value, "planningContext") &&
+      typeof (value as Record<string, unknown>).planningContext !== "function") ||
     (Object.hasOwn(value, "localGates") &&
       typeof (value as Record<string, unknown>).localGates !== "function")
   )
@@ -179,6 +193,9 @@ export async function loadRepositoryAdapter(name: string, root: string) {
     ...loaded,
     selectCandidates: (input) => preserveReason(() => loaded.selectCandidates(input)),
     issueContext: (input) => preserveReason(() => loaded.issueContext(input)),
+    ...(loaded.planningContext
+      ? { planningContext: (input) => preserveReason(() => loaded.planningContext!(input)) }
+      : {}),
     branchName: (input) => preserveReason(() => loaded.branchName(input)),
     park: (input) => preserveReason(() => loaded.park(input)),
   } satisfies RepositoryAdapter;
