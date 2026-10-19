@@ -1,5 +1,14 @@
 import { createHash, randomUUID } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import {
+  appendFile,
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { delimiter, resolve } from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
@@ -19,10 +28,13 @@ import {
   queueStep,
   repositoryQueueAdapter,
   retainedSourceFailure,
+  type QueueConfig,
   type QueueParticipant,
 } from "../../scripts/dogfood/queue.js";
+import { githubDeliveryAdapter } from "../../scripts/dogfood/delivery-adapter.mjs";
+import { startCycle, stopCycle } from "../../scripts/dogfood/supervision.js";
 import { QueueBlocked, type Config, type Terminal } from "../../scripts/dogfood/flow.js";
-import { sourceFailureFixture, snapshot } from "./fixtures/source-failure.js";
+import { repairFailureFixture, sourceFailureFixture, snapshot } from "./fixtures/source-failure.js";
 import * as self from "../../adapters/self.mjs";
 import * as chase from "../../adapters/chase-sets.mjs";
 
@@ -1084,5 +1096,532 @@ it.skipIf(process.platform === "win32")(
     });
     expect(chaseContext.context.body).toBe(chaseBody);
     expect(chaseContext.issues).toHaveLength(1);
+  },
+);
+
+// ISS-255 stage fixtures. Only the failure classification is synthetic; the queue,
+// native flow, retained readers and supervision below are production code.
+type DefectClass = "brief" | "slice" | "design";
+const levelOf = { brief: "ISSUE", slice: "SET", design: "EPIC" } as const;
+const classified = (defectClass: DefectClass) => ({
+  defectClass,
+  explanation: "The accepted scope has ambiguous ownership.",
+  rootCause: "ambiguous-scope",
+  evidenceStatus: "established" as const,
+  evidence: ["product.txt:1"],
+});
+const fixtureAuthority = () => ({
+  context: {
+    title: "Fixture",
+    body,
+    acceptanceCriteria: ["Observe an exact body."],
+    rules: "Fixture",
+  },
+  planning: null,
+  issues: [{ number: 110, body, updatedAt: "2026-10-10T00:00:00Z", milestone: null }],
+});
+const planningArtifacts = async (root: string) =>
+  (await readdir(root, { recursive: true })).filter((name) =>
+    /planning-(recovery|drafts|worker)/.test(String(name)),
+  );
+const launches = (calls: string[]) => calls.filter((call) => call.startsWith("launch:"));
+type Fixture = Awaited<ReturnType<typeof sourceFailureFixture>>;
+// Current main is read from refs/remotes/origin/main, as in production.
+async function withOrigin(f: Fixture) {
+  const remote = resolve(f.root, "remote.git");
+  await f.git(f.repository, ["clone", "--bare", f.repository, remote]);
+  await f.git(f.repository, ["remote", "add", "origin", remote]);
+  return remote;
+}
+// The fixture's own adapter has no repository, so planning could never proceed
+// there; this one supplies the production planning context and real setup.
+function planningAdapter(
+  f: Fixture,
+  config: QueueConfig,
+  extra: Partial<Parameters<typeof repositoryQueueAdapter>[2]> = {},
+) {
+  const adapter = repositoryQueueAdapter(config, f.repository, {
+    native: f.native,
+    repository: f.policy,
+    gitExecutable: f.loop.gitExecutable,
+    ...extra,
+  });
+  adapter.setup = f.current.adapter.setup;
+  return adapter;
+}
+const attemptPhase = async (directory: string) =>
+  JSON.parse(await readFile(resolve(directory, "attempt.json"), "utf8")).phase as string;
+const retainedOutcome = async (directory: string) => {
+  const names = (await readdir(directory)).filter((name) =>
+    /^outcome-[a-f0-9]{64}\.json$/.test(name),
+  );
+  expect(names).toHaveLength(1);
+  return JSON.parse(await readFile(resolve(directory, names[0]!), "utf8"));
+};
+
+it.each(["brief", "slice", "design"] as const)(
+  "AC7: a classified repair-author %s failure never enters planning and keeps main's parking and replay",
+  async (defectClass) => {
+    const f = await repairFailureFixture();
+    roots.push(f.root);
+    const observe = f.native.observe;
+    f.native.observe = async (role, config, attempt) => {
+      const result = await observe(role, config, attempt);
+      return role === "author" &&
+        result.status === "failed" &&
+        /[\\/]repair$/.test(config.stateDirectory)
+        ? { ...result, defect: classified(defectClass) }
+        : result;
+    };
+    const contexts: string[] = [];
+    f.policy.planningContext = async ({ key }) => {
+      contexts.push(key);
+      return structuredClone(fixtureAuthority());
+    };
+    const adapter = planningAdapter(f, f.current.config);
+    const directory = f.current.config.stateDirectory;
+    await startCycle(f.loop, f.cycle, f.host);
+    await expect(queueStep(f.current.config, adapter)).rejects.toMatchObject({
+      reason: "author-failed",
+    });
+    f.cycle.initialHistory = await adapter.history();
+    const launched = launches(f.calls);
+    const repairAuthor = f.cycle.initialHistory.at(-1)!;
+    expect(repairAuthor).toMatchObject({ stage: "repair", role: "author", outcome: "failed" });
+    // Control: the retained classification is exactly the one planning would admit.
+    expect(await retainedOutcome(resolve(directory, "repair"))).toMatchObject({
+      identity: `author:${repairAuthor.id}`,
+      defectClass,
+      evidenceStatus: "established",
+    });
+    const unrouted = async () => {
+      expect(contexts).toEqual([]);
+      expect(await planningArtifacts(f.runState)).toEqual([]);
+      expect((await adapter.history()).some((row) => row.stage === "planning")).toBe(false);
+      expect(launches(f.calls)).toEqual(launched);
+    };
+    await unrouted();
+    // Retained after terminal persistence: the attempt still reads repair and the
+    // ISS-181 reader binds it, so the stop parks the item and replays nothing.
+    expect(await attemptPhase(directory)).toBe("repair");
+    expect(await retainedSourceFailure(f.loop, f.cycle.selection)).toMatchObject({
+      attempts: 3,
+      history: f.cycle.initialHistory,
+    });
+    await expect(queueStep(f.current.config, adapter)).rejects.toMatchObject({
+      reason: "author-failed",
+    });
+    await unrouted();
+    expect(await f.stop()).toBe("item");
+    expect(f.calls).toContain("park:110");
+    expect(f.rows[0]!.comments.at(-1)).toContain("3 implementation attempts");
+    expect((await f.advance())!.selection.key).toBe("fixture-159");
+    expect(f.rows[0]).toMatchObject({ ready: false, state: "OPEN" });
+    await unrouted();
+    // After phase=failed: explicit unpark composes the ordinary ISS-181 successor.
+    f.rows[0]!.ready = true;
+    const unparked = (await f.advance())!;
+    expect(unparked.selection.key).toBe("fixture-110");
+    const next = (await f.compose(unparked)).config;
+    expect(await attemptPhase(directory)).toBe("failed");
+    expect(next.stateDirectory).not.toBe(directory);
+    expect(next.items[0]!.source.author.prompt).toContain("after terminal repair-author FAIL");
+    expect(await retainedSourceFailure(f.loop, unparked.selection)).toBeUndefined();
+    await expect(queueStep(f.current.config, adapter)).resolves.toMatchObject({
+      status: "advancing-attempt",
+    });
+    await unrouted();
+  },
+);
+
+it.each(["brief", "slice", "design"] as const)(
+  "AC7: a classified repair-reviewer %s failure never enters planning and keeps main's attempt advancement",
+  async (defectClass) => {
+    const f = await repairFailureFixture();
+    roots.push(f.root);
+    let running: string | undefined;
+    const observe = f.native.observe;
+    f.native.observe = async (role, config, attempt) => {
+      if (`${role}:${config.stateDirectory}` === running)
+        return { id: attempt.id, status: "running" };
+      const result = await observe(role, config, attempt);
+      if (!/[\\/]repair$/.test(config.stateDirectory)) return result;
+      if (role === "author") return { ...result, status: "passed", summary: "" };
+      return {
+        ...result,
+        status: "failed",
+        summary: JSON.stringify({
+          run: config.run,
+          role,
+          head: result.head,
+          verdict: "FAIL",
+          findings: [
+            {
+              file: "product.txt",
+              line: 1,
+              severity: "blocking",
+              text: "The repair does not preserve the invariant.",
+            },
+          ],
+          g0: "No; the fixture requirement must hold.",
+          defect: classified(defectClass),
+        }),
+      };
+    };
+    const contexts: string[] = [];
+    f.policy.planningContext = async ({ key }) => {
+      contexts.push(key);
+      return structuredClone(fixtureAuthority());
+    };
+    const adapter = planningAdapter(f, f.current.config);
+    const directory = f.current.config.stateDirectory;
+    const repairDirectory = resolve(directory, "repair");
+    const priorCalls = f.calls.length;
+    await startCycle(f.loop, f.cycle, f.host);
+    // Hold the repair reviewer so the attempt record is retained before its verdict.
+    running = `reviewer:${repairDirectory}`;
+    await expect(queueStep(f.current.config, adapter)).resolves.toMatchObject({
+      status: "observing-reviewer",
+    });
+    const observing = await readFile(resolve(directory, "attempt.json"), "utf8");
+    expect(JSON.parse(observing).phase).toBe("repair");
+    running = undefined;
+    await expect(queueStep(f.current.config, adapter)).resolves.toMatchObject({
+      status: "advancing-attempt",
+    });
+    f.cycle.initialHistory = await adapter.history();
+    const launched = launches(f.calls);
+    const repairReviewer = f.cycle.initialHistory.at(-1)!;
+    expect(repairReviewer).toMatchObject({ stage: "repair", role: "reviewer", outcome: "failed" });
+    expect(await retainedOutcome(repairDirectory)).toMatchObject({
+      identity: `reviewer:${repairReviewer.id}`,
+      defectClass,
+      evidenceStatus: "established",
+    });
+    const unrouted = async () => {
+      expect(contexts).toEqual([]);
+      expect(await planningArtifacts(f.runState)).toEqual([]);
+      expect((await adapter.history()).some((row) => row.stage === "planning")).toBe(false);
+    };
+    await unrouted();
+    // After phase=failed: re-entry advances; the ISS-161/181 reader stays silent.
+    expect(await attemptPhase(directory)).toBe("failed");
+    expect(await retainedSourceFailure(f.loop, f.cycle.selection)).toBeUndefined();
+    await expect(queueStep(f.current.config, adapter)).resolves.toMatchObject({
+      status: "advancing-attempt",
+    });
+    expect(launches(f.calls)).toEqual(launched);
+    await unrouted();
+    // Interrupted after terminal persistence, before the record advanced: the
+    // retained reviewer terminal is observed again and still advances.
+    const failed = await readFile(resolve(directory, "attempt.json"), "utf8");
+    await writeFile(resolve(directory, "attempt.json"), observing);
+    await expect(queueStep(f.current.config, adapter)).resolves.toMatchObject({
+      status: "advancing-attempt",
+    });
+    expect(await readFile(resolve(directory, "attempt.json"), "utf8")).toBe(failed);
+    expect(launches(f.calls)).toEqual(launched);
+    await unrouted();
+    // Main's successor: the verbatim third repair launches as an implementation author.
+    const next = (await f.compose(f.cycle)).config;
+    expect(next.stateDirectory).not.toBe(directory);
+    expect(next.items[0]!.source.author.prompt).toContain(
+      "Apply these reviewer-prescribed fixes verbatim",
+    );
+    running = `author:${next.items[0]!.source.stateDirectory}`;
+    await expect(queueStep(next, planningAdapter(f, next))).resolves.toMatchObject({
+      status: "observing-author",
+    });
+    expect(launches(f.calls)).toEqual([...launched, `launch:author:${next.items[0]!.issue}`]);
+    await unrouted();
+    expect(f.calls.slice(priorCalls).some((call) => /^(park|note):/.test(call))).toBe(false);
+  },
+);
+
+it.each(["brief", "slice", "design"] as const)(
+  "routes a classified source-reviewer %s FAIL into planning before repair, resuming through supervision",
+  async (defectClass) => {
+    const f = await sourceFailureFixture();
+    roots.push(f.root);
+    await withOrigin(f);
+    const launch = f.native.launch;
+    f.native.launch = async (role, config, prompt) => {
+      if (config.purpose === "planning")
+        return {
+          id: randomUUID(),
+          trace: resolve(config.stateDirectory, "planning.jsonl"),
+          pid: 123,
+          launchedAt: 1,
+        };
+      if (role === "author")
+        await writeFile(resolve(config.worktree, "product.txt"), "rejected implementation\n");
+      return launch(role, config, prompt);
+    };
+    const observe = f.native.observe;
+    f.native.observe = async (role, config, attempt) => {
+      if (config.purpose === "planning") return { id: attempt.id, status: "running" };
+      const result = await observe(role, config, attempt);
+      if (role === "author") return { ...result, status: "passed", summary: "" };
+      return {
+        ...result,
+        status: "failed",
+        summary: JSON.stringify({
+          run: config.run,
+          role,
+          head: result.head,
+          verdict: "FAIL",
+          findings: [
+            { file: "product.txt", line: 1, severity: "blocking", text: "Preserve the invariant." },
+          ],
+          g0: "No; the brief's ownership is ambiguous.",
+          defect: classified(defectClass),
+        }),
+      };
+    };
+    f.policy.planningContext = async () => structuredClone(fixtureAuthority());
+    const adapter = planningAdapter(f, f.current.config);
+    const directory = f.current.config.stateDirectory;
+    await startCycle(f.loop, f.cycle, f.host);
+    expect((await queueStep(f.current.config, adapter)).status).toBe("observing-planning-author");
+    const reviewer = (await adapter.history()).at(-1)!;
+    expect(reviewer).toMatchObject({ stage: "source", role: "reviewer", outcome: "failed" });
+    const path = resolve(directory, "planning-recovery.json");
+    const recovery = JSON.parse(await readFile(path, "utf8"));
+    expect(recovery.level).toBe(levelOf[defectClass]);
+    expect(recovery.outcome.value.identity).toBe(`reviewer:${reviewer.id}`);
+    expect(recovery.workers).toHaveLength(1);
+    expect(recovery.workers[0].config.purpose).toBe("planning");
+    // The fixable review stopped before repair: no repair author, no advancement.
+    expect(await attemptPhase(directory)).toBe("source");
+    expect(
+      (await readdir(resolve(directory, "repair"))).filter((name) =>
+        /^(author|reviewer)-/.test(name),
+      ),
+    ).toEqual([]);
+    expect(launches(f.calls)).toEqual([
+      `launch:author:${f.current.config.items[0]!.issue}`,
+      `launch:reviewer:${f.current.config.items[0]!.issue}`,
+    ]);
+    expect((await readdir(f.runState)).some((name) => name.endsWith("-attempt-2"))).toBe(false);
+    // Supervision resumes the same cycle; composition keeps the attempt on its
+    // retained planning record rather than projecting a repair or a successor.
+    expect((await f.advance())!.selection).toEqual(f.cycle.selection);
+    const resumed = await f.compose(f.cycle);
+    expect(resumed.config.stateDirectory).toBe(directory);
+    expect((await queueStep(resumed.config, planningAdapter(f, resumed.config))).status).toBe(
+      "observing-planning-author",
+    );
+    expect(JSON.parse(await readFile(path, "utf8")).workers).toHaveLength(1);
+    expect(await attemptPhase(directory)).toBe("source");
+    expect(f.calls.some((call) => /^(park|note|delivery):/.test(call))).toBe(false);
+  },
+);
+
+// A real native source pair accepted, then a real delivery refresh whose conflict
+// author or DELTA reviewer fails with a classification at the refresh stage.
+async function deliveryFailureFixture(stage: "conflict" | "refresh", defectClass: DefectClass) {
+  const f = await sourceFailureFixture();
+  roots.push(f.root);
+  const remote = await withOrigin(f);
+  const updater = resolve(f.root, "updater");
+  await f.git(f.root, ["clone", remote, updater]);
+  await appendFile(
+    resolve(updater, ".git/config"),
+    "[user]\n\tname = Fixture\n\temail = fixture@example.test\n",
+  );
+  const config = f.current.config;
+  const sourceDirectory = config.items[0]!.source.stateDirectory;
+  const launch = f.native.launch;
+  f.native.launch = async (role, current, prompt) => {
+    if (current.purpose === "planning")
+      return {
+        id: randomUUID(),
+        trace: resolve(current.stateDirectory, "planning.jsonl"),
+        pid: 123,
+        launchedAt: 1,
+      };
+    if (role === "author" && current.stateDirectory === sourceDirectory)
+      await writeFile(resolve(current.worktree, "product.txt"), "candidate\n");
+    // Delivery binds native identities to UUIDs; the fixture serial is otherwise retained.
+    return { ...(await launch(role, current, prompt)), id: randomUUID() };
+  };
+  const observe = f.native.observe;
+  f.native.observe = async (role, current, attempt) => {
+    if (current.purpose === "planning") return { id: attempt.id, status: "running" };
+    const result = await observe(role, current, attempt);
+    if (!/[\\/]refresh-[0-9a-f]{40}$/.test(current.stateDirectory))
+      return role === "author" ? { ...result, status: "passed", summary: "" } : result;
+    if (stage === "conflict" && role === "author")
+      return {
+        ...result,
+        status: "failed",
+        summary: "Both parents cannot be preserved inside the marked hunks.",
+        defect: classified(defectClass),
+      };
+    if (stage === "refresh" && role === "reviewer")
+      return {
+        ...result,
+        status: "failed",
+        summary: JSON.stringify({
+          run: current.run,
+          role,
+          head: result.head,
+          verdict: "FAIL",
+          findings: [
+            {
+              file: "product.txt",
+              line: 1,
+              severity: "blocking",
+              text: "The rebased candidate drops main's behaviour.",
+            },
+          ],
+          g0: "No; both parents must be preserved.",
+          defect: classified(defectClass),
+        }),
+      };
+    return result;
+  };
+  f.policy.planningContext = async () => structuredClone(fixtureAuthority());
+  const delivery = githubDeliveryAdapter(undefined, f.loop.gitExecutable);
+  delivery.verifyWorkspace = async (current, head) =>
+    (await f.git(current.worktree, ["rev-parse", "HEAD"])) === head &&
+    (await f.git(current.worktree, ["status", "--porcelain"])) === "";
+  delivery.runGate = async () => "passed";
+  const adapter = (current: QueueConfig) =>
+    planningAdapter(f, current, {
+      delivery,
+      deliveryPolicy: {
+        async plan(plan) {
+          return {
+            gates: { beforeMirror: ["synthetic-check"], afterMirror: [] },
+            drafts: [],
+            publication: {
+              sourceBranch: "codex/fixture-110",
+              baseBranch: "main",
+              title: "fixture",
+              body: "fixture",
+              draft: true,
+            },
+            cleanup: {
+              worktrees: [plan.worktree, plan.reviewWorktree],
+              branch: plan.localBranch!,
+            },
+            mergePolicy: {},
+          };
+        },
+      },
+    });
+  await startCycle(f.loop, f.cycle, f.host);
+  await expect(
+    queueStep(config, {
+      ...adapter(config),
+      async delivery() {
+        throw new Error("accepted source reached delivery");
+      },
+    }),
+  ).rejects.toThrow("accepted source reached delivery");
+  expect(await attemptPhase(config.stateDirectory)).toBe("delivery");
+  // Main moves after the exact-head PASS: a conflicting product edit, or an
+  // unrelated file whose rebase is clean and needs only the DELTA reviewer.
+  await writeFile(resolve(updater, stage === "conflict" ? "product.txt" : "main.txt"), "main\n");
+  await f.git(updater, ["add", "."]);
+  await f.git(updater, ["commit", "-m", "main moved"]);
+  await f.git(updater, ["push", "origin", "main"]);
+  const main = await f.git(updater, ["rev-parse", "HEAD"]);
+  return {
+    ...f,
+    adapter,
+    main,
+    sourceDirectory,
+    reason: stage === "conflict" ? "conflict-resolution-failed" : "refresh-review-failed",
+    role: stage === "conflict" ? "author" : "reviewer",
+  };
+}
+
+it.each([
+  ["conflict", "slice"],
+  ["refresh", "design"],
+] as const)(
+  "routes a classified %s-stage %s failure from delivery into planning without parking",
+  async (stage, defectClass) => {
+    const f = await deliveryFailureFixture(stage, defectClass);
+    const config = f.current.config;
+    const directory = config.stateDirectory;
+    const launched = launches(f.calls);
+    expect((await queueStep(config, f.adapter(config))).status).toBe("observing-planning-author");
+    const worker = (await f.adapter(config).history()).at(-1)!;
+    expect(worker).toMatchObject({ stage: "refresh", role: f.role, outcome: "failed" });
+    const path = resolve(directory, "planning-recovery.json");
+    const recovery = JSON.parse(await readFile(path, "utf8"));
+    expect(recovery.level).toBe(levelOf[defectClass]);
+    expect(recovery.outcome.value.identity).toBe(`${f.role}:${worker.id}`);
+    expect(recovery.outcome.path.startsWith(resolve(f.sourceDirectory, `refresh-${f.main}`))).toBe(
+      true,
+    );
+    expect(recovery.input.main).toBe(f.main);
+    expect(launches(f.calls)).toEqual([...launched, `launch:${f.role}:${config.items[0]!.issue}`]);
+    // The typed stop never reached supervision; the accepted delivery cursor and
+    // the native refresh records stay as they were when the worker failed.
+    expect(await attemptPhase(directory)).toBe("delivery");
+    expect(f.calls.some((call) => /^(park|note):/.test(call))).toBe(false);
+    expect((await f.advance())!.selection).toEqual(f.cycle.selection);
+    const resumed = await f.compose(f.cycle);
+    expect(resumed.config.stateDirectory).toBe(directory);
+    expect((await queueStep(resumed.config, f.adapter(resumed.config))).status).toBe(
+      "observing-planning-author",
+    );
+    expect(JSON.parse(await readFile(path, "utf8")).workers).toHaveLength(1);
+    expect(await attemptPhase(directory)).toBe("delivery");
+    expect((await readdir(f.runState)).some((name) => name.endsWith("-attempt-2"))).toBe(false);
+  },
+);
+
+it.each([
+  ["conflict", "brief"],
+  ["refresh", "slice"],
+] as const)(
+  "re-reads a retained %s-stage %s failure through composition into planning instead of a successor",
+  async (stage, defectClass) => {
+    const f = await deliveryFailureFixture(stage, defectClass);
+    const config = f.current.config;
+    const directory = config.stateDirectory;
+    // Interrupted before the planning hook: the ordinary typed stop parks the item.
+    const interrupted = f.adapter(config);
+    delete interrupted.planning;
+    await expect(queueStep(config, interrupted)).rejects.toMatchObject({ reason: f.reason });
+    f.cycle.initialHistory = await interrupted.history();
+    expect(f.cycle.initialHistory.at(-1)).toMatchObject({
+      stage: "refresh",
+      role: f.role,
+      outcome: "failed",
+    });
+    expect(await attemptPhase(directory)).toBe("delivery");
+    expect(await stopCycle(f.loop, f.cycle, f.reason, 1, f.host, f.policy)).toBe("item");
+    expect(f.calls).toContain("park:110");
+    const retained = await snapshot(directory);
+    // Explicit unpark: the retained conflict/refresh reader finds the classification
+    // and leaves the attempt unprojected; the queue then resumes planning from it.
+    f.rows[0]!.ready = true;
+    const next = (await f.advance())!;
+    expect(next.selection.key).toBe("fixture-110");
+    const composed = await f.compose(next);
+    expect(composed.config.stateDirectory).toBe(directory);
+    expect(composed.config.items[0]!.implementationAttempt).toBe(1);
+    expect(await snapshot(directory)).toEqual(retained);
+    expect((await readdir(f.runState)).some((name) => name.endsWith("-attempt-2"))).toBe(false);
+    const launched = launches(f.calls);
+    expect((await queueStep(composed.config, f.adapter(composed.config))).status).toBe(
+      "observing-planning-author",
+    );
+    const recovery = JSON.parse(
+      await readFile(resolve(directory, "planning-recovery.json"), "utf8"),
+    );
+    expect(recovery.level).toBe(levelOf[defectClass]);
+    expect(recovery.outcome.value.identity).toBe(`${f.role}:${f.cycle.initialHistory.at(-1)!.id}`);
+    expect(launches(f.calls)).toEqual(launched);
+    expect(await attemptPhase(directory)).toBe("delivery");
+    // Composition after the planning record keeps the same attempt again.
+    expect((await f.compose(next)).config.stateDirectory).toBe(directory);
+    expect((await readdir(f.runState)).some((name) => name.endsWith("-attempt-2"))).toBe(false);
   },
 );

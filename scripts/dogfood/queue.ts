@@ -3856,11 +3856,13 @@ export async function retainedSourceFailure(config: LoopConfig, selected: Select
     if (attempt === ABSENT) continue;
     if ((await optionalRecord(directory, "planning-recovery")) !== ABSENT) return undefined;
     if (attempt.phase === "failed") return undefined;
+    // ISS-255 routes only a classified source-author failure to planning. A
+    // repair-author failure keeps main's parking and replay until ISS-256.
+    const source = await pinnedSourceFailure(config, selected, number, directory, attempt);
+    if (source && planningLevel(source.defect)) return undefined;
     const terminal =
-      (await pinnedSourceFailure(config, selected, number, directory, attempt)) ??
-      (await pinnedRepairFailure(config, selected, number, directory, attempt))?.terminal;
+      source ?? (await pinnedRepairFailure(config, selected, number, directory, attempt))?.terminal;
     if (!terminal) return undefined;
-    if (planningLevel(terminal.defect)) return undefined;
     const history = await readQueueHistory({
       stateDirectory: directory,
       nativeLaunchCeiling: config.nativeLaunchCeiling,
