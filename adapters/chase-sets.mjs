@@ -298,14 +298,9 @@ export function bodyCriteria(body) {
 }
 
 export async function planningContext(input) {
-  // The complete planning census already carries the selected issue's body,
-  // labels, milestone and title, so issueContext can validate that same
-  // authority without spawning a second GitHub request.
-  const issuesPromise = planningAuthority(input.repository);
-  const authoritySnapshot = issuesPromise.then((issues) => ({ issues }));
   const [context, issues] = await Promise.all([
-    issueContext({ ...input, authoritySnapshot }),
-    issuesPromise,
+    issueContext(input),
+    planningAuthority(input.repository),
   ]);
   const selected = issues.find((row) => row.number === input.number);
   if (!selected || selected.body !== context.body)
@@ -320,27 +315,20 @@ export async function issueContext({
   executorRoot,
   targetMilestone,
   opsAdmission,
-  authoritySnapshot,
 }) {
   validateOpsAdmission({ repository, targetMilestone, opsAdmission });
   requireRepository(repository);
   if (key !== `cs-${number}`) throw new Error("wrong-chase-sets-issue");
   let row;
-  let snapshotAuthority;
-  if (authoritySnapshot) {
-    snapshotAuthority = await authoritySnapshot;
-    row = snapshotAuthority.issues.find((issue) => issue.number === number);
-  } else {
-    try {
-      const [owner, name] = repository.split("/");
-      row = (await graphqlPage(ISSUE_CONTEXT_QUERY, owner, name, undefined, number))?.data
-        ?.repository?.issue;
-    } catch {
-      throw new DeliveryBlocked(
-        "issue-observation-unavailable",
-        `Issue #${number}; target ${targetMilestone ?? "none"}; context-unavailable.`,
-      );
-    }
+  try {
+    const [owner, name] = repository.split("/");
+    row = (await graphqlPage(ISSUE_CONTEXT_QUERY, owner, name, undefined, number))?.data?.repository
+      ?.issue;
+  } catch {
+    throw new DeliveryBlocked(
+      "issue-observation-unavailable",
+      `Issue #${number}; target ${targetMilestone ?? "none"}; context-unavailable.`,
+    );
   }
   if (row?.number !== number || typeof row.title !== "string" || typeof row.body !== "string")
     throw new Error("malformed-chase-sets-issue");
@@ -366,9 +354,7 @@ export async function issueContext({
     let current;
     let eligible;
     try {
-      const snapshot = snapshotAuthority?.product
-        ? snapshotAuthority
-        : await authority(repository, executorRoot, targetMilestone);
+      const snapshot = await authority(repository, executorRoot, targetMilestone);
       current = snapshot.issues.find((issue) => issue.number === number);
       eligible = current && runnable(current, snapshot, targetMilestone, opsAdmission);
     } catch {

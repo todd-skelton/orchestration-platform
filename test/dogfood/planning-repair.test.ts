@@ -1050,7 +1050,6 @@ it.skipIf(process.platform === "win32")(
         state: "OPEN",
         parent: null,
         milestone: { number: 1 },
-        labels: empty,
         comments: {
           pageInfo: { hasNextPage: false },
           nodes: [{ id: "decision", body: "Keep publication host-owned." }],
@@ -1086,7 +1085,16 @@ fs.appendFileSync(${JSON.stringify(queryLog)},JSON.stringify(args)+'\\n');
 const rows=JSON.parse(fs.readFileSync(${JSON.stringify(response)},'utf8'));
 const q=args.find(a=>a.startsWith('query='));
 if(!q||args[0]!=='api')process.exit(4);
-fs.writeFileSync(1,JSON.stringify({data:{repository:q.includes('issues(first:')?{issues:{pageInfo:{hasNextPage:false},nodes:rows}}:{issue:rows[0]}}}));
+const source=rows[0];
+const context={number:source.number,title:source.title,body:source.body,milestone:source.milestone,
+  labels:{pageInfo:{hasNextPage:false},nodes:[{name:'type:slice'}]}};
+const authority=rows.map(row=>({number:row.number,url:row.url,title:row.title,body:row.body,
+  updatedAt:row.updatedAt,state:row.state,milestone:row.milestone,parent:row.parent,
+  subIssues:row.subIssues,blockedBy:row.blockedBy,blocking:row.blocking,comments:row.comments}));
+const repository=q.includes('issues(first:')
+  ? {issues:{pageInfo:{hasNextPage:false},nodes:authority}}
+  : {issue:context};
+fs.writeFileSync(1,JSON.stringify({data:{repository}}));
 `,
     );
     await chmod(resolve(root, "gh"), 0o755);
@@ -1128,9 +1136,9 @@ fs.writeFileSync(1,JSON.stringify({data:{repository:q.includes('issues(first:')?
       "Keep publication host-owned.",
     );
     expect(chaseContext.context.body).toBe(rows[0]!.body);
-    // The context and full authority census share one issue read; the former
-    // duplicate context query is the measured production cut.
-    expect((await readFile(queryLog, "utf8")).trim().split("\n")).toHaveLength(2);
+    // Chase Sets retains its labels-bearing context read alongside the full
+    // authority census; self reuses its immutable pinned planning snapshot.
+    expect((await readFile(queryLog, "utf8")).trim().split("\n")).toHaveLength(3);
     for (const adapter of ["self", "chase-sets"] as const) {
       const f = await fixture();
       const isSelf = adapter === "self";
@@ -1180,7 +1188,6 @@ fs.writeFileSync(1,JSON.stringify({data:{repository:q.includes('issues(first:')?
         rows[1].body += "\nUnrelated edit.";
         rows[1].updatedAt = new Date(Date.parse(rows[1].updatedAt) + 1000).toISOString();
         rows[1].comments.nodes.push({ id: "unrelated", body: "Unrelated comment." });
-        rows[1].labels = { ...empty, nodes: [{ name: "ready" }] };
         await writeFile(response, JSON.stringify(rows));
       };
       f.setRunning(true);
