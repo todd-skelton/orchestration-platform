@@ -31,6 +31,23 @@ const REQUIRED_CHECKS = [
   "Node 24 / macos-latest",
 ];
 const runFile = promisify(execFile);
+// A pinned revision is immutable for the lifetime of a process. Reuse its
+// validated snapshot across re-acquisitions while still reading GitHub each
+// time; an unpinned working-tree read never enters this cache.
+const planningSnapshots = new Map();
+
+function cachedPlanningSnapshot(executorRoot, gitExecutable, pinned) {
+  const key = `${gitExecutable}\0${executorRoot}\0${pinned.revision}`;
+  let value = planningSnapshots.get(key);
+  if (!value) {
+    value = loadPlanningSnapshot(executorRoot, pinned);
+    value.catch(() => {
+      if (planningSnapshots.get(key) === value) planningSnapshots.delete(key);
+    });
+    planningSnapshots.set(key, value);
+  }
+  return value.then((snapshot) => structuredClone(snapshot));
+}
 
 function requirePolicy(condition, reason) {
   if (!condition) throw new DeliveryBlocked(reason);
@@ -160,10 +177,13 @@ export async function issueContext({
   executorRoot,
   planningRevision,
   gitExecutable,
+  planningSnapshot,
 }) {
   validateRepository(repository);
   const pinned = pinnedPlanning(executorRoot, planningRevision, gitExecutable);
-  const planning = await loadPlanningSnapshot(executorRoot, pinned);
+  const planning = planningSnapshot
+    ? await planningSnapshot
+    : await loadPlanningSnapshot(executorRoot, pinned);
   const registered = planning.roadmap.issues.find((issue) => issue.key === key);
   requirePolicy(registered, "selected-issue-unregistered");
   const draft = planning.issueDrafts[key];
@@ -184,9 +204,10 @@ export async function issueContext({
 
 export async function planningContext(input) {
   const pinned = pinnedPlanning(input.executorRoot, input.main, input.gitExecutable);
+  const planningPromise = cachedPlanningSnapshot(input.executorRoot, input.gitExecutable, pinned);
   const [context, planning, issues] = await Promise.all([
-    issueContext({ ...input, planningRevision: input.main }),
-    loadPlanningSnapshot(input.executorRoot, pinned),
+    issueContext({ ...input, planningRevision: input.main, planningSnapshot: planningPromise }),
+    planningPromise,
     planningAuthority(input.repository),
   ]);
   validatePlanningSnapshot(planning);
