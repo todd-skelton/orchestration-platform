@@ -1109,8 +1109,8 @@
       "file": "planning/drafts/ISS-258.md",
       "title": "Select Chase Sets work by handoff label and acknowledge a return request",
       "summary": "Select Chase Sets work by handoff label, recheck eligibility through delivery effects, and durably acknowledge return requests without implementing worker cancellation or Chase Sets-side handoff rules.",
-      "milestone": "M2",
-      "blockedBy": []
+      "milestone": "M1",
+      "blockedBy": ["ISS-259"]
     },
     {
       "key": "ISS-259",
