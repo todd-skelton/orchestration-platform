@@ -36,8 +36,8 @@ const runFile = promisify(execFile);
 // time; an unpinned working-tree read never enters this cache.
 const planningSnapshots = new Map();
 
-function cachedPlanningSnapshot(executorRoot, revision, gitExecutable, pinned) {
-  const key = `${gitExecutable}\0${executorRoot}\0${revision}`;
+function cachedPlanningSnapshot(executorRoot, gitExecutable, pinned) {
+  const key = `${gitExecutable}\0${executorRoot}\0${pinned.revision}`;
   let value = planningSnapshots.get(key);
   if (!value) {
     value = loadPlanningSnapshot(executorRoot, pinned);
@@ -105,21 +105,16 @@ function pinnedPlanning(executorRoot, planningRevision, gitExecutable = "git") {
     typeof planningRevision === "string" && /^[a-f0-9]{40}$/.test(planningRevision),
     "invalid-selected-issue",
   );
-  const cache = new Map();
   return {
     revision: planningRevision,
     async git(args) {
-      const key = JSON.stringify(args);
-      if (cache.has(key)) return cache.get(key);
       try {
-        const output = (
+        return (
           await runFile(gitExecutable, ["-C", executorRoot, ...args], {
             windowsHide: true,
             maxBuffer: 32 * 1024 * 1024,
           })
         ).stdout;
-        cache.set(key, output);
-        return output;
       } catch (error) {
         throw new DeliveryBlocked("current-main-unavailable", String(error));
       }
@@ -183,15 +178,12 @@ export async function issueContext({
   planningRevision,
   gitExecutable,
   planningSnapshot,
-  planningReader,
 }) {
   validateRepository(repository);
-  const pinned = planningReader ?? pinnedPlanning(executorRoot, planningRevision, gitExecutable);
+  const pinned = pinnedPlanning(executorRoot, planningRevision, gitExecutable);
   const planning = planningSnapshot
     ? await planningSnapshot
-    : planningRevision
-      ? await cachedPlanningSnapshot(executorRoot, planningRevision, gitExecutable, pinned)
-      : await loadPlanningSnapshot(executorRoot, pinned);
+    : await loadPlanningSnapshot(executorRoot, pinned);
   const registered = planning.roadmap.issues.find((issue) => issue.key === key);
   requirePolicy(registered, "selected-issue-unregistered");
   const draft = planning.issueDrafts[key];
@@ -212,19 +204,9 @@ export async function issueContext({
 
 export async function planningContext(input) {
   const pinned = pinnedPlanning(input.executorRoot, input.main, input.gitExecutable);
-  const planningPromise = cachedPlanningSnapshot(
-    input.executorRoot,
-    input.main,
-    input.gitExecutable,
-    pinned,
-  );
+  const planningPromise = cachedPlanningSnapshot(input.executorRoot, input.gitExecutable, pinned);
   const [context, planning, issues] = await Promise.all([
-    issueContext({
-      ...input,
-      planningRevision: input.main,
-      planningSnapshot: planningPromise,
-      planningReader: pinned,
-    }),
+    issueContext({ ...input, planningRevision: input.main, planningSnapshot: planningPromise }),
     planningPromise,
     planningAuthority(input.repository),
   ]);
