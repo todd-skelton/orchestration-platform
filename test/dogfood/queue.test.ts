@@ -4771,6 +4771,13 @@ describe.each([
   "ISS-229 executor recovery refreshed=%s afterMirror=%s control=%s",
   (refresh, afterMirror, mode) => {
     let fixture: AsyncGenerator<void, void>;
+    // ISS-259's admitted Q/Q2 rows use the existing published phase
+    // boundaries. The generator already reaches both boundaries; yielding
+    // here only lets each hosted hook observe its own bounded window.
+    const splitPublishedPhase =
+      mode === "published" ||
+      (refresh && afterMirror && mode === "candidate") ||
+      (!refresh && !afterMirror && mode === "interrupted");
     beforeEach(async () => {
       fixture = prepareStructureCorrection(refresh, afterMirror, mode, true);
       expect((await fixture.next()).done).toBe(false);
@@ -4778,7 +4785,7 @@ describe.each([
     beforeEach(async () => {
       expect((await fixture.next()).done).toBe(false);
     });
-    if (mode === "published") {
+    if (splitPublishedPhase) {
       // ISS-235 attempt 2 timed out on Windows while this final phase combined
       // admission, correction and delivery. Keep one lineage and every assertion,
       // with the existing hook/test bound applied at reviewer observations.
@@ -5412,7 +5419,12 @@ See docs/architecture/bounded-context-structure.md#rules-the-structure-gate-enfo
       expect(integrated.previousReview).toBe(reservation.sourceEvidence.reviewId);
       expect(launches.at(-1)!.stage).toBe("refresh-reviewer");
       expect(launches.at(-1)!.prompt).toContain("independent DELTA");
-      if (mode === "published") yield;
+      if (
+        mode === "published" ||
+        (refresh && afterMirror && mode === "candidate") ||
+        (!refresh && !afterMirror && mode === "interrupted")
+      )
+        yield;
       deltaRunning = false;
       if (mode === "review-fail") {
         for (let replay = 0; replay < 2; replay++)
@@ -5513,7 +5525,13 @@ See docs/architecture/bounded-context-structure.md#rules-the-structure-gate-enfo
     reviewRunning = true;
     for (let replay = 0; replay < 2; replay++)
       await expect(run()).resolves.toMatchObject({ status: "observing-reviewer" });
-    if (executorRecovery && mode === "published") yield;
+    if (
+      executorRecovery &&
+      (mode === "published" ||
+        (refresh && afterMirror && mode === "candidate") ||
+        (!refresh && !afterMirror && mode === "interrupted"))
+    )
+      yield;
     reviewRunning = false;
     if (mode === "second failure") {
       for (let replay = 0; replay < 2; replay++)

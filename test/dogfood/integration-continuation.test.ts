@@ -18,7 +18,7 @@ import { tmpdir } from "node:os";
 import { resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import filesystem from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { unparkInstructions } from "../../adapters/self.mjs";
@@ -4476,54 +4476,9 @@ const integrationModes: Mode[] = [
   "overlap-inside",
   "overlap-outside",
 ];
-it.each([
-  ...integrationModes.map((mode) => ({ mode, spent: false })),
-  ...integrationModes
-    .filter(
-      (mode) =>
-        !["clean", "outside-path", "unsupported", "overlap-inside", "overlap-outside"].includes(
-          mode,
-        ),
-    )
-    .concat([
-      "unruled-u",
-      "unchanged-u",
-      "outside-hunk",
-      "outside-u",
-      "retry-moved-main",
-      "spent-moved-main",
-      "capture-failure",
-      "review-stale",
-      "after-mirror-fail",
-      "host-gate-fail",
-      "binary-u",
-      "delete-u",
-      "mode-u",
-      "rename-u",
-      "added-path",
-      "lost-setup",
-      "lost-launch",
-      "lost-terminal",
-      "gate-interruption",
-      "crlf-dead-retry",
-      "dead-retry-fail",
-      "dead-retry-review-fail",
-      "review-interruption",
-      "gates-moved-main",
-      "published-allowance",
-      "published-allowance-declaration-faults",
-      "published-allowance-record-faults",
-      "published-allowance-history-faults",
-      "published-allowance-authority-faults",
-      "published-allowance-retry",
-      "published-allowance-nonpass",
-      "published-allowance-lost-launch",
-      "published-allowance-refusal",
-      "published-allowance-second-refresh",
-      "published-allowance-second-conflict",
-    ])
-    .map((mode) => ({ mode, spent: true })),
-])("runs native integration delivery: $mode, spent=$spent", async ({ mode, spent }) => {
+async function* integrationCase(mode: Mode, spent: boolean) {
+  // Setup, queue composition, and proof use separate bounded hook windows.
+  yield;
   const shape: Shape =
     mode === "clean"
       ? "clean"
@@ -4537,6 +4492,7 @@ it.each([
   const f = spent
     ? await spentFixture(mode === "spent-retry" || mode === "spent-moved-main", autocrlf)
     : await exhaustedFixture(shape, mode === "spent-retry", autocrlf);
+  yield;
   if (mode === "unruled-u") f.packet.spentResolution!.preservation = [];
   if (mode === "outside-u") {
     f.packet.spentResolution!.preservation[0]!.path = "feature.txt";
@@ -4550,6 +4506,7 @@ it.each([
   }
   const q = await f.compose();
   expect(await f.compose()).toEqual(q);
+  yield;
   const item = q.items[0]!;
   const launches: string[] = [];
   const effects: string[] = [];
@@ -4689,7 +4646,11 @@ it.each([
       if (observing) return { status: "running", id: attempt.id };
       if (role === "reviewer" && reviewerWaiting) return { status: "running", id: attempt.id };
       if (mode === "published-allowance-retry" && launches.length === 4)
-        return { status: "dead", id: attempt.id, summary: "Synthetic additional reviewer death." };
+        return {
+          status: "dead",
+          id: attempt.id,
+          summary: "Synthetic additional reviewer death.",
+        };
       if (mode === "lost-terminal" && role === "author" && !lost) {
         lost = true;
         throw new Error("synthetic interrupted terminal observation");
@@ -4732,7 +4693,14 @@ it.each([
           head,
           verdict: fail ? "FAIL" : "PASS",
           findings: fail
-            ? [{ file: "docs/loop.md", line: 1, severity: "blocking", text: "Lost main behavior." }]
+            ? [
+                {
+                  file: "docs/loop.md",
+                  line: 1,
+                  severity: "blocking",
+                  text: "Lost main behavior.",
+                },
+              ]
             : [],
           g0: "Preserve both parents.",
         }),
@@ -5028,13 +4996,19 @@ it.each([
   }
   expect(await f.git(["rev-parse", "HEAD"], f.repository)).toBe(f.main);
   observing = false;
+  if (mode.startsWith("published-")) yield;
   if (mode === "published-single-reentry") {
+    yield;
     const inProcess = adapter();
     await expect(queueStep(q, inProcess)).resolves.toMatchObject({
       status: "observing-hosted-checks",
     });
     const accepted = await integrationAttempt();
-    expect(accepted).toMatchObject({ phase: "delivery", head: publishedHead, candidateAttempt: 2 });
+    expect(accepted).toMatchObject({
+      phase: "delivery",
+      head: publishedHead,
+      candidateAttempt: 2,
+    });
     expect(accepted.reviewId).not.toBe(f.reviewId);
     expect(accepted.history).toHaveLength(25);
     const before = await snapshot(q.stateDirectory);
@@ -5057,7 +5031,9 @@ it.each([
   }
   if (mode === "review-interruption") {
     for (let replay = 0; replay < 2; replay++)
-      await expect(run(await f.compose())).resolves.toMatchObject({ status: "observing-reviewer" });
+      await expect(run(await f.compose())).resolves.toMatchObject({
+        status: "observing-reviewer",
+      });
     expect(launches).toEqual(["author", "reviewer"]);
     expect(effects).toEqual([]);
     reviewerWaiting = false;
@@ -5122,7 +5098,11 @@ it.each([
     });
     expect(current.previousReview).not.toBe(f.reviewId);
     const accepted = await integrationAttempt();
-    expect(accepted).toMatchObject({ phase: "delivery", head: publishedHead, candidateAttempt: 2 });
+    expect(accepted).toMatchObject({
+      phase: "delivery",
+      head: publishedHead,
+      candidateAttempt: 2,
+    });
     expect(accepted.reviewId).not.toBe(current.previousReview);
     expect(accepted.reviewId).not.toBe(f.reviewId);
     expect(accepted.history).toHaveLength(26);
@@ -5132,6 +5112,7 @@ it.each([
       // binding faults below stay with `published-reentry`: the hosted Windows
       // bootstrap spends roughly 45ms per real Git spawn, and one case that
       // repeated them (982 spawns) exceeded the fixed 30-second test timeout.
+      yield;
       await publishedAllowance(current, accepted);
       return;
     }
@@ -5148,7 +5129,9 @@ it.each([
         status: "observing-hosted-checks",
       });
     const reconstructed = await f.compose();
-    await expect(run(reconstructed)).resolves.toMatchObject({ status: "observing-hosted-checks" });
+    await expect(run(reconstructed)).resolves.toMatchObject({
+      status: "observing-hosted-checks",
+    });
     expect(await snapshot(q.stateDirectory)).toEqual(before);
     expect(effects).toEqual(calls);
     expect(hostedObservations).toBe(checks + 3);
@@ -5188,7 +5171,12 @@ it.each([
             ...JSON.parse(r.summary),
             verdict: "FAIL",
             findings: [
-              { file: "feature.txt", line: 1, severity: "blocking", text: "Synthetic rejection." },
+              {
+                file: "feature.txt",
+                line: 1,
+                severity: "blocking",
+                text: "Synthetic rejection.",
+              },
             ],
           }),
         }),
@@ -5238,7 +5226,12 @@ it.each([
             ...JSON.parse(r.summary),
             verdict: "FAIL",
             findings: [
-              { file: "feature.txt", line: 1, severity: "blocking", text: "Synthetic rejection." },
+              {
+                file: "feature.txt",
+                line: 1,
+                severity: "blocking",
+                text: "Synthetic rejection.",
+              },
             ],
           }),
         }),
@@ -5827,4 +5820,70 @@ it.each([
   expect(await f.compose()).toEqual(q);
   if (spent && mode === "pass") await terminalReselection();
   await f.unchanged();
+}
+
+describe.each([
+  ...integrationModes.map((mode) => ({ mode, spent: false })),
+  ...integrationModes
+    .filter(
+      (mode) =>
+        !["clean", "outside-path", "unsupported", "overlap-inside", "overlap-outside"].includes(
+          mode,
+        ),
+    )
+    .concat([
+      "unruled-u",
+      "unchanged-u",
+      "outside-hunk",
+      "outside-u",
+      "retry-moved-main",
+      "spent-moved-main",
+      "capture-failure",
+      "review-stale",
+      "after-mirror-fail",
+      "host-gate-fail",
+      "binary-u",
+      "delete-u",
+      "mode-u",
+      "rename-u",
+      "added-path",
+      "lost-setup",
+      "lost-launch",
+      "lost-terminal",
+      "gate-interruption",
+      "crlf-dead-retry",
+      "dead-retry-fail",
+      "dead-retry-review-fail",
+      "review-interruption",
+      "gates-moved-main",
+      "published-allowance",
+      "published-allowance-declaration-faults",
+      "published-allowance-record-faults",
+      "published-allowance-history-faults",
+      "published-allowance-authority-faults",
+      "published-allowance-retry",
+      "published-allowance-nonpass",
+      "published-allowance-lost-launch",
+      "published-allowance-refusal",
+      "published-allowance-second-refresh",
+      "published-allowance-second-conflict",
+    ])
+    .map((mode) => ({ mode, spent: true })),
+])("runs native integration delivery: $mode, spent=$spent", ({ mode, spent }) => {
+  let phase: AsyncGenerator<void, void>;
+  beforeEach(async () => {
+    phase = integrationCase(mode, spent);
+    expect((await phase.next()).done).toBe(false);
+  });
+  beforeEach(async () => {
+    expect((await phase.next()).done).toBe(false);
+  });
+  beforeEach(async () => {
+    expect((await phase.next()).done).toBe(false);
+  });
+  it("completes the full native lifecycle", async () => {
+    while (!(await phase.next()).done) {
+      // Remaining phases run in the test body after the bounded hooks.
+    }
+  });
 });
