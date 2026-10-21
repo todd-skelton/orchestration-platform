@@ -18,7 +18,7 @@ import { tmpdir } from "node:os";
 import { resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import { pathToFileURL } from "node:url";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import filesystem from "node:fs/promises";
 import { syncBuiltinESMExports } from "node:module";
 import { unparkInstructions } from "../../adapters/self.mjs";
@@ -4401,7 +4401,11 @@ it.each(["ordinary", "spent", "removed"])(
 
 type Mode =
   | "published-allowance"
-  | "published-allowance-declaration-faults"
+  | "published-allowance-missing-declaration"
+  | "published-allowance-wrong-run"
+  | "published-allowance-wrong-issue"
+  | "published-allowance-wrong-attempt"
+  | "published-allowance-wrong-stop"
   | "published-allowance-record-faults"
   | "published-allowance-history-faults"
   | "published-allowance-authority-faults"
@@ -4476,7 +4480,7 @@ const integrationModes: Mode[] = [
   "overlap-inside",
   "overlap-outside",
 ];
-it.each([
+const integrationRows = [
   ...integrationModes.map((mode) => ({ mode, spent: false })),
   ...integrationModes
     .filter(
@@ -4511,7 +4515,11 @@ it.each([
       "review-interruption",
       "gates-moved-main",
       "published-allowance",
-      "published-allowance-declaration-faults",
+      "published-allowance-missing-declaration",
+      "published-allowance-wrong-run",
+      "published-allowance-wrong-issue",
+      "published-allowance-wrong-attempt",
+      "published-allowance-wrong-stop",
       "published-allowance-record-faults",
       "published-allowance-history-faults",
       "published-allowance-authority-faults",
@@ -4523,7 +4531,14 @@ it.each([
       "published-allowance-second-conflict",
     ])
     .map((mode) => ({ mode, spent: true })),
-])("runs native integration delivery: $mode, spent=$spent", async ({ mode, spent }) => {
+];
+// ISS-259: each published row whose single body projected above 24 seconds
+// on hosted Windows runs its fresh fixture, queue composition and first
+// recovery, then moved main through publication (and allowance setup), in
+// two bounded hooks before the row-local body. `published-single-reentry`
+// projected under that bound and keeps one body like the other rows.
+const phased = (mode: Mode) => mode.startsWith("published-") && mode !== "published-single-reentry";
+async function* integrationCase(mode: Mode, spent: boolean) {
   const shape: Shape =
     mode === "clean"
       ? "clean"
@@ -5028,6 +5043,7 @@ it.each([
   }
   expect(await f.git(["rev-parse", "HEAD"], f.repository)).toBe(f.main);
   observing = false;
+  if (phased(mode)) yield; // after the first recovery: the census `queue` boundary
   if (mode === "published-single-reentry") {
     const inProcess = adapter();
     await expect(queueStep(q, inProcess)).resolves.toMatchObject({
@@ -5132,9 +5148,10 @@ it.each([
       // binding faults below stay with `published-reentry`: the hosted Windows
       // bootstrap spends roughly 45ms per real Git spawn, and one case that
       // repeated them (982 spawns) exceeded the fixed 30-second test timeout.
-      await publishedAllowance(current, accepted);
+      yield* publishedAllowance(current, accepted);
       return;
     }
+    yield; // after proof:publication
     const inProcess = adapter();
     await expect(queueStep(q, inProcess)).resolves.toMatchObject({
       status: "observing-hosted-checks",
@@ -5402,7 +5419,7 @@ it.each([
     await f.unchanged();
     return;
   }
-  async function publishedAllowance(current: any, accepted: any) {
+  async function* publishedAllowance(current: any, accepted: any) {
     const digestFile = async (path: string) =>
       createHash("sha256")
         .update(await readFile(path))
@@ -5452,18 +5469,20 @@ it.each([
       JSON.parse(await readFile(resolve(current.directory, "publication-conflict.json"), "utf8")),
     ).toEqual({ head: accepted.head });
     expect(authorityReads).toBe(0);
+    yield; // after proof:allowance-setup
 
     // Every negative reaches the same native launch boundary. Restore only
     // synthetic fixture state between independent faults, never live records.
     // Each group is one case: a fault costs one full delivery pass through Git.
     const admissionFaults: Partial<Record<Mode, string[]>> = {
-      "published-allowance-declaration-faults": [
-        "missing-declaration",
-        "wrong-run",
-        "wrong-issue",
-        "wrong-attempt",
-        "wrong-stop",
-      ],
+      // ISS-259: each declaration fault is its own logical row with a fresh
+      // fixture and the full positive control below, after five faults in one
+      // body exceeded hosted Windows' 30-second limit.
+      "published-allowance-missing-declaration": ["missing-declaration"],
+      "published-allowance-wrong-run": ["wrong-run"],
+      "published-allowance-wrong-issue": ["wrong-issue"],
+      "published-allowance-wrong-attempt": ["wrong-attempt"],
+      "published-allowance-wrong-stop": ["wrong-stop"],
       // ISS-235's hosted remainder failure exceeded 30 seconds for all six
       // record faults in one case. Keep every fault and the positive control,
       // with three full delivery passes per case and the same timeout.
@@ -5827,4 +5846,31 @@ it.each([
   expect(await f.compose()).toEqual(q);
   if (spent && mode === "pass") await terminalReselection();
   await f.unchanged();
-});
+}
+
+it.each(integrationRows.filter(({ mode }) => !phased(mode)))(
+  "runs native integration delivery: $mode, spent=$spent",
+  async ({ mode, spent }) => {
+    expect((await integrationCase(mode, spent).next()).done).toBe(true);
+  },
+);
+describe.each(integrationRows.filter(({ mode }) => phased(mode)))(
+  "runs native integration delivery: $mode, spent=$spent",
+  ({ mode, spent }) => {
+    // Each hook and the body keep the ordinary 30-second bound. The generator
+    // holds this row's fresh fixture, records and counters; nothing is shared
+    // with another row, and no lifecycle work is skipped.
+    let phase: AsyncGenerator<void, void>;
+    beforeEach(async () => {
+      phase = integrationCase(mode, spent);
+      expect((await phase.next()).done).toBe(false); // fixture, queue, first recovery
+    });
+    beforeEach(async () => {
+      // Moved main and publication, then allowance setup.
+      expect((await phase.next()).done).toBe(false);
+    });
+    it("retains one native lineage through its row-local faults, control and replays", async () => {
+      expect((await phase.next()).done).toBe(true);
+    });
+  },
+);
