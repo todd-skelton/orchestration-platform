@@ -1127,6 +1127,14 @@
       "summary": "Before author-failed parking, bind same-profile candidate and unchanged-base heavy-timeout outputs to one immutable test identity, preserve the first failure, and return base/load attribution to the host without changing timeout or attempt policy.",
       "milestone": "M1",
       "blockedBy": []
+    },
+    {
+      "key": "ISS-261",
+      "file": "planning/drafts/ISS-261.md",
+      "title": "Keep a launched worker observed across an observation stop and restart",
+      "summary": "Persist and observe launch identity through observation stops and restart, prevent duplicate workers, and permit the existing single dead-worker retry only for an absent PID with no terminal, without resetting history or charges.",
+      "milestone": "M1",
+      "blockedBy": []
     }
   ]
 }
