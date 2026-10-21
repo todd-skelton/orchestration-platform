@@ -1119,6 +1119,14 @@
       "summary": "Before ISS-257 is unparked: measure, then cut redundant fixture work and r5-fenced duplicate Git probes so the ISS-229 native lineage rows and published-allowance-declaration-faults finish on hosted Windows within the unchanged 30 s limit, with no timeout, assertion, skip, shard or workflow change.",
       "milestone": "M1",
       "blockedBy": []
+    },
+    {
+      "key": "ISS-260",
+      "file": "planning/drafts/ISS-260.md",
+      "title": "Route unresolved unchanged-test heavy-gate timeouts to host attribution before author-failed parking",
+      "summary": "Before author-failed parking, bind same-profile candidate and unchanged-base heavy-timeout outputs to one immutable test identity, preserve the first failure, and return base/load attribution to the host without changing timeout or attempt policy.",
+      "milestone": "M1",
+      "blockedBy": []
     }
   ]
 }
