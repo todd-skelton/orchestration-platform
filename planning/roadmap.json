@@ -1127,6 +1127,14 @@
       "summary": "Before author-failed parking, bind same-profile candidate and unchanged-base heavy-timeout outputs to one immutable test identity, preserve the first failure, and return base/load attribution to the host without changing timeout or attempt policy.",
       "milestone": "M1",
       "blockedBy": []
+    },
+    {
+      "key": "ISS-262",
+      "file": "planning/drafts/ISS-262.md",
+      "title": "Classify model-catalog refresh and tool-schema worker deaths before launcher-failed",
+      "summary": "Preserve bounded launcher evidence and distinguish model-catalog refresh, tool-schema parse, provider refusal, and candidate verdicts before launcher-failed, without changing ladders, timeout budgets, charges, or ISS-258 continuation.",
+      "milestone": "M1",
+      "blockedBy": []
     }
   ]
 }
