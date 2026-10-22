@@ -1151,6 +1151,22 @@
       "summary": "Preserve bounded launcher evidence and distinguish model-catalog refresh, tool-schema parse, provider refusal, and candidate verdicts before launcher-failed, without changing ladders, timeout budgets, charges, or ISS-258 continuation.",
       "milestone": "M1",
       "blockedBy": []
+    },
+    {
+      "key": "ISS-265",
+      "file": "planning/drafts/ISS-265.md",
+      "title": "Project a retained dead source/repair terminal into the exact next failed attempt",
+      "summary": "Project an explicitly unparked completed launcher-failed dead source or repair terminal through the existing queue successor calculation with the exact ISS-263 allow-list, unchanged charges and four-attempt ceiling.",
+      "milestone": "M1",
+      "blockedBy": []
+    },
+    {
+      "key": "ISS-266",
+      "file": "planning/drafts/ISS-266.md",
+      "title": "Admit and replay a projected dead-terminal successor through saved-cycle supervision",
+      "summary": "After ISS-265, admit the projected dead-terminal successor through the real saved-cycle supervision entrypoint exactly once, preserve source and repair replay idempotence, and leave ordinary restart inert.",
+      "milestone": "M1",
+      "blockedBy": ["ISS-265"]
     }
   ]
 }
