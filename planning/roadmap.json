@@ -1151,6 +1151,14 @@
       "summary": "Preserve bounded launcher evidence and distinguish model-catalog refresh, tool-schema parse, provider refusal, and candidate verdicts before launcher-failed, without changing ladders, timeout budgets, charges, or ISS-258 continuation.",
       "milestone": "M1",
       "blockedBy": []
+    },
+    {
+      "key": "ISS-264",
+      "file": "planning/drafts/ISS-264.md",
+      "title": "Bound recurring hosted-Windows queue hook timeouts",
+      "summary": "Census and phase-bound the recurring hosted-Windows queue second setup hook while preserving the 30 s limit, one native lineage, all assertions and complete bootstrap evidence, without changing runtime attribution or sibling scope.",
+      "milestone": "M1",
+      "blockedBy": []
     }
   ]
 }
