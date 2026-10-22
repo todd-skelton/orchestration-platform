@@ -1156,17 +1156,9 @@
       "key": "ISS-265",
       "file": "planning/drafts/ISS-265.md",
       "title": "Project a retained dead source/repair terminal into the exact next failed attempt",
-      "summary": "Project an explicitly unparked completed launcher-failed dead source or repair terminal through the existing queue successor calculation with the exact ISS-263 allow-list, unchanged charges and four-attempt ceiling.",
+      "summary": "After explicit ready unpark, project retained dead source or repair evidence through existing composition and successor calculation, fence failed-only readers, and prove saved-cycle admission and replay in one slice with unchanged charges and four-attempt ceiling.",
       "milestone": "M1",
       "blockedBy": []
-    },
-    {
-      "key": "ISS-266",
-      "file": "planning/drafts/ISS-266.md",
-      "title": "Admit and replay a projected dead-terminal successor through saved-cycle supervision",
-      "summary": "After ISS-265, admit the projected dead-terminal successor through the real saved-cycle supervision entrypoint exactly once, preserve source and repair replay idempotence, and leave ordinary restart inert.",
-      "milestone": "M1",
-      "blockedBy": ["ISS-265"]
     }
   ]
 }
