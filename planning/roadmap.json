@@ -1127,6 +1127,14 @@
       "summary": "Before author-failed parking, bind same-profile candidate and unchanged-base heavy-timeout outputs to one immutable test identity, preserve the first failure, and return base/load attribution to the host without changing timeout or attempt policy.",
       "milestone": "M1",
       "blockedBy": []
+    },
+    {
+      "key": "ISS-263",
+      "file": "planning/drafts/ISS-263.md",
+      "title": "Admit the next unused implementation attempt after a completed launcher-failed park on a retained dead terminal",
+      "summary": "After an explicit unpark of a completed launcher-failed park with a retained dead terminal, project the exact failed attempt and admit only the next unused implementation attempt without resetting history, charges or terminal authority.",
+      "milestone": "M1",
+      "blockedBy": []
     }
   ]
 }
