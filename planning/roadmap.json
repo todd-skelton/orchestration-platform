@@ -1159,6 +1159,14 @@
       "summary": "Preserve bounded launcher evidence and distinguish model-catalog refresh, tool-schema parse, provider refusal, and candidate verdicts before launcher-failed, without changing ladders, timeout budgets, charges, or ISS-258 continuation.",
       "milestone": "M1",
       "blockedBy": []
+    },
+    {
+      "key": "ISS-265",
+      "file": "planning/drafts/ISS-265.md",
+      "title": "Project a retained dead source/repair terminal to failed and admit the exact next attempt",
+      "summary": "After explicit ready unpark, project retained dead source or repair evidence through existing composition and successor calculation, fence failed-only readers, and prove saved-cycle admission and replay in one slice with unchanged charges and four-attempt ceiling.",
+      "milestone": "M1",
+      "blockedBy": []
     }
   ]
 }
