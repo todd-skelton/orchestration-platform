@@ -112,7 +112,8 @@ export async function planningAuthority(
       throw new Error("incomplete planning pagination");
     after = next;
   } while (after);
-  const relationKey = (relationRepository, number) => `${relationRepository}#${number}`;
+  const relationKey = (relationRepository, number) =>
+    `${relationRepository.toLowerCase()}#${number}`;
   const known = new Set(issues.map((row) => relationKey(repository, row.number)));
   for (const row of issues) {
     const relations = [
@@ -132,7 +133,7 @@ export async function planningAuthority(
       )
         throw new Error("incomplete planning lineage");
       if (
-        relation.repository.nameWithOwner === repository &&
+        relation.repository.nameWithOwner.toLowerCase() === repository.toLowerCase() &&
         !known.has(relationKey(repository, relation.number))
       )
         throw new Error("incomplete planning lineage");

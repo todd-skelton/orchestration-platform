@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { execFile } from "node:child_process";
 import {
   appendFile,
   chmod,
@@ -10,7 +11,9 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { delimiter, resolve } from "node:path";
+import { delimiter, dirname, resolve } from "node:path";
+import { pathToFileURL } from "node:url";
+import { promisify } from "node:util";
 import { afterEach, expect, it, vi } from "vitest";
 import {
   planningStep,
@@ -48,6 +51,24 @@ afterEach(async () => {
   );
 });
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
+const exec = promisify(execFile);
+const planningContextSource = resolve(
+  import.meta.dirname,
+  "../../scripts/dogfood/planning-context.mjs",
+);
+const iss268RealShapeProbe = Object.freeze({
+  label: "host-captured-real-shape",
+  path: "D:/Users/ToddS/Source/Repos/chase-sets/.orchestrator/logs/platform-iss268-plan-r2-probe.json",
+  sha256: "1a96ced6606a62469c2d41baf522642e04ff50418bcb6d0b42a09469e24b723c",
+});
+async function planningAuthorityCopy(source: string, label: string) {
+  const root = await mkdtemp(resolve(tmpdir(), `planning-context-${label}-`));
+  roots.push(root);
+  const module = resolve(root, "planning-context.mjs");
+  await mkdir(dirname(module), { recursive: true });
+  await writeFile(module, source);
+  return import(`${pathToFileURL(module).href}?${randomUUID()}`);
+}
 it("loads planning queue composition with native Node type stripping", async () => {
   const { execFile } = await import("node:child_process");
   const { promisify } = await import("node:util");
@@ -991,8 +1012,32 @@ it("collects paginated sibling decisions and refuses incomplete native lineage",
 });
 
 it("admits external relations by repository identity in both census callers", async () => {
+  const realShape = {
+    label: iss268RealShapeProbe.label,
+    probe: iss268RealShapeProbe,
+    platform: {
+      repository: "todd-skelton/orchestration-platform",
+      number: 517,
+      relation: "blockedBy" as const,
+    },
+    chase: {
+      repository: "chase-sets/chase-sets",
+      number: 8040,
+      relation: "blocking" as const,
+    },
+  };
+  expect(realShape.label).toBe("host-captured-real-shape");
+  expect(realShape.probe).toEqual(iss268RealShapeProbe);
+  expect(realShape.probe.sha256).toBe(
+    "1a96ced6606a62469c2d41baf522642e04ff50418bcb6d0b42a09469e24b723c",
+  );
   const empty = { pageInfo: { hasNextPage: false }, nodes: [] };
-  const issue = (number: number, relation: string, field: "blockedBy" | "blocking") => ({
+  const issue = (
+    number: number,
+    relation: string,
+    field: "blockedBy" | "blocking",
+    includeIdentity = true,
+  ) => ({
     number,
     url: `https://github.com/${relation}/issues/${number}`,
     title: "Lineage fixture",
@@ -1009,7 +1054,9 @@ it("admits external relations by repository identity in both census callers", as
               {
                 number: 8040,
                 state: "CLOSED",
-                repository: { nameWithOwner: "chase-sets/chase-sets" },
+                ...(includeIdentity
+                  ? { repository: { nameWithOwner: "chase-sets/chase-sets" } }
+                  : {}),
               },
             ],
           }
@@ -1022,7 +1069,9 @@ it("admits external relations by repository identity in both census callers", as
               {
                 number: 517,
                 state: "CLOSED",
-                repository: { nameWithOwner: "todd-skelton/orchestration-platform" },
+                ...(includeIdentity
+                  ? { repository: { nameWithOwner: "todd-skelton/orchestration-platform" } }
+                  : {}),
               },
             ],
           }
@@ -1035,19 +1084,44 @@ it("admits external relations by repository identity in both census callers", as
     const owner = args.find((arg) => arg.startsWith("owner="))?.slice("owner=".length);
     const name = args.find((arg) => arg.startsWith("name="))?.slice("name=".length);
     const repository = `${owner}/${name}`;
+    const includeIdentity = args.some((arg) => arg.includes("repository { nameWithOwner }"));
     const row =
       repository === "todd-skelton/orchestration-platform"
-        ? issue(517, "todd-skelton/orchestration-platform", "blockedBy")
-        : issue(8040, "chase-sets/chase-sets", "blocking");
+        ? issue(517, "todd-skelton/orchestration-platform", "blockedBy", includeIdentity)
+        : issue(8040, "chase-sets/chase-sets", "blocking", includeIdentity);
     return { data: { repository: { issues: { pageInfo: { hasNextPage: false }, nodes: [row] } } } };
   };
-  const platform = await planningAuthority("todd-skelton/orchestration-platform", request);
-  const chase = await planningAuthority("chase-sets/chase-sets", request);
+  const platform = await planningAuthority(realShape.platform.repository, request);
+  const chase = await planningAuthority(realShape.chase.repository, request);
   expect(platform[0]!.blockedBy.nodes[0]!.repository.nameWithOwner).toBe("chase-sets/chase-sets");
   expect(chase[0]!.blocking.nodes[0]!.repository.nameWithOwner).toBe(
     "todd-skelton/orchestration-platform",
   );
   expect(requests.some((args) => args.includes("repository { nameWithOwner }"))).toBe(true);
+
+  const repositoryRoot = resolve(import.meta.dirname, "../..");
+  const baselineSource = (
+    await exec(
+      "git",
+      ["show", "53e6ba495ded641e5b1395ab501b1b63d35dcd67:scripts/dogfood/planning-context.mjs"],
+      { cwd: repositoryRoot },
+    )
+  ).stdout;
+  const baseline = await planningAuthorityCopy(baselineSource, "baseline");
+  await expect(baseline.planningAuthority(realShape.platform.repository, request)).rejects.toThrow(
+    "incomplete planning lineage",
+  );
+
+  const candidateSource = await readFile(planningContextSource, "utf8");
+  const deletedIdentityMutant = candidateSource.replaceAll(" repository { nameWithOwner }", "");
+  expect(deletedIdentityMutant).not.toBe(candidateSource);
+  const mutant = await planningAuthorityCopy(deletedIdentityMutant, "relation-admission-deleted");
+  await expect(mutant.planningAuthority(realShape.platform.repository, request)).rejects.toThrow(
+    "incomplete planning lineage",
+  );
+  console.log(
+    `ISS-268 evidence baseline-red=53e6ba4 candidate-green mutant-red=relation-admission-deleted probe=${realShape.probe.path} sha256=${realShape.probe.sha256}`,
+  );
 });
 
 it.each([
@@ -1059,6 +1133,10 @@ it.each([
   [
     "localized external identity",
     { number: 2, state: "CLOSED", repository: { nameWithOwner: "fixture/repo/extra" } },
+  ],
+  [
+    "case-only same-repository missing number",
+    { number: 999, state: "CLOSED", repository: { nameWithOwner: "Fixture/Repo" } },
   ],
 ])("rejects synthetic malformed or incomplete lineage: %s", async (_label, relation) => {
   const empty = { pageInfo: { hasNextPage: false }, nodes: [] };
@@ -1078,6 +1156,71 @@ it.each([
   const request = async () => ({
     data: { repository: { issues: { pageInfo: { hasNextPage: false }, nodes: [issue] } } },
   });
+  await expect(planningAuthority("fixture/repo", request)).rejects.toThrow(
+    "incomplete planning lineage",
+  );
+});
+
+it("rejects a synthetic duplicate or colliding issue number", async () => {
+  const empty = { pageInfo: { hasNextPage: false }, nodes: [] };
+  const issue = {
+    number: 1,
+    url: "https://github.com/fixture/repo/issues/1",
+    title: "One",
+    body,
+    updatedAt: "2026-10-10T00:00:00Z",
+    state: "OPEN",
+    parent: null,
+    subIssues: empty,
+    blockedBy: empty,
+    blocking: empty,
+    comments: empty,
+  };
+  const request = async () => ({
+    data: {
+      repository: {
+        issues: { pageInfo: { hasNextPage: false }, nodes: [issue, structuredClone(issue)] },
+      },
+    },
+  });
+  await expect(planningAuthority("fixture/repo", request)).rejects.toThrow(
+    "duplicate planning issue",
+  );
+});
+
+it("rejects a synthetic nested page whose relation omits repository identity", async () => {
+  const empty = { pageInfo: { hasNextPage: false }, nodes: [] };
+  const issue = {
+    number: 1,
+    url: "https://github.com/fixture/repo/issues/1",
+    title: "One",
+    body,
+    updatedAt: "2026-10-10T00:00:00Z",
+    state: "OPEN",
+    parent: null,
+    subIssues: empty,
+    blockedBy: { pageInfo: { hasNextPage: true, endCursor: "blocked-by-1" }, nodes: [] },
+    blocking: empty,
+    comments: empty,
+  };
+  const request = async (args: string[]) => {
+    if (args.includes("number=1"))
+      return {
+        data: {
+          repository: {
+            issue: {
+              blockedBy: {
+                pageInfo: { hasNextPage: false },
+                nodes: [{ number: 2, state: "CLOSED" }],
+              },
+            },
+          },
+        },
+      };
+    return {
+      data: { repository: { issues: { pageInfo: { hasNextPage: false }, nodes: [issue] } } },
+    };
+  };
   await expect(planningAuthority("fixture/repo", request)).rejects.toThrow(
     "incomplete planning lineage",
   );
