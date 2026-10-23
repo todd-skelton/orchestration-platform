@@ -1145,12 +1145,20 @@
       "blockedBy": []
     },
     {
+      "key": "ISS-268",
+      "file": "planning/drafts/ISS-268.md",
+      "title": "Admit cross-repository lineage edges without weakening same-repository census closure",
+      "summary": "Admit explicitly cross-repository planning relations as external lineage without fetching them, while retaining fail-closed same-repository census closure and preserving all existing loop authority.",
+      "milestone": "M1",
+      "blockedBy": []
+    },
+    {
       "key": "ISS-267",
       "file": "planning/drafts/ISS-267.md",
       "title": "Prevent worker self-interrupts during silent heavy verification",
       "summary": "Add one author-only quiet heavy-command protocol and focused prompt regression, retaining host-attributed verification and all existing attempt, charge, retry, parking, review, and semantic-verdict authority.",
       "milestone": "M1",
-      "blockedBy": []
+      "blockedBy": ["ISS-268"]
     },
     {
       "key": "ISS-262",
