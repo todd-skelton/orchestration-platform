@@ -990,6 +990,99 @@ it("collects paginated sibling decisions and refuses incomplete native lineage",
   );
 });
 
+it("admits external relations by repository identity in both census callers", async () => {
+  const empty = { pageInfo: { hasNextPage: false }, nodes: [] };
+  const issue = (number: number, relation: string, field: "blockedBy" | "blocking") => ({
+    number,
+    url: `https://github.com/${relation}/issues/${number}`,
+    title: "Lineage fixture",
+    body,
+    updatedAt: "2026-10-10T00:00:00Z",
+    state: "CLOSED",
+    parent: null,
+    subIssues: empty,
+    blockedBy:
+      field === "blockedBy"
+        ? {
+            ...empty,
+            nodes: [
+              {
+                number: 8040,
+                state: "CLOSED",
+                repository: { nameWithOwner: "chase-sets/chase-sets" },
+              },
+            ],
+          }
+        : empty,
+    blocking:
+      field === "blocking"
+        ? {
+            ...empty,
+            nodes: [
+              {
+                number: 517,
+                state: "CLOSED",
+                repository: { nameWithOwner: "todd-skelton/orchestration-platform" },
+              },
+            ],
+          }
+        : empty,
+    comments: empty,
+  });
+  const requests: string[] = [];
+  const request = async (args: string[]) => {
+    requests.push(args.join(" "));
+    const owner = args.find((arg) => arg.startsWith("owner="))?.slice("owner=".length);
+    const name = args.find((arg) => arg.startsWith("name="))?.slice("name=".length);
+    const repository = `${owner}/${name}`;
+    const row =
+      repository === "todd-skelton/orchestration-platform"
+        ? issue(517, "todd-skelton/orchestration-platform", "blockedBy")
+        : issue(8040, "chase-sets/chase-sets", "blocking");
+    return { data: { repository: { issues: { pageInfo: { hasNextPage: false }, nodes: [row] } } } };
+  };
+  const platform = await planningAuthority("todd-skelton/orchestration-platform", request);
+  const chase = await planningAuthority("chase-sets/chase-sets", request);
+  expect(platform[0]!.blockedBy.nodes[0]!.repository.nameWithOwner).toBe("chase-sets/chase-sets");
+  expect(chase[0]!.blocking.nodes[0]!.repository.nameWithOwner).toBe(
+    "todd-skelton/orchestration-platform",
+  );
+  expect(requests.some((args) => args.includes("repository { nameWithOwner }"))).toBe(true);
+});
+
+it.each([
+  [
+    "same-repository missing number",
+    { number: 999, state: "CLOSED", repository: { nameWithOwner: "fixture/repo" } },
+  ],
+  ["missing identity", { number: 2, state: "CLOSED" }],
+  [
+    "localized external identity",
+    { number: 2, state: "CLOSED", repository: { nameWithOwner: "fixture/repo/extra" } },
+  ],
+])("rejects synthetic malformed or incomplete lineage: %s", async (_label, relation) => {
+  const empty = { pageInfo: { hasNextPage: false }, nodes: [] };
+  const issue = {
+    number: 1,
+    url: "https://github.com/fixture/repo/issues/1",
+    title: "One",
+    body,
+    updatedAt: "2026-10-10T00:00:00Z",
+    state: "OPEN",
+    parent: null,
+    subIssues: empty,
+    blockedBy: { ...empty, nodes: [relation] },
+    blocking: empty,
+    comments: empty,
+  };
+  const request = async () => ({
+    data: { repository: { issues: { pageInfo: { hasNextPage: false }, nodes: [issue] } } },
+  });
+  await expect(planningAuthority("fixture/repo", request)).rejects.toThrow(
+    "incomplete planning lineage",
+  );
+});
+
 it("resumes the failure-to-planning gap without parking or creating an implementation attempt", async () => {
   const f = await sourceFailureFixture();
   roots.push(f.root);

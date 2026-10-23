@@ -13,9 +13,9 @@ export async function planningAuthority(
   const [owner, name] = repository.split("/");
   const issues = [];
   const fields = {
-    subIssues: "number state",
-    blockedBy: "number state",
-    blocking: "number state",
+    subIssues: "number state repository { nameWithOwner }",
+    blockedBy: "number state repository { nameWithOwner }",
+    blocking: "number state repository { nameWithOwner }",
     comments: "id url body updatedAt author { login }",
   };
   let after;
@@ -27,10 +27,10 @@ export async function planningAuthority(
           nodes {
             number url title body updatedAt state
             milestone { number title description state }
-            parent { number }
-            subIssues(first:100) { pageInfo { hasNextPage endCursor } nodes { number state } }
-            blockedBy(first:100) { pageInfo { hasNextPage endCursor } nodes { number state } }
-            blocking(first:100) { pageInfo { hasNextPage endCursor } nodes { number state } }
+            parent { number state repository { nameWithOwner } }
+            subIssues(first:100) { pageInfo { hasNextPage endCursor } nodes { number state repository { nameWithOwner } } }
+            blockedBy(first:100) { pageInfo { hasNextPage endCursor } nodes { number state repository { nameWithOwner } } }
+            blocking(first:100) { pageInfo { hasNextPage endCursor } nodes { number state repository { nameWithOwner } } }
             comments(first:100) { pageInfo { hasNextPage endCursor } nodes { id url body updatedAt author { login } } }
           }
         }
@@ -112,16 +112,31 @@ export async function planningAuthority(
       throw new Error("incomplete planning pagination");
     after = next;
   } while (after);
-  const known = new Set(issues.map((row) => row.number));
+  const relationKey = (relationRepository, number) => `${relationRepository}#${number}`;
+  const known = new Set(issues.map((row) => relationKey(repository, row.number)));
   for (const row of issues) {
     const relations = [
-      row.parent,
+      ...(row.parent == null ? [] : [row.parent]),
       ...row.subIssues.nodes,
       ...row.blockedBy.nodes,
       ...row.blocking.nodes,
-    ].filter(Boolean);
-    if (relations.some((relation) => !known.has(relation.number)))
-      throw new Error("incomplete planning lineage");
+    ];
+    for (const relation of relations) {
+      if (
+        !relation ||
+        !Number.isSafeInteger(relation.number) ||
+        relation.number <= 0 ||
+        !relation.repository ||
+        typeof relation.repository.nameWithOwner !== "string" ||
+        !/^[^/\s]+\/[^/\s]+$/.test(relation.repository.nameWithOwner)
+      )
+        throw new Error("incomplete planning lineage");
+      if (
+        relation.repository.nameWithOwner === repository &&
+        !known.has(relationKey(repository, relation.number))
+      )
+        throw new Error("incomplete planning lineage");
+    }
   }
   return issues.sort((a, b) => a.number - b.number);
 }
