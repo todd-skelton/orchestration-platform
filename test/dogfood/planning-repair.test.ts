@@ -1,5 +1,4 @@
 import { createHash, randomUUID } from "node:crypto";
-import { execFile } from "node:child_process";
 import {
   appendFile,
   chmod,
@@ -13,7 +12,6 @@ import {
 import { tmpdir } from "node:os";
 import { delimiter, dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
-import { promisify } from "node:util";
 import { afterEach, expect, it, vi } from "vitest";
 import {
   planningStep,
@@ -38,6 +36,7 @@ import { githubDeliveryAdapter } from "../../scripts/dogfood/delivery-adapter.mj
 import { startCycle, stopCycle } from "../../scripts/dogfood/supervision.js";
 import { QueueBlocked, type Config, type Terminal } from "../../scripts/dogfood/flow.js";
 import { repairFailureFixture, sourceFailureFixture, snapshot } from "./fixtures/source-failure.js";
+import { iss268BaselinePlanningContext } from "../fixtures/iss268.js";
 import * as self from "../../adapters/self.mjs";
 import * as chase from "../../adapters/chase-sets.mjs";
 
@@ -51,7 +50,6 @@ afterEach(async () => {
   );
 });
 const hash = (value: string) => createHash("sha256").update(value).digest("hex");
-const exec = promisify(execFile);
 const planningContextSource = resolve(
   import.meta.dirname,
   "../../scripts/dogfood/planning-context.mjs",
@@ -1099,15 +1097,14 @@ it("admits external relations by repository identity in both census callers", as
   );
   expect(requests.some((args) => args.includes("repository { nameWithOwner }"))).toBe(true);
 
-  const repositoryRoot = resolve(import.meta.dirname, "../..");
-  const baselineSource = (
-    await exec(
-      "git",
-      ["show", "53e6ba495ded641e5b1395ab501b1b63d35dcd67:scripts/dogfood/planning-context.mjs"],
-      { cwd: repositoryRoot },
-    )
-  ).stdout;
-  const baseline = await planningAuthorityCopy(baselineSource, "baseline");
+  // Inlined 53e6ba495ded641e5b1395ab501b1b63d35dcd67:scripts/dogfood/planning-context.mjs;
+  // hosted bootstrap checks out one commit, so that history is not readable here.
+  const baselineBlob = createHash("sha1")
+    .update(`blob ${Buffer.byteLength(iss268BaselinePlanningContext)}\0`)
+    .update(iss268BaselinePlanningContext)
+    .digest("hex");
+  expect(baselineBlob).toBe("27b3e0bc6d6a82e0788fd72b6f4b7f3f28ddf165");
+  const baseline = await planningAuthorityCopy(iss268BaselinePlanningContext, "baseline");
   await expect(baseline.planningAuthority(realShape.platform.repository, request)).rejects.toThrow(
     "incomplete planning lineage",
   );
