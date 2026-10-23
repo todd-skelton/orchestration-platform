@@ -1145,6 +1145,14 @@
       "blockedBy": []
     },
     {
+      "key": "ISS-267",
+      "file": "planning/drafts/ISS-267.md",
+      "title": "Prevent worker self-interrupts during silent heavy verification",
+      "summary": "Add one author-only quiet heavy-command protocol and focused prompt regression, retaining host-attributed verification and all existing attempt, charge, retry, parking, review, and semantic-verdict authority.",
+      "milestone": "M1",
+      "blockedBy": []
+    },
+    {
       "key": "ISS-262",
       "file": "planning/drafts/ISS-262.md",
       "title": "Classify model-catalog refresh and tool-schema worker deaths before launcher-failed",
