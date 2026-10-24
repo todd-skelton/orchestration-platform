@@ -388,6 +388,51 @@ async function resolvePlanningRole(
       : config;
   return resolveRole(input, role, rung, authors);
 }
+// Materialize every rung of both ladders at its own index through the shared
+// resolver before reviewer pre-selection, so family choices are compared with
+// authored, history and reserved identities as the concrete models they would
+// launch. An unavailable rung stays unresolved and is never selected; registry
+// failure refuses before any intent, charge or launch.
+async function materializedPlanningRow(config: Config, authors: string[]) {
+  const resolved: Record<Role, ({ rung: number; placement: ModelPlacement } | undefined)[]> = {
+    author: [],
+    reviewer: [],
+  };
+  let routingRefused = false;
+  for (const role of ["author", "reviewer"] as const) {
+    const ladder = config[role].ladder ?? [config[role]];
+    for (let index = 0; index < ladder.length; index++) {
+      try {
+        const selection = await resolvePlanningRole(
+          config,
+          role,
+          index,
+          role === "reviewer" ? authors : [],
+        );
+        resolved[role].push(selection.rung === index ? selection : undefined);
+      } catch (error) {
+        if (!(error instanceof QueueBlocked)) throw error;
+        if (error.reason === "model-registry-unavailable") throw error;
+        if (error.reason === "routing-reviewer-not-independent") routingRefused = true;
+        else if (error.reason !== "provider-model-refused") throw error;
+        resolved[role].push(undefined);
+      }
+    }
+  }
+  const ladder = (role: Role) =>
+    (config[role].ladder ?? [config[role]]).map(
+      (entry, index) => resolved[role][index]?.placement ?? entry,
+    );
+  return {
+    routingRefused,
+    reviewer: resolved.reviewer,
+    config: {
+      ...config,
+      author: { ...config.author, ladder: ladder("author") },
+      reviewer: { ...config.reviewer, ladder: ladder("reviewer") },
+    } satisfies Config,
+  };
+}
 export function planningReviewers(
   config: Config,
   history: QueueParticipant[],
@@ -668,11 +713,7 @@ export async function planningStep(operation: PlanningOperation): Promise<Planni
       }));
     let placement = source.author;
     if (role === "reviewer") {
-      const choices = planningReviewers(
-        source,
-        [...state.input.history, ...(await operation.history())],
-        state.proposal!.participants,
-      );
+      const history = [...state.input.history, ...(await operation.history())];
       const refused = new Set(
         state.workers
           .filter(
@@ -689,47 +730,35 @@ export async function planningStep(operation: PlanningOperation): Promise<Planni
         ["malformed", "dead"].includes(priorReviewer.terminal.status)
           ? priorReviewer.config.reviewer
           : undefined;
-      // Mechanical retries keep the admitted placement. Only explicit refusal
-      // may advance its ladder; growing history is not a new routing grant.
-      const candidates = choices.filter((row) =>
-        retryPlacement
-          ? placementLadderIdentity(row.placement) === placementLadderIdentity(retryPlacement) &&
-            row.placement.effort === retryPlacement.effort
-          : !refused.has(placementLadderIdentity(row.placement)),
-      );
-      let choice: (typeof choices)[number] | undefined;
+      let choice: ReturnType<typeof planningReviewers>[number] | undefined;
       let routingRefused = false;
       if (retryPlacement) {
-        choice = candidates[0];
+        // Mechanical retries keep the admitted placement without re-resolution.
+        // Only explicit refusal may advance its ladder; growing history is not
+        // a new routing grant.
+        choice = planningReviewers(source, history, state.proposal!.participants).find(
+          (row) =>
+            placementLadderIdentity(row.placement) === placementLadderIdentity(retryPlacement) &&
+            row.placement.effort === retryPlacement.effort,
+        );
         if (choice) placement = retryPlacement;
       } else {
-        for (const candidate of candidates) {
-          let resolved: { rung: number; placement: ModelPlacement };
-          try {
-            resolved = await resolvePlanningRole(
-              source,
-              "reviewer",
-              candidate.index,
-              authors.map((author) => author.model).filter((model): model is string => !!model),
-            );
-          } catch (error) {
-            if (error instanceof QueueBlocked && error.reason === "model-registry-unavailable")
-              throw error;
-            if (error instanceof QueueBlocked && error.reason === "provider-model-refused")
-              continue;
-            if (
-              error instanceof QueueBlocked &&
-              error.reason === "routing-reviewer-not-independent"
-            ) {
-              routingRefused = true;
-              continue;
-            }
-            throw error;
-          }
-          if (resolved.rung !== candidate.index) continue;
-          choice = candidate;
+        const materialized = await materializedPlanningRow(
+          source,
+          authors.map((author) => author.model).filter((model): model is string => !!model),
+        );
+        routingRefused = materialized.routingRefused;
+        // Pre-selection compares concrete identities: a family choice is
+        // filtered or deprioritized by the model it resolves to, exactly as a
+        // literal selector is, before any intent exists.
+        choice = planningReviewers(materialized.config, history, state.proposal!.participants).find(
+          (row) =>
+            materialized.reviewer[row.index] !== undefined &&
+            !refused.has(placementLadderIdentity(row.placement)),
+        );
+        if (choice) {
+          const resolved = materialized.reviewer[choice.index]!;
           placement = planningRolePlacement(source.reviewer, resolved.placement, resolved.rung);
-          break;
         }
       }
       if (!choice)
