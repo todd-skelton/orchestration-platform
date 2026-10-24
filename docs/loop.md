@@ -1021,6 +1021,11 @@ launch, charge, reservation or retained-record edit. A valid grant is consumed
 once, changes only the planning state to `pending-author`, and then uses the
 existing materialized planning placement and retry accounting; it is not a
 manual resume or heavy-verifier lane.
+Consumption acquires current main before writing: `grant.main` must match that
+fresh revision, while a retained older input is superseded and re-derived at
+the granted base. Selection and source-config digests are checked against the
+retained records, and a repeated exact grant is inert; a changed grant reusing
+an already-consumed identity is refused.
 
 ### Pinned self selection
 

@@ -8,7 +8,8 @@ import { QueueBlocked, readOptional, workerPrompt } from "./flow.ts";
 // @ts-expect-error Node 24 executes TypeScript directly.
 import { retainWorkerOutcome, validDefect } from "./outcome.ts";
 import { parseReview, validateLocations } from "./repair-policy.mjs";
-import { observeIntegrationAuthority } from "./continuation.js";
+// @ts-expect-error Node 24 executes TypeScript directly.
+import { observeIntegrationAuthority } from "./continuation.ts";
 import { resolveRole, type ModelPlacement } from "./routing.mjs";
 import { bodyCriteria } from "../../adapters/chase-sets.mjs";
 import {
@@ -510,6 +511,7 @@ interface Recovery {
     consumedAt: string;
     authority: { id: string; url: string; author: string; bodySha256: string; capturedAt: string };
   };
+  consumedHostReviewIdentities?: string[];
 }
 
 export interface HostPlanningReview {
@@ -643,22 +645,11 @@ function planningHistoryDigest(state: Recovery, history: QueueParticipant[]) {
   return digest([...merged.values()]);
 }
 
-function decisionDigest(input: PlanningInput) {
-  const candidates = [
-    input.binding?.decisionSha256,
-    bodyHash(input.authority.context.body),
-    digest(input.authority.context),
-    digest(input.authority.planning),
-  ].filter((value): value is string => !!value);
-  return candidates;
-}
-
 async function consumeHostPlanningReview(
   operation: PlanningOperation,
   state: Recovery,
   recoveryPath: string,
-): Promise<"absent" | "consumed" | "inert" | { reason: string }> {
-  if (state.hostReview) return "inert";
+): Promise<"absent" | "consumed" | "replayed" | { reason: string }> {
   const grantPath = resolve(operation.directory, "host-planning-review.json");
   let raw: string;
   try {
@@ -668,6 +659,8 @@ async function consumeHostPlanningReview(
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return "absent";
     return { reason: "host-verdict-unavailable" };
   }
+  const grantSha256 = bodyHash(raw);
+  if (state.hostReview?.grantSha256 === grantSha256) return "replayed";
   let grant: HostPlanningReview;
   try {
     grant = JSON.parse(raw);
@@ -677,9 +670,19 @@ async function consumeHostPlanningReview(
       reason: error instanceof QueueBlocked ? error.reason : "host-verdict-malformed",
     };
   }
-  const grantSha256 = bodyHash(raw);
-  const recoveryBytes = await readFile(recoveryPath, "utf8");
-  const currentHistory = await operation.history();
+  if (
+    state.hostReview?.consumptionIdentity === grant.consumptionIdentity ||
+    state.consumedHostReviewIdentities?.includes(grant.consumptionIdentity)
+  )
+    return { reason: "host-verdict-mismatch" };
+  let recoveryBytes: string;
+  let currentHistory: QueueParticipant[];
+  try {
+    recoveryBytes = await readFile(recoveryPath, "utf8");
+    currentHistory = await operation.history();
+  } catch {
+    return { reason: "host-verdict-unavailable" };
+  }
   let fresh: PlanningInput;
   try {
     fresh = await operation.acquire();
@@ -711,11 +714,13 @@ async function consumeHostPlanningReview(
       ),
     );
   const historyDigest = planningHistoryDigest(state, currentHistory);
-  const decisionMatches = decisionDigest(state.input).includes(grant.decisionSha256);
+  const binding = fresh.binding ?? state.input.binding;
+  const decisionMatches =
+    typeof binding?.decisionSha256 === "string" && grant.decisionSha256 === binding.decisionSha256;
   const bindingMatches =
-    !!state.input.binding &&
-    grant.selectionSha256 === state.input.binding.selectionSha256 &&
-    grant.configSha256 === state.input.binding.configSha256;
+    !!binding &&
+    grant.selectionSha256 === binding.selectionSha256 &&
+    grant.configSha256 === binding.configSha256;
   if (
     grant.repository !== operation.source.repository ||
     grant.issueKey !== issueKey ||
@@ -723,7 +728,6 @@ async function consumeHostPlanningReview(
     grant.run !== operation.source.run ||
     grant.recoveryPath !== recoveryPath ||
     grant.recoverySha256 !== bodyHash(recoveryBytes) ||
-    grant.main !== state.input.main ||
     grant.main !== fresh.main ||
     !bindingMatches ||
     !deadMatches ||
@@ -776,6 +780,10 @@ async function consumeHostPlanningReview(
       capturedAt: authority.capturedAt,
     },
   };
+  state.consumedHostReviewIdentities = [
+    ...(state.consumedHostReviewIdentities ?? []),
+    grant.consumptionIdentity,
+  ];
   state.state = "pending-author";
   delete state.diagnostic;
   await save(recoveryPath, state);
@@ -891,7 +899,7 @@ export async function planningStep(operation: PlanningOperation): Promise<Planni
     recovery: path,
     ...(state.diagnostic ? { diagnostic: state.diagnostic } : {}),
   });
-  let hostReviewConsumed = false;
+  let hostReviewConsumed = !!state.hostReview;
   const stop = async (message: string, pending = false) => {
     state.state = pending ? "PENDING_HOST_REVIEW" : "rejected";
     state.diagnostic = message;
@@ -929,17 +937,17 @@ export async function planningStep(operation: PlanningOperation): Promise<Planni
     if (consumed === "absent") {
       return {
         ...result(),
-        diagnostic: "host-verdict-missing: no host-planning-review/v1 grant is present.",
+        diagnostic: `host-verdict-missing: no host-planning-review/v1 grant is present.${state.diagnostic ? ` Previous: ${state.diagnostic}` : ""}`,
       };
     }
-    if (consumed === "inert") return result();
     if (typeof consumed === "object") {
       return {
         ...result(),
         diagnostic: `${consumed.reason}: retained planning recovery is unchanged.`,
       };
     }
-    hostReviewConsumed = consumed === "consumed";
+    if (consumed === "replayed") return result();
+    hostReviewConsumed = consumed === "consumed" || consumed === "replayed";
   }
   const activeReview =
     state.state === "pending-reviewer" &&

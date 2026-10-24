@@ -6472,22 +6472,47 @@ export function repositoryQueueAdapter(
           ],
         }));
         const candidate = await optionalRecord(item.source.stateDirectory, "candidate");
-        const configEvidence = evidence.find((row) => basename(row.path) === "config.json");
+        const configEvidence = evidence.find(
+          (row) => row.path === resolve(item.source.stateDirectory, "config.json"),
+        );
         let selectionSha256: string | undefined;
         const cycleFiles = await readdir(runRoot, { withFileTypes: true }).catch(() => []);
         for (const entry of cycleFiles
           .filter((row) => /^cycle-[1-9]\d*-selected\.json$/.test(row.name))
-          .sort((a, b) => a.name.localeCompare(b.name))) {
+          .sort(
+            (a, b) =>
+              Number(b.name.match(/^cycle-(\d+)-/)?.[1] ?? 0) -
+              Number(a.name.match(/^cycle-(\d+)-/)?.[1] ?? 0),
+          )) {
           try {
             const bytes = await readFile(resolve(runRoot, entry.name));
             const value = JSON.parse(bytes.toString("utf8"));
-            if (value.key === key && value.number === number && value.base === main) {
+            const keys = [
+              "cycle",
+              "key",
+              "number",
+              "base",
+              ...(Object.hasOwn(value, "planningRevision") ? ["planningRevision"] : []),
+              ...(Object.hasOwn(value, "routing") ? ["routing"] : []),
+            ];
+            if (
+              Object.keys(value).length === keys.length &&
+              keys.every((name) => Object.hasOwn(value, name)) &&
+              Number.isSafeInteger(value.cycle) &&
+              value.cycle > 0 &&
+              value.key === key &&
+              value.number === number &&
+              /^[a-f0-9]{40}$/.test(value.base) &&
+              (!Object.hasOwn(value, "planningRevision") || value.planningRevision === value.base)
+            ) {
               selectionSha256 = createHash("sha256").update(bytes).digest("hex");
               break;
             }
           } catch {
-            // The normal selected record validator reports malformed records;
-            // planning retains a missing binding as a host-verdict refusal.
+            // A malformed latest selection cannot fall through to an older
+            // record for the same issue; retain a missing binding instead.
+            selectionSha256 = undefined;
+            break;
           }
         }
         return {
