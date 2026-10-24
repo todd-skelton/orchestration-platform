@@ -742,15 +742,20 @@ it("materializes planning family author and reviewer placements from the registr
   });
 });
 
-it.each(["missing", "unreadable", "malformed"] as const)(
+const registryFailures = ["missing", "unreadable", "malformed"] as const;
+async function breakRegistry(registryPath: string, kind: (typeof registryFailures)[number]) {
+  if (kind === "missing") await rm(registryPath);
+  else if (kind === "unreadable") {
+    await rm(registryPath);
+    await mkdir(registryPath);
+  } else await writeFile(registryPath, JSON.stringify({ format: "model-registry/v1" }));
+}
+
+it.each(registryFailures)(
   "refuses a %s planning registry before saving an author intent",
   async (kind) => {
     const f = await planningFamilyFixture();
-    if (kind === "missing") await rm(f.registryPath);
-    else if (kind === "unreadable") {
-      await rm(f.registryPath);
-      await mkdir(f.registryPath);
-    } else await writeFile(f.registryPath, JSON.stringify({ format: "model-registry/v1" }));
+    await breakRegistry(f.registryPath, kind);
     await expect(planningStep(f.operation)).rejects.toMatchObject({
       reason: "model-registry-unavailable",
     });
@@ -759,6 +764,50 @@ it.each(["missing", "unreadable", "malformed"] as const)(
     await expect(readdir(f.directory)).resolves.not.toContain("planning-worker-1");
   },
 );
+
+it.each(registryFailures)(
+  "refuses a %s planning registry before saving a reviewer intent",
+  async (kind) => {
+    const f = await planningFamilyFixture();
+    await planningStep(f.operation);
+    expect(f.calls).toContain("launch:author");
+    const recovery = resolve(f.directory, "planning-recovery.json");
+    const before = await readFile(recovery, "utf8");
+    await breakRegistry(f.registryPath, kind);
+    await expect(planningStep(f.operation)).rejects.toMatchObject({
+      reason: "model-registry-unavailable",
+    });
+    expect(f.calls).not.toContain("launch:reviewer");
+    const state = await f.read();
+    expect(state.state).toBe("proposal");
+    expect(state.workers.map((worker: any) => worker.intent.role)).toEqual(["author"]);
+    expect(f.history.map((row) => row.role)).toEqual(["author"]);
+    await expect(readdir(f.directory)).resolves.not.toContain("planning-worker-2");
+    expect(await readFile(recovery, "utf8")).toBe(before);
+  },
+);
+
+it("refuses planning when every author family is unavailable without an intent or charge", async () => {
+  const f = await planningFamilyFixture();
+  await f.saveRegistry((registry) => {
+    registry.families.fable.current = null;
+  });
+  let refused = 0;
+  f.operation.native.authorRefused = async () => {
+    refused++;
+  };
+  await expect(planningStep(f.operation)).resolves.toMatchObject({
+    status: "planning-pending-host-review",
+    diagnostic: expect.stringContaining("provider-model-refused"),
+  });
+  const state = await f.read();
+  expect(state.state).toBe("PENDING_HOST_REVIEW");
+  expect(state.workers).toEqual([]);
+  expect(refused).toBe(0);
+  expect(f.calls).not.toContain("launch:author");
+  expect(f.history).toHaveLength(0);
+  await expect(readdir(f.directory)).resolves.not.toContain("planning-worker-1");
+});
 
 it.each(["null", "absent", "missing-current"] as const)(
   "skips an unavailable planning author family and advances to the next rung (%s)",
@@ -888,6 +937,30 @@ it("names reviewer non-independence before creating a planning reviewer intent",
   expect(state.workers).toHaveLength(1);
   expect(f.calls).not.toContain("launch:reviewer");
 });
+
+it.each(["malformed", "dead"] as const)(
+  "advances a literal planning author ladder on the shared %s retry",
+  async (status) => {
+    const f = await fixture();
+    f.setStatus(status);
+    const launched: Config["author"][] = [];
+    const launch = f.operation.native.launch;
+    f.operation.native.launch = async (role, config, prompt) => {
+      if (role === "author") launched.push(structuredClone(config.author));
+      return launch(role, config, prompt);
+    };
+    expect((await planningStep(f.operation)).status).toBe("observing-planning-author");
+    expect((await planningStep(f.operation)).status).toBe("planning-pending-host-review");
+    expect(launched.map((row) => [row.model, row.effort, row.rung])).toEqual([
+      ["gpt-6-astra", "high", 0],
+      ["gpt-6-astra", "xhigh", 1],
+    ]);
+    const state = await f.read();
+    expect(state.retryUsed).toBe(true);
+    expect(state.workers[1]!.attempt.placement).toEqual({ model: "gpt-6-astra", effort: "xhigh" });
+    expect(state.workers[1]!.attempt.rung).toBe(1);
+  },
+);
 
 it.each(
   ["generation-change", "removed"].flatMap((change) =>

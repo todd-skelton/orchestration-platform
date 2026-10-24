@@ -773,10 +773,13 @@ export async function planningStep(operation: PlanningOperation): Promise<Planni
       const priorAuthor = state.workers.findLast(
         (row) => row.intent.role === "author" && row.config.worktree === workspace,
       );
+      // Only a materialized family placement is reused on a mechanical retry;
+      // a literal ladder keeps its failure-count/authorRung advancement.
       const retryPlacement =
         priorAuthor?.terminal &&
         !priorAuthor.terminal.modelRefused &&
-        ["malformed", "dead"].includes(priorAuthor.terminal.status)
+        ["malformed", "dead"].includes(priorAuthor.terminal.status) &&
+        priorAuthor.config.author.family
           ? priorAuthor.config.author
           : undefined;
       if (retryPlacement) {
