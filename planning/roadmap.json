@@ -1161,6 +1161,14 @@
       "blockedBy": []
     },
     {
+      "key": "ISS-270",
+      "file": "planning/drafts/ISS-270.md",
+      "title": "PENDING_HOST_REVIEW planning recovery has no consumption path",
+      "summary": "Add a fail-closed host-verdict artifact and code-supported planning continuation for retained PENDING_HOST_REVIEW without changing saved selection, charged attempts, retry history, ceilings, or reservation ordering.",
+      "milestone": "M1",
+      "blockedBy": []
+    },
+    {
       "key": "ISS-267",
       "file": "planning/drafts/ISS-267.md",
       "title": "Prevent worker self-interrupts during silent heavy verification",
