@@ -6472,6 +6472,24 @@ export function repositoryQueueAdapter(
           ],
         }));
         const candidate = await optionalRecord(item.source.stateDirectory, "candidate");
+        const configEvidence = evidence.find((row) => basename(row.path) === "config.json");
+        let selectionSha256: string | undefined;
+        const cycleFiles = await readdir(runRoot, { withFileTypes: true }).catch(() => []);
+        for (const entry of cycleFiles
+          .filter((row) => /^cycle-[1-9]\d*-selected\.json$/.test(row.name))
+          .sort((a, b) => a.name.localeCompare(b.name))) {
+          try {
+            const bytes = await readFile(resolve(runRoot, entry.name));
+            const value = JSON.parse(bytes.toString("utf8"));
+            if (value.key === key && value.number === number && value.base === main) {
+              selectionSha256 = createHash("sha256").update(bytes).digest("hex");
+              break;
+            }
+          } catch {
+            // The normal selected record validator reports malformed records;
+            // planning retains a missing binding as a host-verdict refusal.
+          }
+        }
         return {
           observationStart,
           observationEnd: new Date().toISOString(),
@@ -6484,6 +6502,15 @@ export function repositoryQueueAdapter(
           history,
           branch: item.setup.sourceBranch,
           head: outcome.value.head ?? (candidate === ABSENT ? item.source.base : candidate.head),
+          ...(configEvidence && selectionSha256
+            ? {
+                binding: {
+                  selectionSha256,
+                  configSha256: configEvidence.sha256,
+                  decisionSha256: createHash("sha256").update(authority.context.body).digest("hex"),
+                },
+              }
+            : {}),
         };
       };
       const bounded = boundedNative(item, "planning");
@@ -6506,6 +6533,8 @@ export function repositoryQueueAdapter(
         history: readHistory,
         terminal: (role, attempt, terminal) =>
           syncParticipant(item, "planning", role, attempt, terminal),
+        issueKey: key,
+        ...(options.observeAuthority ? { observeAuthority: options.observeAuthority } : {}),
       });
     },
     async assertExecutor() {

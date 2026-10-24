@@ -1005,6 +1005,23 @@ To add work: write the draft, register it, create the issue with that body and
 milestone, add it to the project, label it `ready` when unblocked. To park
 work: close the issue with a note; leave nothing registered.
 
+### Host planning review grant
+
+An attempt stopped as `PENDING_HOST_REVIEW` remains inert until the host writes
+one exclusive `host-planning-review/v1` JSON grant beside its retained
+`planning-recovery.json`. The grant binds the repository, issue, run, recovery
+bytes, saved selection and source configuration digests, pinned main, dead
+worker terminals, outcome and external census, planning level, complete native
+history, verdict and one-time consumption identities. It also names the
+immutable owning-issue `authorityUrl`, its captured author and body digest;
+the consumer reads that comment before reserving the transition and retains
+the capture for replay. A missing, malformed, stale, duplicate, forged or
+incomplete grant returns a typed `host-verdict-*` refusal and performs no
+launch, charge, reservation or retained-record edit. A valid grant is consumed
+once, changes only the planning state to `pending-author`, and then uses the
+existing materialized planning placement and retry accounting; it is not a
+manual resume or heavy-verifier lane.
+
 ### Pinned self selection
 
 Before each fresh self selection, supervision fetches current main and pins one

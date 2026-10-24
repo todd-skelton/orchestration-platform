@@ -8,6 +8,7 @@ import { QueueBlocked, readOptional, workerPrompt } from "./flow.ts";
 // @ts-expect-error Node 24 executes TypeScript directly.
 import { retainWorkerOutcome, validDefect } from "./outcome.ts";
 import { parseReview, validateLocations } from "./repair-policy.mjs";
+import { observeIntegrationAuthority } from "./continuation.js";
 import { resolveRole, type ModelPlacement } from "./routing.mjs";
 import { bodyCriteria } from "../../adapters/chase-sets.mjs";
 import {
@@ -45,6 +46,12 @@ export interface PlanningInput {
   history: QueueParticipant[];
   branch: string;
   head: string;
+  /** Optional immutable scheduler records used by the host planning grant. */
+  binding?: {
+    selectionSha256: string;
+    configSha256: string;
+    decisionSha256?: string;
+  };
 }
 export interface PlanningBrief {
   key: string;
@@ -497,6 +504,108 @@ interface Recovery {
   diagnostic?: string;
   nextLevel?: PlanningLevel | "PRODUCT_QUESTION";
   superseded?: Pick<Recovery, "input" | "state" | "proposal" | "review" | "diagnostic">[];
+  hostReview?: {
+    grantSha256: string;
+    consumptionIdentity: string;
+    consumedAt: string;
+    authority: { id: string; url: string; author: string; bodySha256: string; capturedAt: string };
+  };
+}
+
+export interface HostPlanningReview {
+  schemaVersion: "host-planning-review/v1";
+  repository: string;
+  issueKey: string;
+  issueUrl: string;
+  run: string;
+  recoveryPath: string;
+  recoverySha256: string;
+  selectionSha256: string;
+  configSha256: string;
+  main: string;
+  deadAttempts: { id: string; status: "dead"; terminalSha256: string }[];
+  outcomeSha256: string;
+  externalIdentitySha256: string;
+  decisionSha256: string;
+  level: PlanningLevel;
+  historySha256: string;
+  verdictIdentity: string;
+  consumptionIdentity: string;
+  authorityUrl: string;
+  authorityAuthor: string;
+  authorityBodySha256: string;
+}
+
+const isDigest = (value: unknown): value is string =>
+  typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
+const isSha = (value: unknown): value is string =>
+  typeof value === "string" && /^[a-f0-9]{40}$/.test(value);
+const isName = (value: unknown): value is string =>
+  typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(value);
+
+export function validateHostPlanningReview(value: unknown): asserts value is HostPlanningReview {
+  const candidate = value as any;
+  check(
+    closed(value, [
+      "schemaVersion",
+      "repository",
+      "issueKey",
+      "issueUrl",
+      "run",
+      "recoveryPath",
+      "recoverySha256",
+      "selectionSha256",
+      "configSha256",
+      "main",
+      "deadAttempts",
+      "outcomeSha256",
+      "externalIdentitySha256",
+      "decisionSha256",
+      "level",
+      "historySha256",
+      "verdictIdentity",
+      "consumptionIdentity",
+      "authorityUrl",
+      "authorityAuthor",
+      "authorityBodySha256",
+    ]) &&
+      candidate.schemaVersion === "host-planning-review/v1" &&
+      typeof candidate.repository === "string" &&
+      /^[\w.-]+\/[\w.-]+$/.test(candidate.repository) &&
+      isName(candidate.issueKey) &&
+      typeof candidate.issueUrl === "string" &&
+      candidate.issueUrl.startsWith(`https://github.com/${candidate.repository}/issues/`) &&
+      isName(candidate.run) &&
+      typeof candidate.recoveryPath === "string" &&
+      isDigest(candidate.recoverySha256) &&
+      isDigest(candidate.selectionSha256) &&
+      isDigest(candidate.configSha256) &&
+      isSha(candidate.main) &&
+      Array.isArray(candidate.deadAttempts) &&
+      candidate.deadAttempts.length === 2 &&
+      candidate.deadAttempts.every(
+        (row: any) =>
+          closed(row, ["id", "status", "terminalSha256"]) &&
+          isName(row.id) &&
+          row.status === "dead" &&
+          isDigest(row.terminalSha256),
+      ) &&
+      new Set(candidate.deadAttempts.map((row: any) => row.id)).size === 2 &&
+      isDigest(candidate.outcomeSha256) &&
+      isDigest(candidate.externalIdentitySha256) &&
+      isDigest(candidate.decisionSha256) &&
+      levels.includes(candidate.level) &&
+      isDigest(candidate.historySha256) &&
+      isName(candidate.verdictIdentity) &&
+      isName(candidate.consumptionIdentity) &&
+      /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/issues\/[1-9]\d*#issuecomment-[1-9]\d*$/.test(
+        candidate.authorityUrl,
+      ) &&
+      typeof candidate.authorityAuthor === "string" &&
+      /^[A-Za-z0-9][A-Za-z0-9-]{0,63}$/.test(candidate.authorityAuthor) &&
+      isDigest(candidate.authorityBodySha256),
+    "host-verdict-malformed",
+  );
 }
 const instructions = `Write one finite planning-repair/v1 JSON proposal in proposal.json. Its exact keys are schemaVersion, level, disposition, reason, approach, productQuestion, lineages, coverage, briefs.
 disposition is REPAIR_IN_PLACE only for outcome/decision/acceptance-preserving precision; otherwise REPLACED with fixed-scope successors, or RECOMMEND_NOT_COMPLETING with evidence and no closure. New requirements belong to a new slice.
@@ -511,10 +620,166 @@ export interface PlanningOperation {
   acquire(): Promise<PlanningInput>;
   history(): Promise<QueueParticipant[]>;
   terminal(role: Role, attempt: Attempt, terminal: Terminal): Promise<void>;
+  observeAuthority?: typeof observeIntegrationAuthority;
+  issueKey?: string;
 }
 async function save(path: string, value: unknown) {
   await writeFile(`${path}.next`, JSON.stringify(value, null, 2) + "\n", { flush: true });
   await rename(`${path}.next`, path);
+}
+
+function terminalDigest(state: Recovery, worker: Worker) {
+  if (!worker.terminal) return undefined;
+  const path = resolve(worker.config.stateDirectory, `${worker.intent.role}-terminal.json`);
+  return (
+    state.input.evidence.find((record) => record.path === path)?.sha256 ?? digest(worker.terminal)
+  );
+}
+
+function planningHistoryDigest(state: Recovery, history: QueueParticipant[]) {
+  const merged = new Map<string, QueueParticipant>();
+  for (const participant of [...state.input.history, ...history])
+    merged.set(participant.id, participant);
+  return digest([...merged.values()]);
+}
+
+function decisionDigest(input: PlanningInput) {
+  const candidates = [
+    input.binding?.decisionSha256,
+    bodyHash(input.authority.context.body),
+    digest(input.authority.context),
+    digest(input.authority.planning),
+  ].filter((value): value is string => !!value);
+  return candidates;
+}
+
+async function consumeHostPlanningReview(
+  operation: PlanningOperation,
+  state: Recovery,
+  recoveryPath: string,
+): Promise<"absent" | "consumed" | "inert" | { reason: string }> {
+  if (state.hostReview) return "inert";
+  const grantPath = resolve(operation.directory, "host-planning-review.json");
+  let raw: string;
+  try {
+    if (!(await lstat(grantPath)).isFile()) return { reason: "host-verdict-malformed" };
+    raw = await readFile(grantPath, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "absent";
+    return { reason: "host-verdict-unavailable" };
+  }
+  let grant: HostPlanningReview;
+  try {
+    grant = JSON.parse(raw);
+    validateHostPlanningReview(grant);
+  } catch (error) {
+    return {
+      reason: error instanceof QueueBlocked ? error.reason : "host-verdict-malformed",
+    };
+  }
+  const grantSha256 = bodyHash(raw);
+  const recoveryBytes = await readFile(recoveryPath, "utf8");
+  const currentHistory = await operation.history();
+  let fresh: PlanningInput;
+  try {
+    fresh = await operation.acquire();
+  } catch {
+    return { reason: "host-verdict-authority-unavailable" };
+  }
+  const issueUrl = operation.source.issue;
+  const issueKey =
+    operation.issueKey ?? operation.source.issue.match(/issues\/([^/?#]+)$/)?.[1] ?? "";
+  const expectedIdentity = externalIdentity(state.input, state.proposal);
+  const freshIdentity = externalIdentity(fresh, state.proposal);
+  const deadRows = state.workers
+    .filter((worker) => worker.terminal?.status === "dead")
+    .map((worker) =>
+      Object.fromEntries([
+        ["id", worker.attempt?.id],
+        ["status", worker.terminal?.status],
+        ["terminalSha256", terminalDigest(state, worker)],
+      ]),
+    );
+  const deadMatches =
+    deadRows.length === 2 &&
+    grant.deadAttempts.every((row) =>
+      deadRows.some(
+        (candidate) =>
+          candidate.id === row.id &&
+          candidate.status === row.status &&
+          candidate.terminalSha256 === row.terminalSha256,
+      ),
+    );
+  const historyDigest = planningHistoryDigest(state, currentHistory);
+  const decisionMatches = decisionDigest(state.input).includes(grant.decisionSha256);
+  const bindingMatches =
+    !!state.input.binding &&
+    grant.selectionSha256 === state.input.binding.selectionSha256 &&
+    grant.configSha256 === state.input.binding.configSha256;
+  if (
+    grant.repository !== operation.source.repository ||
+    grant.issueKey !== issueKey ||
+    grant.issueUrl !== issueUrl ||
+    grant.run !== operation.source.run ||
+    grant.recoveryPath !== recoveryPath ||
+    grant.recoverySha256 !== bodyHash(recoveryBytes) ||
+    grant.main !== state.input.main ||
+    grant.main !== fresh.main ||
+    !bindingMatches ||
+    !deadMatches ||
+    grant.outcomeSha256 !== state.outcome.sha256 ||
+    grant.externalIdentitySha256 !== expectedIdentity ||
+    grant.level !== state.level ||
+    grant.historySha256 !== historyDigest ||
+    !decisionMatches
+  )
+    return { reason: grant.main !== fresh.main ? "host-verdict-stale" : "host-verdict-mismatch" };
+  let authority: Awaited<ReturnType<typeof observeIntegrationAuthority>>;
+  try {
+    authority = await (operation.observeAuthority ?? observeIntegrationAuthority)(
+      grant.authorityUrl,
+    );
+  } catch {
+    return { reason: "host-verdict-authority-unavailable" };
+  }
+  if (
+    authority.url !== grant.authorityUrl ||
+    authority.id !== grant.authorityUrl.split("issuecomment-")[1] ||
+    authority.author !== grant.authorityAuthor ||
+    typeof authority.body !== "string" ||
+    bodyHash(authority.body) !== grant.authorityBodySha256
+  )
+    return { reason: "host-verdict-forged" };
+  // A changed census is a new derivation at the same pinned main. Preserve the
+  // old evidence in superseded and let the ordinary author path continue.
+  if (freshIdentity !== expectedIdentity) {
+    (state.superseded ??= []).push({
+      input: state.input,
+      state: state.state,
+      ...(state.proposal ? { proposal: state.proposal } : {}),
+      ...(state.review ? { review: state.review } : {}),
+      ...(state.diagnostic ? { diagnostic: state.diagnostic } : {}),
+    });
+    state.input = fresh;
+    delete state.proposal;
+    delete state.review;
+  }
+  state.hostReview = {
+    grantSha256,
+    consumptionIdentity: grant.consumptionIdentity,
+    consumedAt: new Date().toISOString(),
+    authority: {
+      id: authority.id,
+      url: authority.url,
+      author: authority.author,
+      bodySha256: bodyHash(authority.body),
+      capturedAt: authority.capturedAt,
+    },
+  };
+  state.state = "pending-author";
+  delete state.diagnostic;
+  await save(recoveryPath, state);
+  return "consumed";
 }
 async function proposalBytes(workspace: string) {
   const entries = await readdir(workspace, { withFileTypes: true });
@@ -626,6 +891,7 @@ export async function planningStep(operation: PlanningOperation): Promise<Planni
     recovery: path,
     ...(state.diagnostic ? { diagnostic: state.diagnostic } : {}),
   });
+  let hostReviewConsumed = false;
   const stop = async (message: string, pending = false) => {
     state.state = pending ? "PENDING_HOST_REVIEW" : "rejected";
     state.diagnostic = message;
@@ -657,7 +923,24 @@ export async function planningStep(operation: PlanningOperation): Promise<Planni
     await save(path, state);
     return result();
   };
-  if (state.state === "rejected" || state.state === "PENDING_HOST_REVIEW") return result();
+  if (state.state === "rejected") return result();
+  if (state.state === "PENDING_HOST_REVIEW") {
+    const consumed = await consumeHostPlanningReview(operation, state, path);
+    if (consumed === "absent") {
+      return {
+        ...result(),
+        diagnostic: "host-verdict-missing: no host-planning-review/v1 grant is present.",
+      };
+    }
+    if (consumed === "inert") return result();
+    if (typeof consumed === "object") {
+      return {
+        ...result(),
+        diagnostic: `${consumed.reason}: retained planning recovery is unchanged.`,
+      };
+    }
+    hostReviewConsumed = consumed === "consumed";
+  }
   const activeReview =
     state.state === "pending-reviewer" &&
     state.workers.at(-1)?.attempt &&
@@ -782,8 +1065,23 @@ export async function planningStep(operation: PlanningOperation): Promise<Planni
         priorAuthor.config.author.family
           ? priorAuthor.config.author
           : undefined;
-      if (retryPlacement) {
+      if (retryPlacement && !(hostReviewConsumed && !retryPlacement.model)) {
         placement = retryPlacement;
+      } else if (retryPlacement && hostReviewConsumed && !retryPlacement.model) {
+        let resolved: { rung: number; placement: ModelPlacement };
+        try {
+          resolved = await resolvePlanningRole(source, "author", retryPlacement.rung ?? 0);
+        } catch (error) {
+          if (error instanceof QueueBlocked && error.reason === "model-registry-unavailable")
+            throw error;
+          if (error instanceof QueueBlocked && error.reason === "provider-model-refused")
+            return stop(
+              "PENDING_HOST_REVIEW: retained planning author placement could not be materialized (provider-model-refused). No CLI fallback or parking.",
+              true,
+            );
+          throw error;
+        }
+        placement = planningRolePlacement(source.author, resolved.placement, resolved.rung);
       } else {
         const ladder = source.author.ladder ?? [source.author];
         const failures = state.workers.filter(
@@ -838,6 +1136,21 @@ export async function planningStep(operation: PlanningOperation): Promise<Planni
         prompt: instructions,
       },
     };
+    const selectedPlacement = current[role];
+    if (
+      typeof selectedPlacement.model !== "string" ||
+      selectedPlacement.model.length === 0 ||
+      typeof selectedPlacement.effort !== "string" ||
+      selectedPlacement.effort.length === 0 ||
+      (selectedPlacement.family !== undefined &&
+        (selectedPlacement.generation === undefined ||
+          typeof selectedPlacement.authorityDigest !== "string" ||
+          selectedPlacement.authorityDigest.length === 0))
+    )
+      return stop(
+        "PENDING_HOST_REVIEW: planning placement is unmaterialized; no intent or launch is admitted.",
+        true,
+      );
     delete current.correctionPaths;
     delete current.preReviewEvidence;
     worker = {

@@ -685,13 +685,14 @@ async function main() {
           continue;
         }
         if (result.status.startsWith("planning-")) {
+          const hostVerdict = /^(host-verdict-[a-z-]+)(?::|$)/.exec(result.diagnostic ?? "")?.[1];
           blocked(
             new QueueBlocked(
               result.status === "planning-accepted"
                 ? "planning-application-pending"
                 : result.status === "planning-rejected"
                   ? "planning-repair-rejected"
-                  : "planning-review-required",
+                  : (hostVerdict ?? "planning-review-required"),
               `${result.diagnostic ?? "Planning handoff"} Recovery: ${result.recovery}`.slice(
                 0,
                 500,
