@@ -336,6 +336,11 @@ export function planningModelIdentity(model: string | undefined) {
 }
 const placementModel = (placement: { model?: string; family?: string }) =>
   placement.model ?? placement.family ?? "";
+// Reviewer ladder identity stays on the configured selector after a family
+// placement is materialized. A concrete model is evidence for the request,
+// while family is the identity used to match the planning ladder.
+const placementLadderIdentity = (placement: { model?: string; family?: string }) =>
+  planningModelIdentity(placement.family ?? placement.model);
 const materializedPlacement = (placement: ModelPlacement): ModelPlacement => ({
   ...(placement.model ? { model: placement.model } : {}),
   effort: placement.effort,
@@ -673,7 +678,7 @@ export async function planningStep(operation: PlanningOperation): Promise<Planni
           .filter(
             (row) => row.intent.role === "reviewer" && (row.refused || row.terminal?.modelRefused),
           )
-          .map((row) => planningModelIdentity(placementModel(row.config.reviewer))),
+          .map((row) => placementLadderIdentity(row.config.reviewer)),
       );
       const priorReviewer = state.workers.findLast(
         (row) => row.intent.role === "reviewer" && row.config.worktree === workspace,
@@ -688,10 +693,9 @@ export async function planningStep(operation: PlanningOperation): Promise<Planni
       // may advance its ladder; growing history is not a new routing grant.
       const candidates = choices.filter((row) =>
         retryPlacement
-          ? planningModelIdentity(placementModel(row.placement)) ===
-              planningModelIdentity(placementModel(retryPlacement)) &&
+          ? placementLadderIdentity(row.placement) === placementLadderIdentity(retryPlacement) &&
             row.placement.effort === retryPlacement.effort
-          : !refused.has(planningModelIdentity(placementModel(row.placement))),
+          : !refused.has(placementLadderIdentity(row.placement)),
       );
       let choice: (typeof choices)[number] | undefined;
       let routingRefused = false;

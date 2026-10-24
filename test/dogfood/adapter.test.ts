@@ -97,14 +97,18 @@ it.each(["win32", "linux", "darwin"] as const)(
     }
   },
 );
-it("refuses an unmaterialized native model before admission or artifact writes", async () => {
+it.each(
+  (["author", "reviewer"] as const).flatMap((role) =>
+    [null, undefined, " "].map((model) => ({ role, model })),
+  ),
+)("refuses a %s %s model before admission or artifact writes", async ({ role, model }) => {
   const stateDirectory = await mkdtemp(resolve(tmpdir(), "unmaterialized-launch-"));
   const current = {
     ...config,
     stateDirectory,
-    author: { ...config.author, model: " " },
+    [role]: { ...config[role], model: model as any },
   };
-  await expect(codexAdapter().launch("author", current, "prompt")).rejects.toMatchObject({
+  await expect(codexAdapter().launch(role, current, "prompt")).rejects.toMatchObject({
     reason: "launch-model-unmaterialized",
   });
   await expect(readdir(stateDirectory)).resolves.toEqual([]);
