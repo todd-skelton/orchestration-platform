@@ -3,6 +3,7 @@ import { mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/pro
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { PassThrough } from "node:stream";
+import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { afterEach, expect, it, vi } from "vitest";
 import {
@@ -24,6 +25,7 @@ import {
 } from "../../scripts/dogfood/dispatch-adapter.js";
 import type { Adapter, Config, NativeDbIdentity } from "../../scripts/dogfood/flow.js";
 import { QueueBlocked, workerPrompt } from "../../scripts/dogfood/flow.js";
+import { SELF_ROUTING } from "../../scripts/dogfood/routing.js";
 import { queueStep } from "../../scripts/dogfood/queue.js";
 import { sourceFailureFixture } from "./fixtures/source-failure.js";
 import { parseReview } from "../../scripts/dogfood/repair-policy.mjs";
@@ -97,6 +99,23 @@ it.each(["win32", "linux", "darwin"] as const)(
     }
   },
 );
+it.each(
+  (["author", "reviewer"] as const).flatMap((role) =>
+    [null, undefined, " "].map((model) => ({ role, model })),
+  ),
+)("refuses a %s %s model before admission or artifact writes", async ({ role, model }) => {
+  const stateDirectory = await mkdtemp(resolve(tmpdir(), "unmaterialized-launch-"));
+  const current = {
+    ...config,
+    stateDirectory,
+    [role]: { ...config[role], model: model as any },
+  };
+  await expect(codexAdapter().launch(role, current, "prompt")).rejects.toMatchObject({
+    reason: "launch-model-unmaterialized",
+  });
+  await expect(readdir(stateDirectory)).resolves.toEqual([]);
+  await rm(stateDirectory, { recursive: true, force: true });
+});
 const locationNames = [
   "APPDATA",
   "CODEX_HOME",
@@ -1674,6 +1693,30 @@ it("distinguishes malformed verdict transport from a valid verdict with substitu
 });
 it("refuses a CLI without the observed native interface before launching", async () => {
   await expect(codexAdapter().preflight(config)).rejects.toThrow();
+});
+it("preflights an unmaterialized self-row family config before any role is resolved", async () => {
+  // The preload answers `exec --help` with the observed native flags, so the
+  // executable is the real Node binary on every host without a shell script.
+  const root = await realpath(await mkdtemp(resolve(tmpdir(), "family-preflight-")));
+  cleanup.push(root);
+  const help = resolve(root, "codex-help.mjs");
+  await writeFile(
+    help,
+    'import { writeSync } from "node:fs";\nwriteSync(1, "--json --ignore-rules --sandbox --output-schema\\n");\nprocess.exit(0);\n',
+  );
+  vi.stubEnv("NODE_OPTIONS", `--import=${pathToFileURL(help).href}`);
+  const family = {
+    ...config,
+    routing: { row: "self" },
+    author: { ...SELF_ROUTING.author[0]!, ladder: SELF_ROUTING.author, rung: 0 },
+    reviewer: { ...SELF_ROUTING.reviewer[0]!, ladder: SELF_ROUTING.reviewer, rung: 0 },
+  } as Config;
+  expect(family.author.model).toBeUndefined();
+  expect(launchArguments(family, "author")).toContain("-m");
+  await expect(codexAdapter().preflight(family)).resolves.toBeUndefined();
+  await expect(codexAdapter().launch("author", family, "prompt")).rejects.toMatchObject({
+    reason: "launch-model-unmaterialized",
+  });
 });
 it("observes a terminal failed trace as dead before its exit receipt arrives", async () => {
   const root = await realpath(await mkdtemp(resolve(tmpdir(), "dogfood-dead-trace-")));

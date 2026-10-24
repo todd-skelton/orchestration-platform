@@ -325,6 +325,34 @@ async function fixture(level: PlanningLevel = "ISSUE") {
   };
 }
 
+async function planningFamilyFixture() {
+  const f = await fixture();
+  const registryPath = resolve(f.directory, "model-registry.json");
+  await writeFile(
+    registryPath,
+    await readFile(resolve(import.meta.dirname, "fixtures/model-registry.json"), "utf8"),
+  );
+  f.operation.source.modelRegistry = registryPath;
+  f.operation.source.author = {
+    family: "fable",
+    effort: "high",
+    prompt: "implementation",
+    ladder: [{ family: "fable", effort: "high" }],
+  };
+  f.operation.source.reviewer = {
+    family: "opus",
+    effort: "high",
+    prompt: "review",
+    ladder: [{ family: "opus", effort: "high" }],
+  };
+  const saveRegistry = async (mutate: (registry: any) => void) => {
+    const registry = JSON.parse(await readFile(registryPath, "utf8"));
+    mutate(registry);
+    await writeFile(registryPath, JSON.stringify(registry));
+  };
+  return { ...f, registryPath, saveRegistry };
+}
+
 it.each(["ISSUE", "SET", "EPIC"] as const)(
   "retains native %s proposal/review states and repeated exact PASS reads without application",
   async (level) => {
@@ -660,6 +688,524 @@ it("prefers unused independent reviewers, discloses history fallback, and refuse
   await planningStep(f.operation);
   expect((await planningStep(f.operation)).status).toBe("planning-pending-host-review");
   expect(f.calls).not.toContain("launch:reviewer");
+});
+
+it("materializes planning family author and reviewer placements from the registry", async () => {
+  const f = await fixture();
+  f.operation.source.modelRegistry = resolve(import.meta.dirname, "fixtures/model-registry.json");
+  f.operation.source.author = {
+    family: "fable",
+    effort: "high",
+    prompt: "implementation",
+    ladder: [{ family: "fable", effort: "high" }],
+  };
+  f.operation.source.reviewer = {
+    family: "opus",
+    effort: "high",
+    prompt: "review",
+    ladder: [{ family: "opus", effort: "high" }],
+  };
+  const launched: { role: string; config: Config }[] = [];
+  const launch = f.operation.native.launch;
+  f.operation.native.launch = async (role, config, prompt) => {
+    launched.push({ role, config: structuredClone(config) });
+    return launch(role, config, prompt);
+  };
+
+  await planningStep(f.operation);
+  await planningStep(f.operation);
+  await planningStep(f.operation);
+
+  expect(launched[0]!.config.author).toMatchObject({
+    model: "claude-fable-5-1",
+    family: "fable",
+    generation: 7,
+    authorityDigest: "synthetic-registry",
+    rung: 0,
+  });
+  expect(launched[1]!.config.reviewer).toMatchObject({
+    model: "claude-opus-5-5",
+    family: "opus",
+    generation: 7,
+    authorityDigest: "synthetic-registry",
+    rung: 0,
+  });
+  const state = await f.read();
+  expect(state.workers[0]!.config.author).toMatchObject({ model: "claude-fable-5-1" });
+  expect(state.workers[0]!.attempt).toMatchObject({
+    placement: {
+      model: "claude-fable-5-1",
+      family: "fable",
+      generation: 7,
+      authorityDigest: "synthetic-registry",
+    },
+  });
+});
+
+const registryFailures = ["missing", "unreadable", "malformed"] as const;
+async function breakRegistry(registryPath: string, kind: (typeof registryFailures)[number]) {
+  if (kind === "missing") await rm(registryPath);
+  else if (kind === "unreadable") {
+    await rm(registryPath);
+    await mkdir(registryPath);
+  } else await writeFile(registryPath, JSON.stringify({ format: "model-registry/v1" }));
+}
+
+it.each(registryFailures)(
+  "refuses a %s planning registry before saving an author intent",
+  async (kind) => {
+    const f = await planningFamilyFixture();
+    await breakRegistry(f.registryPath, kind);
+    await expect(planningStep(f.operation)).rejects.toMatchObject({
+      reason: "model-registry-unavailable",
+    });
+    expect(f.calls).not.toContain("launch:author");
+    expect(await f.read()).toMatchObject({ state: "pending-author", workers: [] });
+    await expect(readdir(f.directory)).resolves.not.toContain("planning-worker-1");
+  },
+);
+
+it.each(registryFailures)(
+  "refuses a %s planning registry before saving a reviewer intent",
+  async (kind) => {
+    const f = await planningFamilyFixture();
+    await planningStep(f.operation);
+    expect(f.calls).toContain("launch:author");
+    const recovery = resolve(f.directory, "planning-recovery.json");
+    const before = await readFile(recovery, "utf8");
+    await breakRegistry(f.registryPath, kind);
+    await expect(planningStep(f.operation)).rejects.toMatchObject({
+      reason: "model-registry-unavailable",
+    });
+    expect(f.calls).not.toContain("launch:reviewer");
+    const state = await f.read();
+    expect(state.state).toBe("proposal");
+    expect(state.workers.map((worker: any) => worker.intent.role)).toEqual(["author"]);
+    expect(f.history.map((row) => row.role)).toEqual(["author"]);
+    await expect(readdir(f.directory)).resolves.not.toContain("planning-worker-2");
+    expect(await readFile(recovery, "utf8")).toBe(before);
+  },
+);
+
+it("refuses planning when every author family is unavailable without an intent or charge", async () => {
+  const f = await planningFamilyFixture();
+  await f.saveRegistry((registry) => {
+    registry.families.fable.current = null;
+  });
+  let refused = 0;
+  f.operation.native.authorRefused = async () => {
+    refused++;
+  };
+  await expect(planningStep(f.operation)).resolves.toMatchObject({
+    status: "planning-pending-host-review",
+    diagnostic: expect.stringContaining("provider-model-refused"),
+  });
+  const state = await f.read();
+  expect(state.state).toBe("PENDING_HOST_REVIEW");
+  expect(state.workers).toEqual([]);
+  expect(refused).toBe(0);
+  expect(f.calls).not.toContain("launch:author");
+  expect(f.history).toHaveLength(0);
+  await expect(readdir(f.directory)).resolves.not.toContain("planning-worker-1");
+});
+
+it.each(["null", "absent", "missing-current"] as const)(
+  "skips an unavailable planning author family and advances to the next rung (%s)",
+  async (kind) => {
+    const f = await planningFamilyFixture();
+    f.operation.source.author.ladder = [
+      { family: "astra", effort: "high" },
+      { family: "fable", effort: "high" },
+    ];
+    f.operation.source.author.family = "astra";
+    f.operation.source.reviewer = {
+      model: "claude-opus-5-5",
+      effort: "high",
+      prompt: "review",
+      ladder: [{ model: "claude-opus-5-5", effort: "high" }],
+    };
+    await f.saveRegistry((registry) => {
+      if (kind === "null") registry.families.astra.current = null;
+      if (kind === "absent") delete registry.families.astra;
+      if (kind === "missing-current") delete registry.families.astra.current;
+    });
+    let refused = 0;
+    f.operation.native.authorRefused = async () => {
+      refused++;
+    };
+    await expect(planningStep(f.operation)).resolves.toMatchObject({
+      status: "observing-planning-reviewer",
+    });
+    const state = await f.read();
+    expect(state.workers[0]!.config.author).toMatchObject({
+      model: "claude-fable-5-1",
+      family: "fable",
+      rung: 1,
+    });
+    expect(state.workers[0]!.refused).toBeUndefined();
+    expect(refused).toBe(0);
+    expect(f.calls).toContain("launch:author");
+  },
+);
+
+it("keeps a reviewer choice at its planning index when an earlier family is unavailable", async () => {
+  const f = await planningFamilyFixture();
+  f.operation.source.author = {
+    model: "gpt-6-astra",
+    effort: "high",
+    prompt: "implementation",
+    ladder: [{ model: "gpt-6-astra", effort: "high" }],
+  };
+  f.operation.source.reviewer = {
+    family: "fable",
+    effort: "high",
+    prompt: "review",
+    ladder: [
+      { family: "fable", effort: "high" },
+      { family: "opus", effort: "high" },
+    ],
+  };
+  await f.saveRegistry((registry) => {
+    registry.families.fable.current = null;
+  });
+  await planningStep(f.operation);
+  await expect(planningStep(f.operation)).resolves.toMatchObject({
+    status: "planning-accepted",
+  });
+  const state = await f.read();
+  expect(state.workers[1]!.config.reviewer).toMatchObject({
+    model: "claude-opus-5-5",
+    family: "opus",
+    rung: 1,
+  });
+  expect(f.calls.filter((call) => call === "launch:reviewer")).toHaveLength(1);
+});
+
+it("refuses planning when every reviewer family is unavailable without an intent", async () => {
+  const f = await planningFamilyFixture();
+  f.operation.source.author = {
+    model: "gpt-6-astra",
+    effort: "high",
+    prompt: "implementation",
+    ladder: [{ model: "gpt-6-astra", effort: "high" }],
+  };
+  f.operation.source.reviewer = {
+    family: "fable",
+    effort: "high",
+    prompt: "review",
+    ladder: [
+      { family: "fable", effort: "high" },
+      { family: "opus", effort: "high" },
+    ],
+  };
+  await f.saveRegistry((registry) => {
+    registry.families.fable.current = null;
+    registry.families.opus.current = null;
+  });
+  await planningStep(f.operation);
+  await planningStep(f.operation);
+  await expect(planningStep(f.operation)).resolves.toMatchObject({
+    status: "planning-pending-host-review",
+  });
+  const state = await f.read();
+  expect(state.state).toBe("PENDING_HOST_REVIEW");
+  expect(state.workers).toHaveLength(1);
+  expect(state.workers.some((worker: any) => worker.intent.role === "reviewer")).toBe(false);
+  expect(f.calls).not.toContain("launch:reviewer");
+});
+
+it("names reviewer non-independence before creating a planning reviewer intent", async () => {
+  const f = await planningFamilyFixture();
+  f.operation.source.author = {
+    model: "claude-fable-5-1",
+    effort: "high",
+    prompt: "implementation",
+  };
+  f.operation.source.reviewer = {
+    family: "fable",
+    effort: "high",
+    prompt: "review",
+    ladder: [{ family: "fable", effort: "high" }],
+  };
+  await planningStep(f.operation);
+  await planningStep(f.operation);
+  await expect(planningStep(f.operation)).resolves.toMatchObject({
+    status: "planning-pending-host-review",
+    diagnostic: expect.stringContaining("routing-reviewer-not-independent"),
+  });
+  const state = await f.read();
+  expect(state.workers).toHaveLength(1);
+  expect(f.calls).not.toContain("launch:reviewer");
+});
+
+it.each(["malformed", "dead"] as const)(
+  "advances a literal planning author ladder on the shared %s retry",
+  async (status) => {
+    const f = await fixture();
+    f.setStatus(status);
+    const launched: Config["author"][] = [];
+    const launch = f.operation.native.launch;
+    f.operation.native.launch = async (role, config, prompt) => {
+      if (role === "author") launched.push(structuredClone(config.author));
+      return launch(role, config, prompt);
+    };
+    expect((await planningStep(f.operation)).status).toBe("observing-planning-author");
+    expect((await planningStep(f.operation)).status).toBe("planning-pending-host-review");
+    expect(launched.map((row) => [row.model, row.effort, row.rung])).toEqual([
+      ["gpt-6-astra", "high", 0],
+      ["gpt-6-astra", "xhigh", 1],
+    ]);
+    const state = await f.read();
+    expect(state.retryUsed).toBe(true);
+    expect(state.workers[1]!.attempt.placement).toEqual({ model: "gpt-6-astra", effort: "xhigh" });
+    expect(state.workers[1]!.attempt.rung).toBe(1);
+  },
+);
+
+it.each(
+  ["generation-change", "removed"].flatMap((change) =>
+    ["malformed", "dead"].map((status) => ({ change, status })),
+  ),
+)(
+  "retries a $status author family worker with its stored placement after the registry is $change",
+  async ({ change, status }) => {
+    const f = await planningFamilyFixture();
+    f.setStatus(status as "malformed" | "dead");
+    await planningStep(f.operation);
+    const first = (await f.read()).workers[0]!.config.author;
+    await f.saveRegistry((registry) => {
+      if (change === "generation-change") {
+        registry.generation = 8;
+        registry.authorityDigest = "changed-registry";
+        registry.families.fable.current = "changed-fable";
+      } else {
+        delete registry.families.fable;
+      }
+    });
+    await expect(planningStep(f.operation)).resolves.toMatchObject({
+      status: "planning-pending-host-review",
+    });
+    const state = await f.read();
+    expect(state.workers[1]!.config.author).toMatchObject(first);
+    expect(f.calls.filter((call) => call === "launch:author")).toHaveLength(2);
+  },
+);
+
+it.each(
+  ["generation-change", "removed"].flatMap((change) =>
+    ["malformed", "dead"].map((status) => ({ change, status })),
+  ),
+)(
+  "retries a $status reviewer family worker with its stored placement after the registry is $change",
+  async ({ change, status }) => {
+    const f = await planningFamilyFixture();
+    f.setReviewStatus(status as "malformed" | "dead");
+    await planningStep(f.operation);
+    await planningStep(f.operation);
+    const first = (await f.read()).workers[1]!.config.reviewer;
+    await f.saveRegistry((registry) => {
+      if (change === "generation-change") {
+        registry.generation = 8;
+        registry.authorityDigest = "changed-registry";
+        registry.families.opus.current = "changed-opus";
+      } else {
+        delete registry.families.opus;
+      }
+    });
+    await expect(planningStep(f.operation)).resolves.toMatchObject({
+      status: "planning-pending-host-review",
+    });
+    const state = await f.read();
+    expect(state.workers[2]!.config.reviewer).toMatchObject(first);
+    expect(f.calls.filter((call) => call === "launch:reviewer")).toHaveLength(2);
+  },
+);
+
+it("excludes a probe-refused family reviewer and selects the next planning choice", async () => {
+  const f = await planningFamilyFixture();
+  f.operation.source.author = {
+    model: "gpt-6-astra",
+    effort: "high",
+    prompt: "implementation",
+    ladder: [{ model: "gpt-6-astra", effort: "high" }],
+  };
+  f.operation.source.reviewer = {
+    family: "opus",
+    effort: "high",
+    prompt: "review",
+    ladder: [
+      { family: "opus", effort: "high" },
+      { family: "sol", effort: "high" },
+    ],
+  };
+  const launch = f.operation.native.launch;
+  let refused = true;
+  f.operation.native.launch = async (role, config, prompt) => {
+    if (role === "reviewer" && refused) {
+      refused = false;
+      throw new QueueBlocked("provider-model-refused", "synthetic probe refusal");
+    }
+    return launch(role, config, prompt);
+  };
+  await planningStep(f.operation);
+  await expect(planningStep(f.operation)).resolves.toMatchObject({
+    status: "observing-planning-reviewer",
+  });
+  await expect(planningStep(f.operation)).resolves.toMatchObject({
+    status: "planning-accepted",
+  });
+  const state = await f.read();
+  expect(state.workers[1]!.refused).toBe(true);
+  expect(state.workers[2]!.config.reviewer).toMatchObject({
+    model: "gpt-6.1-sol",
+    family: "sol",
+    rung: 1,
+  });
+  expect(f.calls.filter((call) => call === "launch:reviewer")).toHaveLength(1);
+});
+
+const planningParticipant = (
+  id: string,
+  model: string,
+  role: "author" | "reviewer" = "reviewer",
+): QueueParticipant => ({
+  ordinal: 1,
+  id,
+  item: "ISS-002:1",
+  stage: "source",
+  role,
+  outcome: "passed",
+  placement: { model, effort: "medium" },
+  usage: {
+    inputTokens: { status: "unavailable" },
+    outputTokens: { status: "unavailable" },
+    costUsd: { status: "unavailable" },
+  },
+});
+
+it("filters a family reviewer choice that aliases an in-body repairer before any intent", async () => {
+  const f = await planningFamilyFixture();
+  f.operation.source.author = {
+    model: "gpt-6-astra",
+    effort: "high",
+    prompt: "implementation",
+    ladder: [{ model: "gpt-6-astra", effort: "high" }],
+  };
+  f.operation.source.reviewer = {
+    family: "opus",
+    effort: "high",
+    prompt: "review",
+    ladder: [
+      { family: "opus", effort: "high" },
+      { family: "sol", effort: "high" },
+    ],
+  };
+  f.history.push(planningParticipant("repairer", "claude-opus-5", "author"));
+  const output = proposal(f.input, "ISSUE");
+  output.briefs[0]!.participants = [{ id: "repairer", model: "claude-opus-5" }];
+  f.setProposal(output);
+  const launched: { role: string; config: Config }[] = [];
+  const launch = f.operation.native.launch;
+  f.operation.native.launch = async (role, config, prompt) => {
+    launched.push({ role, config: structuredClone(config) });
+    return launch(role, config, prompt);
+  };
+  await planningStep(f.operation);
+  await expect(planningStep(f.operation)).resolves.toMatchObject({
+    status: "planning-accepted",
+  });
+  expect(launched.map((row) => row.role)).toEqual(["author", "reviewer"]);
+  expect(launched[1]!.config.reviewer).toMatchObject({
+    model: "gpt-6.1-sol",
+    family: "sol",
+    generation: 7,
+    rung: 1,
+  });
+  const state = await f.read();
+  expect(state.workers).toHaveLength(2);
+  expect(state.workers[1]!.config.reviewer.model).toBe("gpt-6.1-sol");
+  expect(f.prompts[1]).toContain(
+    "Full-history independent reviewer selected, including unused author rungs.",
+  );
+});
+
+it.each([
+  {
+    label: "history",
+    prepare: (f: Awaited<ReturnType<typeof planningFamilyFixture>>) => {
+      f.history.push(planningParticipant("earlier-opus", "claude-opus-5-5"));
+    },
+  },
+  {
+    label: "a reserved literal author rung",
+    prepare: (f: Awaited<ReturnType<typeof planningFamilyFixture>>) => {
+      f.operation.source.author.ladder!.push({ model: "claude-opus-5", effort: "high" });
+    },
+  },
+  {
+    label: "a reserved family author rung against a literal reviewer ladder",
+    prepare: (f: Awaited<ReturnType<typeof planningFamilyFixture>>) => {
+      f.operation.source.author.ladder!.push({ family: "opus", effort: "high" });
+      f.operation.source.reviewer = {
+        model: "claude-opus-5",
+        effort: "high",
+        prompt: "review",
+        ladder: [
+          { model: "claude-opus-5", effort: "high" },
+          { model: "gpt-6.1-sol", effort: "high" },
+        ],
+      };
+    },
+  },
+])("deprioritizes a family reviewer choice that aliases $label", async ({ prepare }) => {
+  const f = await planningFamilyFixture();
+  f.operation.source.author = {
+    model: "gpt-6-astra",
+    effort: "high",
+    prompt: "implementation",
+    ladder: [{ model: "gpt-6-astra", effort: "high" }],
+  };
+  f.operation.source.reviewer = {
+    family: "opus",
+    effort: "high",
+    prompt: "review",
+    ladder: [
+      { family: "opus", effort: "high" },
+      { family: "sol", effort: "high" },
+    ],
+  };
+  prepare(f);
+  const launched: { role: string; config: Config }[] = [];
+  const launch = f.operation.native.launch;
+  f.operation.native.launch = async (role, config, prompt) => {
+    launched.push({ role, config: structuredClone(config) });
+    return launch(role, config, prompt);
+  };
+  await planningStep(f.operation);
+  await expect(planningStep(f.operation)).resolves.toMatchObject({
+    status: "planning-accepted",
+  });
+  expect(launched.map((row) => row.role)).toEqual(["author", "reviewer"]);
+  expect(launched[1]!.config.reviewer).toMatchObject({ model: "gpt-6.1-sol", rung: 1 });
+  const state = await f.read();
+  expect(state.workers).toHaveLength(2);
+  expect(state.workers[1]!.config.reviewer.model).toBe("gpt-6.1-sol");
+  expect(f.prompts[1]).toContain(
+    "Full-history independent reviewer selected, including unused author rungs.",
+  );
+});
+
+it("keeps a completed family planning state inert when the registry disappears", async () => {
+  const f = await planningFamilyFixture();
+  await planningStep(f.operation);
+  await planningStep(f.operation);
+  await planningStep(f.operation);
+  expect((await planningStep(f.operation)).status).toBe("planning-accepted");
+  await rm(f.registryPath);
+  const before = await snapshot(f.directory);
+  expect((await planningStep(f.operation)).status).toBe("planning-accepted");
+  expect(await snapshot(f.directory)).toEqual(before);
+  expect(f.calls.filter((call) => call.startsWith("launch:")).length).toBe(2);
 });
 
 it("retains malformed/dead partial drafts and spends only the shared retry", async () => {

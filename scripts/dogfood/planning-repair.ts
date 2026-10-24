@@ -8,6 +8,7 @@ import { QueueBlocked, readOptional, workerPrompt } from "./flow.ts";
 // @ts-expect-error Node 24 executes TypeScript directly.
 import { retainWorkerOutcome, validDefect } from "./outcome.ts";
 import { parseReview, validateLocations } from "./repair-policy.mjs";
+import { resolveRole, type ModelPlacement } from "./routing.mjs";
 import { bodyCriteria } from "../../adapters/chase-sets.mjs";
 import {
   extractAcceptanceCriteria,
@@ -335,6 +336,103 @@ export function planningModelIdentity(model: string | undefined) {
 }
 const placementModel = (placement: { model?: string; family?: string }) =>
   placement.model ?? placement.family ?? "";
+// Reviewer ladder identity stays on the configured selector after a family
+// placement is materialized. A concrete model is evidence for the request,
+// while family is the identity used to match the planning ladder.
+const placementLadderIdentity = (placement: { model?: string; family?: string }) =>
+  planningModelIdentity(placement.family ?? placement.model);
+const materializedPlacement = (placement: ModelPlacement): ModelPlacement => ({
+  ...(placement.model ? { model: placement.model } : {}),
+  effort: placement.effort,
+  ...(placement.family ? { family: placement.family } : {}),
+  ...(placement.generation === undefined ? {} : { generation: placement.generation }),
+  ...(placement.authorityDigest ? { authorityDigest: placement.authorityDigest } : {}),
+});
+const planningRolePlacement = (
+  base: Config[Role],
+  selected: ModelPlacement,
+  rung: number,
+): Config[Role] => {
+  const {
+    model: _model,
+    family: _family,
+    generation: _generation,
+    authorityDigest: _authorityDigest,
+    effort: _effort,
+    ...settings
+  } = base;
+  return { ...settings, ...selected, rung };
+};
+async function resolvePlanningRole(
+  config: Config,
+  role: Role,
+  rung: number,
+  authors: string[] = [],
+) {
+  // The selected role is the only placement being admitted here. Keep an
+  // invalid reviewer sibling from preventing an author from materializing;
+  // reviewer selection below still validates the complete row and refuses
+  // overlap before creating an intent.
+  const input =
+    role === "author"
+      ? {
+          ...config,
+          reviewer: {
+            ...config.reviewer,
+            model: "__planning-reviewer-placeholder__",
+            ladder: [
+              { model: "__planning-reviewer-placeholder__", effort: config.reviewer.effort },
+            ],
+          },
+        }
+      : config;
+  return resolveRole(input, role, rung, authors);
+}
+// Materialize every rung of both ladders at its own index through the shared
+// resolver before reviewer pre-selection, so family choices are compared with
+// authored, history and reserved identities as the concrete models they would
+// launch. An unavailable rung stays unresolved and is never selected; registry
+// failure refuses before any intent, charge or launch.
+async function materializedPlanningRow(config: Config, authors: string[]) {
+  const resolved: Record<Role, ({ rung: number; placement: ModelPlacement } | undefined)[]> = {
+    author: [],
+    reviewer: [],
+  };
+  let routingRefused = false;
+  for (const role of ["author", "reviewer"] as const) {
+    const ladder = config[role].ladder ?? [config[role]];
+    for (let index = 0; index < ladder.length; index++) {
+      try {
+        const selection = await resolvePlanningRole(
+          config,
+          role,
+          index,
+          role === "reviewer" ? authors : [],
+        );
+        resolved[role].push(selection.rung === index ? selection : undefined);
+      } catch (error) {
+        if (!(error instanceof QueueBlocked)) throw error;
+        if (error.reason === "model-registry-unavailable") throw error;
+        if (error.reason === "routing-reviewer-not-independent") routingRefused = true;
+        else if (error.reason !== "provider-model-refused") throw error;
+        resolved[role].push(undefined);
+      }
+    }
+  }
+  const ladder = (role: Role) =>
+    (config[role].ladder ?? [config[role]]).map(
+      (entry, index) => resolved[role][index]?.placement ?? entry,
+    );
+  return {
+    routingRefused,
+    reviewer: resolved.reviewer,
+    config: {
+      ...config,
+      author: { ...config.author, ladder: ladder("author") },
+      reviewer: { ...config.reviewer, ladder: ladder("reviewer") },
+    } satisfies Config,
+  };
+}
 export function planningReviewers(
   config: Config,
   history: QueueParticipant[],
@@ -609,20 +707,19 @@ export async function planningStep(operation: PlanningOperation): Promise<Planni
   if (!worker) {
     const authors = state.workers
       .filter((row) => row.intent.role === "author" && row.attempt)
-      .map((row) => ({ id: row.attempt!.id, model: row.config.author.model }));
+      .map((row) => ({
+        id: row.attempt!.id,
+        model: placementModel(row.attempt!.placement ?? row.config.author),
+      }));
     let placement = source.author;
     if (role === "reviewer") {
-      const choices = planningReviewers(
-        source,
-        [...state.input.history, ...(await operation.history())],
-        state.proposal!.participants,
-      );
+      const history = [...state.input.history, ...(await operation.history())];
       const refused = new Set(
         state.workers
           .filter(
             (row) => row.intent.role === "reviewer" && (row.refused || row.terminal?.modelRefused),
           )
-          .map((row) => row.config.reviewer.model),
+          .map((row) => placementLadderIdentity(row.config.reviewer)),
       );
       const priorReviewer = state.workers.findLast(
         (row) => row.intent.role === "reviewer" && row.config.worktree === workspace,
@@ -633,41 +730,89 @@ export async function planningStep(operation: PlanningOperation): Promise<Planni
         ["malformed", "dead"].includes(priorReviewer.terminal.status)
           ? priorReviewer.config.reviewer
           : undefined;
-      // Mechanical retries keep the admitted placement. Only explicit refusal
-      // may advance its ladder; growing history is not a new routing grant.
-      const choice = choices.find((row) =>
-        retryPlacement
-          ? row.placement.model === retryPlacement.model &&
-            row.placement.effort === retryPlacement.effort
-          : !refused.has(row.placement.model),
-      );
+      let choice: ReturnType<typeof planningReviewers>[number] | undefined;
+      let routingRefused = false;
+      if (retryPlacement) {
+        // Mechanical retries keep the admitted placement without re-resolution.
+        // Only explicit refusal may advance its ladder; growing history is not
+        // a new routing grant.
+        choice = planningReviewers(source, history, state.proposal!.participants).find(
+          (row) =>
+            placementLadderIdentity(row.placement) === placementLadderIdentity(retryPlacement) &&
+            row.placement.effort === retryPlacement.effort,
+        );
+        if (choice) placement = retryPlacement;
+      } else {
+        const materialized = await materializedPlanningRow(
+          source,
+          authors.map((author) => author.model).filter((model): model is string => !!model),
+        );
+        routingRefused = materialized.routingRefused;
+        // Pre-selection compares concrete identities: a family choice is
+        // filtered or deprioritized by the model it resolves to, exactly as a
+        // literal selector is, before any intent exists.
+        choice = planningReviewers(materialized.config, history, state.proposal!.participants).find(
+          (row) =>
+            materialized.reviewer[row.index] !== undefined &&
+            !refused.has(placementLadderIdentity(row.placement)),
+        );
+        if (choice) {
+          const resolved = materialized.reviewer[choice.index]!;
+          placement = planningRolePlacement(source.reviewer, resolved.placement, resolved.rung);
+        }
+      }
       if (!choice)
         return stop(
-          "PENDING_HOST_REVIEW: no admitted distinct planning reviewer is available. No CLI fallback or parking.",
+          `PENDING_HOST_REVIEW: no admitted distinct planning reviewer is available${routingRefused ? " (routing-reviewer-not-independent)" : ""}. No CLI fallback or parking.`,
           true,
         );
-      placement = { ...source.reviewer, ...choice.placement, rung: choice.index };
       state.diagnostic = choice.prior
         ? `Reviewer ${placement.model} participated earlier; exact-byte authors/repairers remain excluded.`
         : "Full-history independent reviewer selected, including unused author rungs.";
     } else {
-      const ladder = source.author.ladder ?? [source.author];
-      const failures = state.workers.filter(
-        (row) =>
-          row.intent.role === "author" &&
-          (row.refused || (row.terminal && row.terminal.status !== "passed")),
-      ).length;
-      const count = (await native.authorRung?.(source)) ?? (source.author.rung ?? 0) + failures;
-      if (
-        (state.workers.at(-1)?.refused || state.workers.at(-1)?.terminal?.modelRefused) &&
-        state.workers.at(-1)!.config.author.rung === ladder.length - 1
-      )
-        return stop("PENDING_HOST_REVIEW: admitted planning author placements exhausted.", true);
-      placement = {
-        ...source.author,
-        ...ladder[Math.min(count, ladder.length - 1)]!,
-        rung: Math.min(count, ladder.length - 1),
-      };
+      const priorAuthor = state.workers.findLast(
+        (row) => row.intent.role === "author" && row.config.worktree === workspace,
+      );
+      // Only a materialized family placement is reused on a mechanical retry;
+      // a literal ladder keeps its failure-count/authorRung advancement.
+      const retryPlacement =
+        priorAuthor?.terminal &&
+        !priorAuthor.terminal.modelRefused &&
+        ["malformed", "dead"].includes(priorAuthor.terminal.status) &&
+        priorAuthor.config.author.family
+          ? priorAuthor.config.author
+          : undefined;
+      if (retryPlacement) {
+        placement = retryPlacement;
+      } else {
+        const ladder = source.author.ladder ?? [source.author];
+        const failures = state.workers.filter(
+          (row) =>
+            row.intent.role === "author" &&
+            (row.refused || (row.terminal && row.terminal.status !== "passed")),
+        ).length;
+        const count = (await native.authorRung?.(source)) ?? (source.author.rung ?? 0) + failures;
+        if (
+          (state.workers.at(-1)?.refused || state.workers.at(-1)?.terminal?.modelRefused) &&
+          state.workers.at(-1)!.config.author.rung === ladder.length - 1
+        )
+          return stop("PENDING_HOST_REVIEW: admitted planning author placements exhausted.", true);
+        const rung = Math.min(count, ladder.length - 1);
+        let resolved: { rung: number; placement: ModelPlacement };
+        try {
+          resolved = await resolvePlanningRole(source, "author", rung);
+        } catch (error) {
+          if (error instanceof QueueBlocked && error.reason === "model-registry-unavailable")
+            throw error;
+          if (error instanceof QueueBlocked && error.reason === "provider-model-refused")
+            return stop(
+              "PENDING_HOST_REVIEW: admitted planning author placements exhausted (provider-model-refused). No CLI fallback or parking.",
+              true,
+            );
+          throw error;
+        }
+        placement = planningRolePlacement(source.author, resolved.placement, resolved.rung);
+      }
     }
     const workerDirectory = resolve(directory, `planning-worker-${state.workers.length + 1}`);
     await mkdir(workerDirectory, { recursive: true });
@@ -711,7 +856,7 @@ export async function planningStep(operation: PlanningOperation): Promise<Planni
       );
       worker.attempt = {
         ...launched,
-        placement: { model: placementModel(current[role]), effort: current[role].effort },
+        placement: materializedPlacement(current[role]),
         ...(current[role].rung === undefined ? {} : { rung: current[role].rung }),
         models: {
           author: placementModel(current.author),
