@@ -1153,12 +1153,20 @@
       "blockedBy": []
     },
     {
+      "key": "ISS-269",
+      "file": "planning/drafts/ISS-269.md",
+      "title": "Materialize planning family placements before worker launch",
+      "summary": "Resolve every new planning author and reviewer family placement through the shared registry resolver before launch or reservation, refuse null or invalid models fail-closed, and preserve all ladders, retained intents, budgets and verdict authority.",
+      "milestone": "M1",
+      "blockedBy": []
+    },
+    {
       "key": "ISS-267",
       "file": "planning/drafts/ISS-267.md",
       "title": "Prevent worker self-interrupts during silent heavy verification",
       "summary": "Add one author-only quiet heavy-command protocol and focused prompt regression, retaining host-attributed verification and all existing attempt, charge, retry, parking, review, and semantic-verdict authority.",
       "milestone": "M1",
-      "blockedBy": ["ISS-268"]
+      "blockedBy": ["ISS-268", "ISS-269"]
     },
     {
       "key": "ISS-262",
