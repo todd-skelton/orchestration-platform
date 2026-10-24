@@ -1169,6 +1169,14 @@
       "blockedBy": []
     },
     {
+      "key": "ISS-271",
+      "file": "planning/drafts/ISS-271.md",
+      "title": "Admit source-stage gate-stop continuation after a landed main repair",
+      "summary": "Admit only a pre-review source gate-stop continuation after its repair lands on fetched main, preserving the original stop, history, attempt and ceiling while refreshing, rerunning gates, and requiring the original complete review.",
+      "milestone": "M1",
+      "blockedBy": []
+    },
+    {
       "key": "ISS-267",
       "file": "planning/drafts/ISS-267.md",
       "title": "Prevent worker self-interrupts during silent heavy verification",
