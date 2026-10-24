@@ -662,6 +662,58 @@ it("prefers unused independent reviewers, discloses history fallback, and refuse
   expect(f.calls).not.toContain("launch:reviewer");
 });
 
+it("materializes planning family author and reviewer placements from the registry", async () => {
+  const f = await fixture();
+  f.operation.source.modelRegistry = resolve(import.meta.dirname, "fixtures/model-registry.json");
+  f.operation.source.author = {
+    family: "fable",
+    effort: "high",
+    prompt: "implementation",
+    ladder: [{ family: "fable", effort: "high" }],
+  };
+  f.operation.source.reviewer = {
+    family: "opus",
+    effort: "high",
+    prompt: "review",
+    ladder: [{ family: "opus", effort: "high" }],
+  };
+  const launched: { role: string; config: Config }[] = [];
+  const launch = f.operation.native.launch;
+  f.operation.native.launch = async (role, config, prompt) => {
+    launched.push({ role, config: structuredClone(config) });
+    return launch(role, config, prompt);
+  };
+
+  await planningStep(f.operation);
+  await planningStep(f.operation);
+  await planningStep(f.operation);
+
+  expect(launched[0]!.config.author).toMatchObject({
+    model: "claude-fable-5-1",
+    family: "fable",
+    generation: 7,
+    authorityDigest: "synthetic-registry",
+    rung: 0,
+  });
+  expect(launched[1]!.config.reviewer).toMatchObject({
+    model: "claude-opus-5-5",
+    family: "opus",
+    generation: 7,
+    authorityDigest: "synthetic-registry",
+    rung: 0,
+  });
+  const state = await f.read();
+  expect(state.workers[0]!.config.author).toMatchObject({ model: "claude-fable-5-1" });
+  expect(state.workers[0]!.attempt).toMatchObject({
+    placement: {
+      model: "claude-fable-5-1",
+      family: "fable",
+      generation: 7,
+      authorityDigest: "synthetic-registry",
+    },
+  });
+});
+
 it("retains malformed/dead partial drafts and spends only the shared retry", async () => {
   const f = await fixture();
   f.setStatus("malformed");

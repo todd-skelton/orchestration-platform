@@ -97,6 +97,19 @@ it.each(["win32", "linux", "darwin"] as const)(
     }
   },
 );
+it("refuses an unmaterialized native model before admission or artifact writes", async () => {
+  const stateDirectory = await mkdtemp(resolve(tmpdir(), "unmaterialized-launch-"));
+  const current = {
+    ...config,
+    stateDirectory,
+    author: { ...config.author, model: " " },
+  };
+  await expect(codexAdapter().launch("author", current, "prompt")).rejects.toMatchObject({
+    reason: "launch-model-unmaterialized",
+  });
+  await expect(readdir(stateDirectory)).resolves.toEqual([]);
+  await rm(stateDirectory, { recursive: true, force: true });
+});
 const locationNames = [
   "APPDATA",
   "CODEX_HOME",

@@ -605,6 +605,10 @@ export function codexAdapter(gitExecutable = "git", now = Date.now): Adapter {
         check(help.includes(flag), "incompatible-codex-cli");
     },
     async launch(role, config, prompt) {
+      check(
+        typeof config[role].model === "string" && config[role].model.trim().length > 0,
+        "launch-model-unmaterialized",
+      );
       await admitLaunch(config, role);
       const launch = randomUUID();
       await writeFile(artifact(config, role, launch, "prompt.txt"), prompt, { flag: "wx" });
