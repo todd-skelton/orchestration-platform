@@ -1005,6 +1005,63 @@ To add work: write the draft, register it, create the issue with that body and
 milestone, add it to the project, label it `ready` when unblocked. To park
 work: close the issue with a note; leave nothing registered.
 
+### Host planning review grant
+
+A planning recovery stopped as `PENDING_HOST_REVIEW` because its latest author
+launch died or was malformed after the shared mechanical retry remains inert
+until the host writes one exclusive `host-planning-review/v1` JSON grant at
+`<attempt directory>/host-planning-review.json`, beside the retained
+`planning-recovery.json` (ISS-270). The grant's exact keys bind the repository,
+issue key and URL, run, absolute recovery path and recovery bytes, the pinned
+`cycle-<n>-selected.json` and source `config.json` digests, the current main,
+every retained failed launch (`deadAttempts`: attempt id, `dead` or
+`malformed`, and the SHA-256 of its `<role>-terminal.json` bytes), the outcome
+digest, the retained external census identity, the owning-issue body digest
+(`decisionSha256`), the planning level, a history digest recomputed from the
+retained workers plus native participant history
+(`planningHistoryDigest`), a verdict identity and a one-time consumption
+identity. Existing host-grant authority applies: `authorityUrl` names an
+immutable owning-issue comment, and `authorityAuthor` and
+`authorityBodySha256` bind its author and body. Host-side planning lineage is
+attested in that hash-bound body, never claimed as loop-verified.
+
+Consumption is read-only until it writes. It validates the grant's closed
+schema (`host-verdict-malformed`), refuses a spent grant or consumption
+identity (`host-verdict-duplicate`), hashes the retained records and acquires
+fresh planning input, refuses a grant whose main is not current main
+(`host-verdict-stale`) and any other binding difference
+(`host-verdict-mismatch`), then captures the authority comment through
+`observeIntegrationAuthority`; an unreadable comment or planning authority is
+`host-verdict-authority-unavailable`, a capture whose id, URL, author or body
+hash differs is `host-verdict-forged`, and an unreadable grant or retained
+record is `host-verdict-unavailable`. An absent grant beside a consumable
+pending state is `host-verdict-missing`. A pending state whose latest launch is
+not a failed author keeps its ordinary `planning-review-required` yield and
+refuses any grant as mismatch. Every refusal performs no launch, charge,
+reservation or retained-record edit.
+
+Before anything is reserved, the retained failed author's placement is
+materialized: an already concrete placement is reused without re-resolution
+(ISS-269), while a pre-ISS-269 family-only placement resolves once at its
+retained family, effort and rung through the planning resolver. Resolver
+refusal stops as `provider-model-refused`, and a missing registry as
+`model-registry-unavailable`, with no intent, worker directory or write. The
+consumption then records the grant digest, consumption identity, retained
+author, materialized placement and authority capture in the recovery, moves
+only the planning state to `pending-author`, and launches that placement once
+at the granted main. A changed census or main supersedes the old input and
+continues in a new drafts workspace; the old workers, terminals, `retryUsed`,
+level, outcome and accounting stay byte-identical, and the retry is never
+refunded. A later dead author re-enters `PENDING_HOST_REVIEW`; the spent grant
+is refused as duplicate, and a new grant bound to the changed recovery, all
+failed launches and a new consumption identity may be consumed again within
+the issue's native launch allowance. Repeated observation of the consumed
+state is inert. No planning placement, author or reviewer intent is saved
+without a concrete model and effort (plus family, generation and authority
+digest for a family placement); an unmaterialized placement stops as
+`PENDING_HOST_REVIEW` before any intent. This is neither a manual resume nor a
+heavy-verifier lane.
+
 ### Pinned self selection
 
 Before each fresh self selection, supervision fetches current main and pins one

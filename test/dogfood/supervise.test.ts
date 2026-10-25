@@ -17,7 +17,12 @@ import { tmpdir } from "node:os";
 import { dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, expect, it } from "vitest";
-import { executorUpgrade, upgradeBoundary } from "../../scripts/dogfood/supervise.mjs";
+import {
+  executorUpgrade,
+  planningStop,
+  upgradeBoundary,
+} from "../../scripts/dogfood/supervise.mjs";
+import { classifyStop, parksItem } from "../../scripts/dogfood/fault-class.js";
 import { nextCycle, persistCycle, completeCycle } from "../../scripts/dogfood/supervision.js";
 import type { LoopConfig } from "../../scripts/dogfood/queue.js";
 import type { RepositoryAdapter } from "../../scripts/dogfood/repository-adapter.js";
@@ -1609,4 +1614,76 @@ it("a supervisor that fails to start ends the parent with a diagnostic", async (
   expect(code).toBe(1);
   expect(record.startFailure).toContain("ENOENT");
   expect(record.exit).toBeNull();
+});
+
+// ISS-270: the supervisor's planning yield mapping. A pending host review names
+// its typed grant refusal only when the diagnostic carries one; every other
+// pending yield keeps planning-review-required. None of them park.
+const hostVerdicts = [
+  "host-verdict-missing",
+  "host-verdict-malformed",
+  "host-verdict-unavailable",
+  "host-verdict-stale",
+  "host-verdict-mismatch",
+  "host-verdict-forged",
+  "host-verdict-duplicate",
+  "host-verdict-authority-unavailable",
+];
+it.each(hostVerdicts)(
+  "planning review: a pending yield diagnosed %s stops with that non-parking reason",
+  (reason) => {
+    const stop = planningStop({
+      status: "planning-pending-host-review",
+      recovery: "/state/run/iss-1-attempt-3/planning-recovery.json",
+      diagnostic: `${reason}: selectionSha256 differ; retained planning recovery is unchanged.`,
+    });
+    expect(stop.reason).toBe(reason);
+    expect(stop.diagnostics).toBe(
+      `${reason}: selectionSha256 differ; retained planning recovery is unchanged. Recovery: /state/run/iss-1-attempt-3/planning-recovery.json`,
+    );
+    expect(["wait", "retry"]).toContain(classifyStop(reason).faultClass);
+    expect(parksItem(reason)).toBe(false);
+  },
+);
+
+it.each([
+  ["planning-pending-host-review", undefined, "planning-review-required"],
+  [
+    "planning-pending-host-review",
+    "PENDING_HOST_REVIEW: no admitted distinct planning reviewer is available. No CLI fallback or parking.",
+    "planning-review-required",
+  ],
+  [
+    "planning-pending-host-review",
+    "PENDING_HOST_REVIEW: planning author dead; shared mechanical retry consumed. Partial drafts and charged native history retained.",
+    "planning-review-required",
+  ],
+  [
+    "planning-pending-host-review",
+    "Planning authority unavailable; retained work and review are unchanged: host-verdict-missing",
+    "planning-review-required",
+  ],
+  ["planning-pending-host-review", "host-verdict-unknown-kind", "host-verdict-unknown-kind"],
+  [
+    "planning-accepted",
+    "host-verdict-missing: ignored on acceptance",
+    "planning-application-pending",
+  ],
+  ["planning-rejected", "host-verdict-missing: ignored on rejection", "planning-repair-rejected"],
+] as const)("planning review: %s with diagnostic %j maps to %s", (status, diagnostic, reason) => {
+  const stop = planningStop({
+    status,
+    recovery: "/state/recovery.json",
+    ...(diagnostic === undefined ? {} : { diagnostic }),
+  });
+  expect(stop.reason).toBe(reason);
+  expect(stop.diagnostics).toBe(
+    `${diagnostic ?? "Planning handoff"} Recovery: /state/recovery.json`.slice(0, 500),
+  );
+  expect(stop.diagnostics!.length).toBeLessThanOrEqual(500);
+});
+
+it("planning review: an unknown host-verdict kind cannot be classified and therefore halts rather than parks", () => {
+  expect(classifyStop("host-verdict-unknown-kind").faultClass).toBe("halt");
+  expect(parksItem("host-verdict-unknown-kind")).toBe(false);
 });

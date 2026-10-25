@@ -6472,6 +6472,51 @@ export function repositoryQueueAdapter(
           ],
         }));
         const candidate = await optionalRecord(item.source.stateDirectory, "candidate");
+        const configEvidence = evidence.find(
+          (row) => row.path === resolve(item.source.stateDirectory, "config.json"),
+        );
+        // ISS-270: the host grant binds the latest pinned selection of this issue
+        // in the run. The first same-issue record decides; a malformed one, or a
+        // selection whose pin disagrees with its base, leaves the binding absent
+        // rather than falling through to an older cycle.
+        let selectionSha256: string | undefined;
+        const cycleFiles = await readdir(runRoot, { withFileTypes: true }).catch(() => []);
+        for (const entry of cycleFiles
+          .filter((row) => /^cycle-[1-9]\d*-selected\.json$/.test(row.name))
+          .sort(
+            (a, b) =>
+              Number(b.name.match(/^cycle-(\d+)-/)?.[1] ?? 0) -
+              Number(a.name.match(/^cycle-(\d+)-/)?.[1] ?? 0),
+          )) {
+          let bytes: Buffer;
+          let value: any;
+          try {
+            bytes = await readFile(resolve(runRoot, entry.name));
+            value = JSON.parse(bytes.toString("utf8"));
+          } catch {
+            break;
+          }
+          if (!value || typeof value !== "object" || value.key !== key || value.number !== number)
+            continue;
+          const keys = [
+            "cycle",
+            "key",
+            "number",
+            "base",
+            ...(Object.hasOwn(value, "planningRevision") ? ["planningRevision"] : []),
+            ...(Object.hasOwn(value, "routing") ? ["routing"] : []),
+          ];
+          if (
+            Object.keys(value).length === keys.length &&
+            keys.every((name) => Object.hasOwn(value, name)) &&
+            Number.isSafeInteger(value.cycle) &&
+            value.cycle > 0 &&
+            /^[a-f0-9]{40}$/.test(value.base) &&
+            (!Object.hasOwn(value, "planningRevision") || value.planningRevision === value.base)
+          )
+            selectionSha256 = createHash("sha256").update(bytes).digest("hex");
+          break;
+        }
         return {
           observationStart,
           observationEnd: new Date().toISOString(),
@@ -6484,6 +6529,15 @@ export function repositoryQueueAdapter(
           history,
           branch: item.setup.sourceBranch,
           head: outcome.value.head ?? (candidate === ABSENT ? item.source.base : candidate.head),
+          ...(configEvidence && selectionSha256
+            ? {
+                binding: {
+                  selectionSha256,
+                  configSha256: configEvidence.sha256,
+                  decisionSha256: createHash("sha256").update(authority.context.body).digest("hex"),
+                },
+              }
+            : {}),
         };
       };
       const bounded = boundedNative(item, "planning");
@@ -6506,6 +6560,8 @@ export function repositoryQueueAdapter(
         history: readHistory,
         terminal: (role, attempt, terminal) =>
           syncParticipant(item, "planning", role, attempt, terminal),
+        issueKey: key,
+        ...(options.observeAuthority ? { observeAuthority: options.observeAuthority } : {}),
       });
     },
     async assertExecutor() {

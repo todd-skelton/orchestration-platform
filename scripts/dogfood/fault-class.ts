@@ -77,6 +77,7 @@ export const stopRules: readonly StopRule[] = [
       "merge-unconfirmed-reconcile-before-retry",
       "terminal-attempt-admission-authority-unavailable",
       "integration-continuation-authority-unavailable",
+      "host-verdict-authority-unavailable",
     ],
   },
   {
@@ -101,6 +102,13 @@ export const stopRules: readonly StopRule[] = [
       // Recovery needs issue/admission inspection, not just another read.
       "completed-issue-state-unknown",
       "merge-queue-admission-unconfirmed",
+      "host-verdict-missing",
+      "host-verdict-malformed",
+      "host-verdict-unavailable",
+      "host-verdict-stale",
+      "host-verdict-mismatch",
+      "host-verdict-forged",
+      "host-verdict-duplicate",
     ],
   },
   {
