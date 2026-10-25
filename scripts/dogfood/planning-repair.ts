@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { lstat, mkdir, readFile, readdir, rename, writeFile } from "node:fs/promises";
-import { resolve } from "node:path";
+import { isAbsolute, resolve } from "node:path";
 import type { Adapter, Attempt, Config, Role, Terminal } from "./flow.js";
 import type { QueueParticipant } from "./queue.js";
 // @ts-expect-error Node 24 executes TypeScript directly.
@@ -51,7 +51,7 @@ export interface PlanningInput {
   binding?: {
     selectionSha256: string;
     configSha256: string;
-    decisionSha256?: string;
+    decisionSha256: string;
   };
 }
 export interface PlanningBrief {
@@ -77,7 +77,7 @@ export interface PlanningProposal {
   briefs: PlanningBrief[];
 }
 const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
-const bodyHash = (value: string) => createHash("sha256").update(value).digest("hex");
+const bodyHash = (value: string | Buffer) => createHash("sha256").update(value).digest("hex");
 const levels: PlanningLevel[] = ["ISSUE", "SET", "EPIC"];
 const bound = (value: unknown, cap = 16000): value is string =>
   typeof value === "string" && value.trim().length > 0 && value.length <= cap;
@@ -509,6 +509,9 @@ interface Recovery {
     grantSha256: string;
     consumptionIdentity: string;
     consumedAt: string;
+    /** The failed author whose retained placement the next launch materializes. */
+    retainedAuthor: string;
+    placement: ModelPlacement & { rung: number };
     authority: { id: string; url: string; author: string; bodySha256: string; capturedAt: string };
   };
   consumedHostReviewIdentities?: string[];
@@ -525,7 +528,7 @@ export interface HostPlanningReview {
   selectionSha256: string;
   configSha256: string;
   main: string;
-  deadAttempts: { id: string; status: "dead"; terminalSha256: string }[];
+  deadAttempts: { id: string; status: "dead" | "malformed"; terminalSha256: string }[];
   outcomeSha256: string;
   externalIdentitySha256: string;
   decisionSha256: string;
@@ -537,6 +540,29 @@ export interface HostPlanningReview {
   authorityAuthor: string;
   authorityBodySha256: string;
 }
+export const HOST_PLANNING_REVIEW_KEYS = Object.freeze([
+  "schemaVersion",
+  "repository",
+  "issueKey",
+  "issueUrl",
+  "run",
+  "recoveryPath",
+  "recoverySha256",
+  "selectionSha256",
+  "configSha256",
+  "main",
+  "deadAttempts",
+  "outcomeSha256",
+  "externalIdentitySha256",
+  "decisionSha256",
+  "level",
+  "historySha256",
+  "verdictIdentity",
+  "consumptionIdentity",
+  "authorityUrl",
+  "authorityAuthor",
+  "authorityBodySha256",
+] as const satisfies readonly (keyof HostPlanningReview)[]);
 
 const isDigest = (value: unknown): value is string =>
   typeof value === "string" && /^[a-f0-9]{64}$/.test(value);
@@ -544,69 +570,73 @@ const isSha = (value: unknown): value is string =>
   typeof value === "string" && /^[a-f0-9]{40}$/.test(value);
 const isName = (value: unknown): value is string =>
   typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}$/.test(value);
+const failedLaunch = (worker: Worker) =>
+  !!worker.terminal && ["dead", "malformed"].includes(worker.terminal.status);
 
 export function validateHostPlanningReview(value: unknown): asserts value is HostPlanningReview {
   const candidate = value as any;
-  check(
-    closed(value, [
-      "schemaVersion",
-      "repository",
-      "issueKey",
-      "issueUrl",
-      "run",
-      "recoveryPath",
-      "recoverySha256",
-      "selectionSha256",
-      "configSha256",
-      "main",
-      "deadAttempts",
-      "outcomeSha256",
-      "externalIdentitySha256",
-      "decisionSha256",
-      "level",
-      "historySha256",
-      "verdictIdentity",
-      "consumptionIdentity",
-      "authorityUrl",
-      "authorityAuthor",
-      "authorityBodySha256",
-    ]) &&
-      candidate.schemaVersion === "host-planning-review/v1" &&
-      typeof candidate.repository === "string" &&
-      /^[\w.-]+\/[\w.-]+$/.test(candidate.repository) &&
-      isName(candidate.issueKey) &&
-      typeof candidate.issueUrl === "string" &&
-      candidate.issueUrl.startsWith(`https://github.com/${candidate.repository}/issues/`) &&
-      isName(candidate.run) &&
-      typeof candidate.recoveryPath === "string" &&
-      isDigest(candidate.recoverySha256) &&
-      isDigest(candidate.selectionSha256) &&
-      isDigest(candidate.configSha256) &&
-      isSha(candidate.main) &&
-      Array.isArray(candidate.deadAttempts) &&
-      candidate.deadAttempts.length === 2 &&
+  const requireGrant = (condition: unknown, detail: string) => {
+    if (!condition) throw new QueueBlocked("host-verdict-malformed", detail);
+  };
+  requireGrant(closed(value, [...HOST_PLANNING_REVIEW_KEYS]), "exact host-planning-review/v1 keys");
+  requireGrant(candidate.schemaVersion === "host-planning-review/v1", "schemaVersion");
+  requireGrant(
+    typeof candidate.repository === "string" && /^[\w.-]+\/[\w.-]+$/.test(candidate.repository),
+    "repository",
+  );
+  requireGrant(isName(candidate.issueKey), "issueKey");
+  requireGrant(
+    typeof candidate.issueUrl === "string" &&
+      new RegExp(
+        `^https://github\\.com/${candidate.repository.replace(/[.]/g, "\\.")}/issues/[1-9]\\d*$`,
+      ).test(candidate.issueUrl),
+    "issueUrl",
+  );
+  requireGrant(isName(candidate.run), "run");
+  requireGrant(
+    typeof candidate.recoveryPath === "string" && isAbsolute(candidate.recoveryPath),
+    "recoveryPath",
+  );
+  for (const key of [
+    "recoverySha256",
+    "selectionSha256",
+    "configSha256",
+    "outcomeSha256",
+    "externalIdentitySha256",
+    "decisionSha256",
+    "historySha256",
+    "authorityBodySha256",
+  ] as const)
+    requireGrant(isDigest(candidate[key]), key);
+  requireGrant(isSha(candidate.main), "main");
+  requireGrant(
+    Array.isArray(candidate.deadAttempts) &&
+      candidate.deadAttempts.length > 0 &&
+      candidate.deadAttempts.length <= 64 &&
       candidate.deadAttempts.every(
         (row: any) =>
           closed(row, ["id", "status", "terminalSha256"]) &&
           isName(row.id) &&
-          row.status === "dead" &&
+          ["dead", "malformed"].includes(row.status) &&
           isDigest(row.terminalSha256),
       ) &&
-      new Set(candidate.deadAttempts.map((row: any) => row.id)).size === 2 &&
-      isDigest(candidate.outcomeSha256) &&
-      isDigest(candidate.externalIdentitySha256) &&
-      isDigest(candidate.decisionSha256) &&
-      levels.includes(candidate.level) &&
-      isDigest(candidate.historySha256) &&
-      isName(candidate.verdictIdentity) &&
-      isName(candidate.consumptionIdentity) &&
-      /^https:\/\/github\.com\/[\w.-]+\/[\w.-]+\/issues\/[1-9]\d*#issuecomment-[1-9]\d*$/.test(
-        candidate.authorityUrl,
-      ) &&
-      typeof candidate.authorityAuthor === "string" &&
-      /^[A-Za-z0-9][A-Za-z0-9-]{0,63}$/.test(candidate.authorityAuthor) &&
-      isDigest(candidate.authorityBodySha256),
-    "host-verdict-malformed",
+      new Set(candidate.deadAttempts.map((row: any) => row.id)).size ===
+        candidate.deadAttempts.length,
+    "deadAttempts",
+  );
+  requireGrant(levels.includes(candidate.level), "level");
+  requireGrant(isName(candidate.verdictIdentity), "verdictIdentity");
+  requireGrant(isName(candidate.consumptionIdentity), "consumptionIdentity");
+  requireGrant(
+    typeof candidate.authorityUrl === "string" &&
+      candidate.authorityUrl.startsWith(`${candidate.issueUrl}#issuecomment-`) &&
+      /#issuecomment-[1-9]\d*$/.test(candidate.authorityUrl),
+    "authorityUrl",
+  );
+  requireGrant(
+    typeof candidate.authorityAuthor === "string" &&
+      /^[A-Za-z0-9][A-Za-z0-9-]{0,63}$/.test(candidate.authorityAuthor),
+    "authorityAuthor",
   );
 }
 const instructions = `Write one finite planning-repair/v1 JSON proposal in proposal.json. Its exact keys are schemaVersion, level, disposition, reason, approach, productQuestion, lineages, coverage, briefs.
@@ -630,121 +660,155 @@ async function save(path: string, value: unknown) {
   await rename(`${path}.next`, path);
 }
 
-function terminalDigest(state: Recovery, worker: Worker) {
-  if (!worker.terminal) return undefined;
-  const path = resolve(worker.config.stateDirectory, `${worker.intent.role}-terminal.json`);
-  return (
-    state.input.evidence.find((record) => record.path === path)?.sha256 ?? digest(worker.terminal)
-  );
-}
-
-function planningHistoryDigest(state: Recovery, history: QueueParticipant[]) {
+// The host recomputes this from the retained recovery plus the run's native
+// participant history; retained planning workers are bound by attempt identity.
+export function planningHistoryDigest(
+  recovery: { input: Pick<PlanningInput, "history">; workers: { attempt?: { id: string } }[] },
+  history: QueueParticipant[],
+) {
   const merged = new Map<string, QueueParticipant>();
-  for (const participant of [...state.input.history, ...history])
+  for (const participant of [...recovery.input.history, ...history])
     merged.set(participant.id, participant);
-  return digest([...merged.values()]);
+  return digest({
+    workers: recovery.workers.map((worker) => worker.attempt?.id ?? null),
+    participants: [...merged.values()],
+  });
+}
+// Keep old inputs, artifacts, verdicts and workers as evidence. A new workspace
+// prevents a stale proposal/PASS from supplying the new derivation.
+function supersede(state: Recovery, input: PlanningInput) {
+  (state.superseded ??= []).push({
+    input: state.input,
+    state: state.state,
+    ...(state.proposal ? { proposal: state.proposal } : {}),
+    ...(state.review ? { review: state.review } : {}),
+    ...(state.diagnostic ? { diagnostic: state.diagnostic } : {}),
+  });
+  state.input = input;
+  delete state.proposal;
+  delete state.review;
+  delete state.nextLevel;
 }
 
+type HostReviewOutcome =
+  "inapplicable" | "absent" | "consumed" | { reason: string; detail: string };
+// One host-written grant beside planning-recovery.json continues a pending state
+// whose latest launch is a failed author. Every refusal leaves the recovery
+// byte-identical and performs no launch, charge or reservation.
 async function consumeHostPlanningReview(
   operation: PlanningOperation,
   state: Recovery,
   recoveryPath: string,
-): Promise<"absent" | "consumed" | "replayed" | { reason: string }> {
+): Promise<HostReviewOutcome> {
   const grantPath = resolve(operation.directory, "host-planning-review.json");
-  let raw: string;
+  const retainedAuthor = state.workers.at(-1);
+  const consumable =
+    !!retainedAuthor?.attempt &&
+    retainedAuthor.intent.role === "author" &&
+    failedLaunch(retainedAuthor) &&
+    !state.proposal;
+  let raw: Buffer;
   try {
-    if (!(await lstat(grantPath)).isFile()) return { reason: "host-verdict-malformed" };
-    raw = await readFile(grantPath, "utf8");
+    raw = await readFile(grantPath);
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return "absent";
-    return { reason: "host-verdict-unavailable" };
+    if ((error as NodeJS.ErrnoException).code === "ENOENT")
+      return consumable ? "absent" : "inapplicable";
+    return { reason: "host-verdict-unavailable", detail: `${grantPath} is unreadable` };
   }
+  if (!consumable)
+    return {
+      reason: "host-verdict-mismatch",
+      detail: "the retained pending state has no failed author launch to continue",
+    };
   const grantSha256 = bodyHash(raw);
-  if (state.hostReview?.grantSha256 === grantSha256) return "replayed";
   let grant: HostPlanningReview;
   try {
-    grant = JSON.parse(raw);
+    grant = JSON.parse(raw.toString("utf8"));
     validateHostPlanningReview(grant);
   } catch (error) {
     return {
-      reason: error instanceof QueueBlocked ? error.reason : "host-verdict-malformed",
+      reason: "host-verdict-malformed",
+      detail: error instanceof QueueBlocked ? (error.diagnostics ?? "") : "not a JSON object",
     };
   }
   if (
-    state.hostReview?.consumptionIdentity === grant.consumptionIdentity ||
+    state.hostReview?.grantSha256 === grantSha256 ||
     state.consumedHostReviewIdentities?.includes(grant.consumptionIdentity)
   )
-    return { reason: "host-verdict-mismatch" };
-  let recoveryBytes: string;
+    return {
+      reason: "host-verdict-duplicate",
+      detail: `consumption ${grant.consumptionIdentity} was already spent`,
+    };
+  let recoveryBytes: Buffer;
   let currentHistory: QueueParticipant[];
+  let failedRows: { worker: Worker; terminalSha256: string }[];
   try {
-    recoveryBytes = await readFile(recoveryPath, "utf8");
+    recoveryBytes = await readFile(recoveryPath);
     currentHistory = await operation.history();
-  } catch {
-    return { reason: "host-verdict-unavailable" };
+    failedRows = await Promise.all(
+      state.workers.filter(failedLaunch).map(async (worker) => ({
+        worker,
+        terminalSha256: bodyHash(
+          await readFile(
+            resolve(worker.config.stateDirectory, `${worker.intent.role}-terminal.json`),
+          ),
+        ),
+      })),
+    );
+  } catch (error) {
+    return { reason: "host-verdict-unavailable", detail: String(error) };
   }
   let fresh: PlanningInput;
   try {
     fresh = await operation.acquire();
-  } catch {
-    return { reason: "host-verdict-authority-unavailable" };
+  } catch (error) {
+    return { reason: "host-verdict-authority-unavailable", detail: String(error) };
   }
-  const issueUrl = operation.source.issue;
   const issueKey =
     operation.issueKey ?? operation.source.issue.match(/issues\/([^/?#]+)$/)?.[1] ?? "";
   const expectedIdentity = externalIdentity(state.input, state.proposal);
-  const freshIdentity = externalIdentity(fresh, state.proposal);
-  const deadRows = state.workers
-    .filter((worker) => worker.terminal?.status === "dead")
-    .map((worker) =>
-      Object.fromEntries([
-        ["id", worker.attempt?.id],
-        ["status", worker.terminal?.status],
-        ["terminalSha256", terminalDigest(state, worker)],
-      ]),
-    );
-  const deadMatches =
-    deadRows.length === 2 &&
-    grant.deadAttempts.every((row) =>
-      deadRows.some(
-        (candidate) =>
-          candidate.id === row.id &&
-          candidate.status === row.status &&
-          candidate.terminalSha256 === row.terminalSha256,
-      ),
-    );
-  const historyDigest = planningHistoryDigest(state, currentHistory);
-  const binding = fresh.binding ?? state.input.binding;
-  const decisionMatches =
-    typeof binding?.decisionSha256 === "string" && grant.decisionSha256 === binding.decisionSha256;
-  const bindingMatches =
-    !!binding &&
-    grant.selectionSha256 === binding.selectionSha256 &&
-    grant.configSha256 === binding.configSha256;
-  if (
-    grant.repository !== operation.source.repository ||
-    grant.issueKey !== issueKey ||
-    grant.issueUrl !== issueUrl ||
-    grant.run !== operation.source.run ||
-    grant.recoveryPath !== recoveryPath ||
-    grant.recoverySha256 !== bodyHash(recoveryBytes) ||
-    grant.main !== fresh.main ||
-    !bindingMatches ||
-    !deadMatches ||
-    grant.outcomeSha256 !== state.outcome.sha256 ||
-    grant.externalIdentitySha256 !== expectedIdentity ||
-    grant.level !== state.level ||
-    grant.historySha256 !== historyDigest ||
-    !decisionMatches
-  )
-    return { reason: grant.main !== fresh.main ? "host-verdict-stale" : "host-verdict-mismatch" };
+  const bindings: [string, boolean][] = [
+    ["repository", grant.repository === operation.source.repository],
+    ["issueKey", grant.issueKey === issueKey],
+    ["issueUrl", grant.issueUrl === operation.source.issue],
+    ["run", grant.run === operation.source.run],
+    ["recoveryPath", grant.recoveryPath === recoveryPath],
+    ["recoverySha256", grant.recoverySha256 === bodyHash(recoveryBytes)],
+    ["selectionSha256", grant.selectionSha256 === fresh.binding?.selectionSha256],
+    ["configSha256", grant.configSha256 === fresh.binding?.configSha256],
+    [
+      "deadAttempts",
+      grant.deadAttempts.length === failedRows.length &&
+        grant.deadAttempts.every((row) =>
+          failedRows.some(
+            (retained) =>
+              retained.worker.attempt?.id === row.id &&
+              retained.worker.terminal!.status === row.status &&
+              retained.terminalSha256 === row.terminalSha256,
+          ),
+        ),
+    ],
+    ["outcomeSha256", grant.outcomeSha256 === state.outcome.sha256],
+    ["externalIdentitySha256", grant.externalIdentitySha256 === expectedIdentity],
+    ["decisionSha256", grant.decisionSha256 === fresh.binding?.decisionSha256],
+    ["level", grant.level === state.level],
+    ["historySha256", grant.historySha256 === planningHistoryDigest(state, currentHistory)],
+  ];
+  if (grant.main !== fresh.main)
+    return {
+      reason: "host-verdict-stale",
+      detail: `grant main ${grant.main} is not current main ${fresh.main}`,
+    };
+  const mismatched = bindings.filter(([, matches]) => !matches).map(([name]) => name);
+  if (mismatched.length)
+    return { reason: "host-verdict-mismatch", detail: `${mismatched.join(", ")} differ` };
   let authority: Awaited<ReturnType<typeof observeIntegrationAuthority>>;
   try {
     authority = await (operation.observeAuthority ?? observeIntegrationAuthority)(
       grant.authorityUrl,
     );
-  } catch {
-    return { reason: "host-verdict-authority-unavailable" };
+  } catch (error) {
+    return { reason: "host-verdict-authority-unavailable", detail: String(error) };
   }
   if (
     authority.url !== grant.authorityUrl ||
@@ -753,25 +817,39 @@ async function consumeHostPlanningReview(
     typeof authority.body !== "string" ||
     bodyHash(authority.body) !== grant.authorityBodySha256
   )
-    return { reason: "host-verdict-forged" };
-  // A changed census is a new derivation at the same pinned main. Preserve the
-  // old evidence in superseded and let the ordinary author path continue.
-  if (freshIdentity !== expectedIdentity) {
-    (state.superseded ??= []).push({
-      input: state.input,
-      state: state.state,
-      ...(state.proposal ? { proposal: state.proposal } : {}),
-      ...(state.review ? { review: state.review } : {}),
-      ...(state.diagnostic ? { diagnostic: state.diagnostic } : {}),
-    });
-    state.input = fresh;
-    delete state.proposal;
-    delete state.review;
+    return {
+      reason: "host-verdict-forged",
+      detail: "the captured authority comment does not match the grant",
+    };
+  // Materialize the retained author placement before anything is reserved. An
+  // already materialized placement is reused (ISS-269); a family-only one
+  // resolves once at its retained rung, and resolver refusal writes nothing.
+  const retained = retainedAuthor!.config.author;
+  const rung = retained.rung ?? 0;
+  let placement: ModelPlacement & { rung: number };
+  if (retained.model) placement = { ...materializedPlacement(retained), rung };
+  else {
+    const resolved = await resolvePlanningRole(operation.source, "author", rung);
+    if (
+      resolved.rung !== rung ||
+      resolved.placement.family !== retained.family ||
+      resolved.placement.effort !== retained.effort
+    )
+      throw new QueueBlocked(
+        "provider-model-refused",
+        `Retained planning author placement ${retained.family}/${retained.effort} at rung ${rung} is unavailable; no intent, reservation or launch.`,
+      );
+    placement = { ...resolved.placement, rung };
   }
+  // A changed census or main is a new derivation at the granted base; the old
+  // evidence stays superseded and the continuation appends to the same record.
+  if (externalIdentity(fresh, state.proposal) !== expectedIdentity) supersede(state, fresh);
   state.hostReview = {
     grantSha256,
     consumptionIdentity: grant.consumptionIdentity,
     consumedAt: new Date().toISOString(),
+    retainedAuthor: retainedAuthor!.attempt!.id,
+    placement,
     authority: {
       id: authority.id,
       url: authority.url,
@@ -786,6 +864,7 @@ async function consumeHostPlanningReview(
   ];
   state.state = "pending-author";
   delete state.diagnostic;
+  delete state.nextLevel;
   await save(recoveryPath, state);
   return "consumed";
 }
@@ -807,7 +886,7 @@ async function proposalBytes(workspace: string) {
   );
   return readFile(path, "utf8");
 }
-function externalIdentity(input: PlanningInput, proposal?: Recovery["proposal"]) {
+export function externalIdentity(input: PlanningInput, proposal?: Recovery["proposal"]) {
   // The census is discovery context, not repository-wide invalidation authority.
   // Bind the stopped lineages, siblings/epic and their native dependencies,
   // including any existing issue named by the proposed dependency intent.
@@ -881,10 +960,6 @@ export async function planningStep(operation: PlanningOperation): Promise<Planni
     }
   }
   const state = recovery as Recovery;
-  const workspace = resolve(
-    directory,
-    state.superseded?.length ? `planning-drafts-${state.superseded.length + 1}` : "planning-drafts",
-  );
   const result = (): PlanningResult => ({
     status:
       state.state === "accepted"
@@ -899,7 +974,6 @@ export async function planningStep(operation: PlanningOperation): Promise<Planni
     recovery: path,
     ...(state.diagnostic ? { diagnostic: state.diagnostic } : {}),
   });
-  let hostReviewConsumed = !!state.hostReview;
   const stop = async (message: string, pending = false) => {
     state.state = pending ? "PENDING_HOST_REVIEW" : "rejected";
     state.diagnostic = message;
@@ -913,20 +987,8 @@ export async function planningStep(operation: PlanningOperation): Promise<Planni
     diagnostic: `Planning authority unavailable; retained work and review are unchanged: ${String(error)}`,
   });
   const rederive = async (input: PlanningInput) => {
-    // Keep old inputs, artifacts, verdicts and workers as evidence. A new
-    // workspace prevents a stale proposal/PASS from supplying the new derivation.
-    (state.superseded ??= []).push({
-      input: state.input,
-      state: state.state,
-      ...(state.proposal ? { proposal: state.proposal } : {}),
-      ...(state.review ? { review: state.review } : {}),
-      ...(state.diagnostic ? { diagnostic: state.diagnostic } : {}),
-    });
-    state.input = input;
+    supersede(state, input);
     state.state = "pending-author";
-    delete state.proposal;
-    delete state.review;
-    delete state.nextLevel;
     state.diagnostic = `External planning authority or main changed; re-derive at ${state.level}. Prior work and native charges remain retained.`;
     await save(path, state);
     return result();
@@ -934,21 +996,23 @@ export async function planningStep(operation: PlanningOperation): Promise<Planni
   if (state.state === "rejected") return result();
   if (state.state === "PENDING_HOST_REVIEW") {
     const consumed = await consumeHostPlanningReview(operation, state, path);
-    if (consumed === "absent") {
+    if (consumed === "inapplicable") return result();
+    if (consumed === "absent")
       return {
         ...result(),
-        diagnostic: `host-verdict-missing: no host-planning-review/v1 grant is present.${state.diagnostic ? ` Previous: ${state.diagnostic}` : ""}`,
+        diagnostic: `host-verdict-missing: no host-planning-review/v1 grant is present beside ${path}.${state.diagnostic ? ` Previous: ${state.diagnostic}` : ""}`,
       };
-    }
-    if (typeof consumed === "object") {
+    if (typeof consumed === "object")
       return {
         ...result(),
-        diagnostic: `${consumed.reason}: retained planning recovery is unchanged.`,
+        diagnostic: `${consumed.reason}: ${consumed.detail}; retained planning recovery is unchanged.`,
       };
-    }
-    if (consumed === "replayed") return result();
-    hostReviewConsumed = consumed === "consumed" || consumed === "replayed";
   }
+  // Derived after consumption: a superseding grant continues in a new workspace.
+  const workspace = resolve(
+    directory,
+    state.superseded?.length ? `planning-drafts-${state.superseded.length + 1}` : "planning-drafts",
+  );
   const activeReview =
     state.state === "pending-reviewer" &&
     state.workers.at(-1)?.attempt &&
@@ -1073,23 +1137,16 @@ export async function planningStep(operation: PlanningOperation): Promise<Planni
         priorAuthor.config.author.family
           ? priorAuthor.config.author
           : undefined;
-      if (retryPlacement && !(hostReviewConsumed && !retryPlacement.model)) {
+      // A consumed host grant launches the placement it materialized for the
+      // retained failed author exactly once; later launches select ordinarily.
+      const granted =
+        state.hostReview && state.workers.at(-1)?.attempt?.id === state.hostReview.retainedAuthor
+          ? state.hostReview.placement
+          : undefined;
+      if (granted) {
+        placement = planningRolePlacement(source.author, granted, granted.rung);
+      } else if (retryPlacement) {
         placement = retryPlacement;
-      } else if (retryPlacement && hostReviewConsumed && !retryPlacement.model) {
-        let resolved: { rung: number; placement: ModelPlacement };
-        try {
-          resolved = await resolvePlanningRole(source, "author", retryPlacement.rung ?? 0);
-        } catch (error) {
-          if (error instanceof QueueBlocked && error.reason === "model-registry-unavailable")
-            throw error;
-          if (error instanceof QueueBlocked && error.reason === "provider-model-refused")
-            return stop(
-              "PENDING_HOST_REVIEW: retained planning author placement could not be materialized (provider-model-refused). No CLI fallback or parking.",
-              true,
-            );
-          throw error;
-        }
-        placement = planningRolePlacement(source.author, resolved.placement, resolved.rung);
       } else {
         const ladder = source.author.ladder ?? [source.author];
         const failures = state.workers.filter(
@@ -1121,8 +1178,6 @@ export async function planningStep(operation: PlanningOperation): Promise<Planni
       }
     }
     const workerDirectory = resolve(directory, `planning-worker-${state.workers.length + 1}`);
-    await mkdir(workerDirectory, { recursive: true });
-    if (role === "author") await mkdir(resolve(workspace, "author-temp"), { recursive: true });
     const current: Config = {
       ...source,
       purpose: "planning",
@@ -1159,6 +1214,8 @@ export async function planningStep(operation: PlanningOperation): Promise<Planni
         "PENDING_HOST_REVIEW: planning placement is unmaterialized; no intent or launch is admitted.",
         true,
       );
+    await mkdir(workerDirectory, { recursive: true });
+    if (role === "author") await mkdir(resolve(workspace, "author-temp"), { recursive: true });
     delete current.correctionPaths;
     delete current.preReviewEvidence;
     worker = {

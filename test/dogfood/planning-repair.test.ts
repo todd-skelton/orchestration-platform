@@ -14,10 +14,14 @@ import { delimiter, dirname, resolve } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterEach, expect, it, vi } from "vitest";
 import {
+  externalIdentity,
+  HOST_PLANNING_REVIEW_KEYS,
+  planningHistoryDigest,
   planningStep,
   planningReviewers,
   recoveryHypothesis,
   validateProposal,
+  type HostPlanningReview,
   type PlanningInput,
   type PlanningLevel,
   type PlanningOperation,
@@ -1206,6 +1210,698 @@ it("keeps a completed family planning state inert when the registry disappears",
   expect((await planningStep(f.operation)).status).toBe("planning-accepted");
   expect(await snapshot(f.directory)).toEqual(before);
   expect(f.calls.filter((call) => call.startsWith("launch:")).length).toBe(2);
+});
+
+// ISS-270: the retained m1-iss259-20261020-r3/iss-267-attempt-3 shape. Two
+// pre-ISS-269 family-only fable/high rung-2 authors died with no model, the
+// shared mechanical retry is spent and the recovery waits in PENDING_HOST_REVIEW.
+const retainedMain = "445b98b772edb4d66326cf6e47fc1ad1c44c4755";
+const movedMain = "53e6ba495ded641e5b1395ab501b1b63d35dcd67";
+const deadSummary =
+  '{"error":{"code":"model_not_found","message":"unknown provider for model null","param":"model","type":"invalid_request_error"}}';
+const fileHash = async (path: string) =>
+  createHash("sha256")
+    .update(await readFile(path))
+    .digest("hex");
+const jsonDigest = (value: unknown) =>
+  createHash("sha256").update(JSON.stringify(value)).digest("hex");
+async function hostReviewFixture(options: { currentMain?: string; retryUsed?: boolean } = {}) {
+  const f = await planningFamilyFixture();
+  f.operation.issueKey = "ISS-001";
+  f.operation.source.author = {
+    family: "fable",
+    effort: "high",
+    rung: 2,
+    prompt: "implementation",
+    ladder: [
+      { family: "astra", effort: "high" },
+      { family: "astra", effort: "xhigh" },
+      { family: "fable", effort: "high" },
+    ],
+  };
+  const retainedInput: PlanningInput = structuredClone({ ...f.input, main: retainedMain });
+  const workspace = resolve(f.directory, "planning-drafts");
+  await mkdir(resolve(workspace, "author-temp"), { recursive: true });
+  const deadIds = ["1ecc51d3-60a5-4bd8-9dfc-c500227d2e5d", "098e5fc7-e48b-45a0-bbc2-05e122ea45e6"];
+  const workers = [];
+  for (const [index, id] of deadIds.entries()) {
+    const stateDirectory = resolve(f.directory, `planning-worker-${index + 1}`);
+    await mkdir(stateDirectory, { recursive: true });
+    const attempt = {
+      id,
+      pid: 2759372 + index,
+      trace: resolve(stateDirectory, `author-${id}.jsonl`),
+      launchedAt: 1792820968206 + index,
+      placement: { model: "fable", effort: "high" },
+      rung: 2,
+      models: { author: "fable", reviewer: null },
+    };
+    const terminal = { id, status: "dead", summary: deadSummary };
+    await writeFile(
+      resolve(stateDirectory, "author-attempt.json"),
+      JSON.stringify(attempt, null, 2) + "\n",
+    );
+    await writeFile(
+      resolve(stateDirectory, "author-terminal.json"),
+      JSON.stringify(terminal, null, 2) + "\n",
+    );
+    workers.push({
+      config: {
+        ...f.operation.source,
+        purpose: "planning",
+        base: retainedMain,
+        worktree: workspace,
+        reviewWorktree: workspace,
+        stateDirectory,
+        allowedPaths: ["proposal.json"],
+        author: { ...f.operation.source.author, prompt: "planning" },
+        reviewer: { ...f.operation.source.reviewer, prompt: "planning" },
+      },
+      intent: { role: "author", input: jsonDigest(retainedInput), proposal: null },
+      attempt,
+      terminal,
+    });
+    f.history.push({
+      ordinal: f.history.length + 1,
+      id,
+      item: "ISS-001:1",
+      stage: "planning",
+      role: "author",
+      outcome: "dead",
+      placement: { model: "fable", effort: "high" },
+      rung: 2,
+      usage: {
+        inputTokens: { status: "unavailable" },
+        outputTokens: { status: "unavailable" },
+        costUsd: { status: "unavailable" },
+      },
+    });
+  }
+  const recoveryPath = resolve(f.directory, "planning-recovery.json");
+  const recovery = {
+    schemaVersion: "planning-recovery/v1",
+    outcome: retainedInput.outcome,
+    input: retainedInput,
+    level: "ISSUE",
+    state: "PENDING_HOST_REVIEW",
+    workers,
+    retryUsed: options.retryUsed ?? true,
+    diagnostic:
+      "PENDING_HOST_REVIEW: planning author dead; shared mechanical retry consumed. Partial drafts and charged native history retained.",
+    nextLevel: "SET",
+  };
+  await writeFile(recoveryPath, JSON.stringify(recovery, null, 2) + "\n");
+  // The immutable scheduler records the queue binds: the pinned selection and
+  // the source configuration pinned for the failed implementation attempt.
+  const selectionPath = resolve(f.directory, "cycle-8-selected.json");
+  await writeFile(
+    selectionPath,
+    JSON.stringify(
+      { cycle: 8, key: "ISS-001", number: 1, base: movedMain, planningRevision: movedMain },
+      null,
+      2,
+    ) + "\n",
+  );
+  await mkdir(resolve(f.directory, "source"), { recursive: true });
+  const configPath = resolve(f.directory, "source", "config.json");
+  await writeFile(configPath, JSON.stringify({ config: f.operation.source }, null, 2) + "\n");
+  f.input.main = options.currentMain ?? retainedMain;
+  f.setProposal(proposal(f.input, "ISSUE"));
+  f.input.binding = {
+    selectionSha256: await fileHash(selectionPath),
+    configSha256: await fileHash(configPath),
+    decisionSha256: hash(body),
+  };
+  const authorityUrl = "https://github.com/fixture/repo/issues/1#issuecomment-5900000001";
+  const authorityBody = `Host planning review for ISS-001 in planning-test: verdict platform-m1-iss267-recovery-decision-r1 at main ${f.input.main}. Host-side planning lineage attested; decision level ISSUE.`;
+  const authority = {
+    id: "5900000001",
+    url: authorityUrl,
+    author: "todd-skelton",
+    body: authorityBody,
+    capturedAt: "2026-10-24T00:00:00.000Z",
+  };
+  f.operation.observeAuthority = async (url) => {
+    f.calls.push(`observeAuthority:${url}`);
+    return structuredClone(authority);
+  };
+  const grant = async (): Promise<HostPlanningReview> => {
+    const current = JSON.parse(await readFile(recoveryPath, "utf8"));
+    return {
+      schemaVersion: "host-planning-review/v1",
+      repository: "fixture/repo",
+      issueKey: "ISS-001",
+      issueUrl: "https://github.com/fixture/repo/issues/1",
+      run: "planning-test",
+      recoveryPath,
+      recoverySha256: await fileHash(recoveryPath),
+      selectionSha256: f.input.binding!.selectionSha256,
+      configSha256: f.input.binding!.configSha256,
+      main: f.input.main,
+      deadAttempts: await Promise.all(
+        current.workers
+          .filter((worker: any) => ["dead", "malformed"].includes(worker.terminal?.status))
+          .map(async (worker: any) => ({
+            id: worker.attempt.id,
+            status: worker.terminal.status,
+            terminalSha256: await fileHash(
+              resolve(worker.config.stateDirectory, "author-terminal.json"),
+            ),
+          })),
+      ),
+      outcomeSha256: retainedInput.outcome.sha256,
+      externalIdentitySha256: externalIdentity(current.input, current.proposal),
+      decisionSha256: hash(body),
+      level: "ISSUE",
+      historySha256: planningHistoryDigest(current, f.history),
+      verdictIdentity: "platform-m1-iss267-recovery-decision-r1",
+      consumptionIdentity: `host-planning-review-${current.consumedHostReviewIdentities?.length ?? 0}`,
+      authorityUrl,
+      authorityAuthor: "todd-skelton",
+      authorityBodySha256: hash(authorityBody),
+    };
+  };
+  const grantPath = resolve(f.directory, "host-planning-review.json");
+  const writeGrant = async (value: unknown) => {
+    await rm(grantPath, { force: true });
+    // The host's single exclusive create.
+    await writeFile(grantPath, JSON.stringify(value, null, 2) + "\n", { flag: "wx" });
+  };
+  const launched: { role: string; config: Config }[] = [];
+  const launch = f.operation.native.launch;
+  f.operation.native.launch = async (role, config, prompt) => {
+    launched.push({ role, config: structuredClone(config) });
+    return launch(role, config, prompt);
+  };
+  const retained = async () =>
+    new Map([...(await snapshot(f.directory))].filter(([file]) => file !== grantPath));
+  return {
+    ...f,
+    recoveryPath,
+    grantPath,
+    grant,
+    writeGrant,
+    launched,
+    authority,
+    retainedInput,
+    deadIds,
+    retained,
+    authorityBody,
+  };
+}
+const materializedFable = {
+  model: "claude-fable-5-1",
+  family: "fable",
+  effort: "high",
+  generation: 7,
+  authorityDigest: "synthetic-registry",
+  rung: 2,
+};
+
+it("host planning review: a missing grant refuses host-verdict-missing without launch, write or authority read", async () => {
+  const f = await hostReviewFixture({ currentMain: movedMain });
+  const before = await f.retained();
+  const result = await planningStep(f.operation);
+  expect(result.status).toBe("planning-pending-host-review");
+  expect(result.diagnostic).toMatch(/^host-verdict-missing: /);
+  expect(result.diagnostic).toContain("shared mechanical retry consumed");
+  expect(await f.retained()).toEqual(before);
+  expect(f.launched).toEqual([]);
+  expect(f.calls.filter((call) => call.startsWith("observeAuthority"))).toEqual([]);
+  expect(f.history).toHaveLength(2);
+});
+
+const schemaNegatives: [string, (grant: any) => unknown][] = [
+  ...HOST_PLANNING_REVIEW_KEYS.map((key): [string, (grant: any) => unknown] => [
+    `missing ${key}`,
+    (grant) => {
+      delete grant[key];
+      return grant;
+    },
+  ]),
+  ["extra key", (grant) => ({ ...grant, note: "host" })],
+  ["schemaVersion v2", (grant) => ({ ...grant, schemaVersion: "host-planning-review/v2" })],
+  [
+    "uppercase digest",
+    (grant) => ({ ...grant, recoverySha256: grant.recoverySha256.toUpperCase() }),
+  ],
+  ["short main", (grant) => ({ ...grant, main: grant.main.slice(0, 39) })],
+  ["unknown level", (grant) => ({ ...grant, level: "PRODUCT_QUESTION" })],
+  ["empty deadAttempts", (grant) => ({ ...grant, deadAttempts: [] })],
+  [
+    "duplicate dead attempt id",
+    (grant) => ({ ...grant, deadAttempts: [grant.deadAttempts[0], grant.deadAttempts[0]] }),
+  ],
+  [
+    "dead attempt extra key",
+    (grant) => ({ ...grant, deadAttempts: [{ ...grant.deadAttempts[0], trace: "x" }] }),
+  ],
+  [
+    "dead attempt passed status",
+    (grant) => ({ ...grant, deadAttempts: [{ ...grant.deadAttempts[0], status: "passed" }] }),
+  ],
+  ["relative recoveryPath", (grant) => ({ ...grant, recoveryPath: "planning-recovery.json" })],
+  [
+    "issueUrl outside repository",
+    (grant) => ({ ...grant, issueUrl: "https://github.com/other/repo/issues/1" }),
+  ],
+  [
+    "authorityUrl outside the owning issue",
+    (grant) => ({
+      ...grant,
+      authorityUrl: "https://github.com/fixture/repo/issues/2#issuecomment-5900000001",
+    }),
+  ],
+  ["authorityAuthor with spaces", (grant) => ({ ...grant, authorityAuthor: "todd skelton" })],
+  ["array body", () => [1]],
+  ["string body", () => "host-planning-review/v1"],
+];
+it.each(schemaNegatives)(
+  "host planning review: one-variable schema negative (%s) refuses host-verdict-malformed before any evidence read",
+  async (_label, mutate) => {
+    const f = await hostReviewFixture({ currentMain: movedMain });
+    await f.writeGrant(mutate(await f.grant()));
+    const before = await f.retained();
+    const result = await planningStep(f.operation);
+    expect(result.status).toBe("planning-pending-host-review");
+    expect(result.diagnostic).toMatch(/^host-verdict-malformed: /);
+    expect(await f.retained()).toEqual(before);
+    expect(f.launched).toEqual([]);
+    expect(f.calls.filter((call) => /^(authority|observeAuthority)/.test(call))).toEqual([]);
+  },
+);
+
+it("host planning review: non-JSON bytes are malformed and an unreadable grant is unavailable", async () => {
+  const f = await hostReviewFixture({ currentMain: movedMain });
+  await writeFile(f.grantPath, "{ not json\n");
+  const before = await f.retained();
+  expect((await planningStep(f.operation)).diagnostic).toMatch(/^host-verdict-malformed: /);
+  await rm(f.grantPath);
+  await mkdir(f.grantPath);
+  expect((await planningStep(f.operation)).diagnostic).toMatch(/^host-verdict-unavailable: /);
+  expect(await f.retained()).toEqual(before);
+  expect(f.launched).toEqual([]);
+});
+
+const bindingNegatives: [
+  string,
+  string,
+  (grant: HostPlanningReview, f: any) => HostPlanningReview,
+][] = [
+  ["stale main", "host-verdict-stale", (grant) => ({ ...grant, main: retainedMain })],
+  [
+    "recovery bytes",
+    "host-verdict-mismatch",
+    (grant) => ({ ...grant, recoverySha256: "0".repeat(64) }),
+  ],
+  [
+    "selection record",
+    "host-verdict-mismatch",
+    (grant) => ({ ...grant, selectionSha256: "1".repeat(64) }),
+  ],
+  [
+    "source config",
+    "host-verdict-mismatch",
+    (grant) => ({ ...grant, configSha256: "2".repeat(64) }),
+  ],
+  [
+    "decision body",
+    "host-verdict-mismatch",
+    (grant) => ({ ...grant, decisionSha256: "3".repeat(64) }),
+  ],
+  ["outcome", "host-verdict-mismatch", (grant) => ({ ...grant, outcomeSha256: "4".repeat(64) })],
+  [
+    "external identity",
+    "host-verdict-mismatch",
+    (grant) => ({ ...grant, externalIdentitySha256: "5".repeat(64) }),
+  ],
+  ["history", "host-verdict-mismatch", (grant) => ({ ...grant, historySha256: "6".repeat(64) })],
+  ["level", "host-verdict-mismatch", (grant) => ({ ...grant, level: "SET" })],
+  [
+    "dead terminal bytes",
+    "host-verdict-mismatch",
+    (grant) => ({
+      ...grant,
+      deadAttempts: [
+        { ...grant.deadAttempts[0]!, terminalSha256: "7".repeat(64) },
+        grant.deadAttempts[1]!,
+      ],
+    }),
+  ],
+  [
+    "one dead attempt only",
+    "host-verdict-mismatch",
+    (grant) => ({ ...grant, deadAttempts: [grant.deadAttempts[0]!] }),
+  ],
+  [
+    "dead attempt status",
+    "host-verdict-mismatch",
+    (grant) => ({
+      ...grant,
+      deadAttempts: [
+        { ...grant.deadAttempts[0]!, status: "malformed" as const },
+        grant.deadAttempts[1]!,
+      ],
+    }),
+  ],
+  ["run", "host-verdict-mismatch", (grant) => ({ ...grant, run: "other-run" })],
+  ["issue key", "host-verdict-mismatch", (grant) => ({ ...grant, issueKey: "ISS-002" })],
+  [
+    "recovery path",
+    "host-verdict-mismatch",
+    (grant, f) => ({ ...grant, recoveryPath: resolve(f.directory, "other.json") }),
+  ],
+];
+it.each(bindingNegatives)(
+  "host planning review: %s refuses %s before authority capture, without launch or write",
+  async (_label, reason, mutate) => {
+    const f = await hostReviewFixture({ currentMain: movedMain });
+    await f.writeGrant(mutate(await f.grant(), f));
+    const before = await f.retained();
+    const result = await planningStep(f.operation);
+    expect(result.status).toBe("planning-pending-host-review");
+    expect(result.diagnostic?.startsWith(`${reason}: `)).toBe(true);
+    expect(result.diagnostic).toContain("retained planning recovery is unchanged");
+    expect(await f.retained()).toEqual(before);
+    expect(f.launched).toEqual([]);
+    // Retained bindings are checked before the authority comment is read.
+    expect(f.calls.filter((call) => call.startsWith("observeAuthority"))).toEqual([]);
+    expect(f.history).toHaveLength(2);
+  },
+);
+
+it("host planning review: a changed selection or config record refuses mismatch even with matching bytes elsewhere", async () => {
+  const f = await hostReviewFixture({ currentMain: movedMain });
+  await f.writeGrant(await f.grant());
+  const before = await f.retained();
+  f.input.binding = { ...f.input.binding!, selectionSha256: hash("another selection") };
+  expect((await planningStep(f.operation)).diagnostic).toMatch(
+    /^host-verdict-mismatch: selectionSha256 differ/,
+  );
+  delete f.input.binding;
+  expect((await planningStep(f.operation)).diagnostic).toMatch(
+    /^host-verdict-mismatch: selectionSha256, configSha256, decisionSha256 differ/,
+  );
+  expect(await f.retained()).toEqual(before);
+  expect(f.launched).toEqual([]);
+});
+
+const authorityNegatives: [string, string, (f: any) => Promise<void>][] = [
+  [
+    "another author",
+    "host-verdict-forged",
+    async (f) => {
+      f.authority.author = "someone-else";
+    },
+  ],
+  [
+    "a different body",
+    "host-verdict-forged",
+    async (f) => {
+      f.authority.body = `${f.authorityBody} (edited)`;
+    },
+  ],
+  [
+    "a different comment id",
+    "host-verdict-forged",
+    async (f) => {
+      f.authority.id = "5900000002";
+    },
+  ],
+  [
+    "a different comment url",
+    "host-verdict-forged",
+    async (f) => {
+      f.authority.url = "https://github.com/fixture/repo/issues/1#issuecomment-5900000002";
+    },
+  ],
+  [
+    "an unreadable comment",
+    "host-verdict-authority-unavailable",
+    async (f) => {
+      f.operation.observeAuthority = async () => {
+        throw new Error("gh: connection reset");
+      };
+    },
+  ],
+  [
+    "unavailable planning authority",
+    "host-verdict-authority-unavailable",
+    async (f) => {
+      f.operation.acquire = async () => {
+        throw new QueueBlocked("planning-context-unavailable", "gh offline");
+      };
+    },
+  ],
+];
+it.each(authorityNegatives)(
+  "host planning review: %s refuses %s after retained bindings match, without launch or write",
+  async (_label, reason, mutate) => {
+    const f = await hostReviewFixture({ currentMain: movedMain });
+    await f.writeGrant(await f.grant());
+    await mutate(f);
+    const before = await f.retained();
+    const result = await planningStep(f.operation);
+    expect(result.status).toBe("planning-pending-host-review");
+    expect(result.diagnostic?.startsWith(`${reason}: `)).toBe(true);
+    expect(await f.retained()).toEqual(before);
+    expect(f.launched).toEqual([]);
+    expect(f.history).toHaveLength(2);
+  },
+);
+
+it("host planning review: consumes an exact grant once, re-derives at the grant main and launches the retained rung materialized", async () => {
+  const f = await hostReviewFixture({ currentMain: movedMain });
+  const grant = await f.grant();
+  await f.writeGrant(grant);
+  const beforeState = await f.read();
+  const beforeFiles = await f.retained();
+  const grantBytes = await readFile(f.grantPath);
+  f.setRunning(true);
+  const result = await planningStep(f.operation);
+  expect(result.status).toBe("observing-planning-author");
+  // Exactly one launch, at the granted (current) main, in a fresh workspace,
+  // with the retained fable/high rung 2 resolved to a concrete model.
+  expect(f.launched).toHaveLength(1);
+  expect(f.launched[0]!.config.base).toBe(movedMain);
+  expect(f.launched[0]!.config.worktree).toBe(resolve(f.directory, "planning-drafts-2"));
+  expect(f.launched[0]!.config.author).toMatchObject(materializedFable);
+  expect(f.calls.filter((call) => call.startsWith("observeAuthority"))).toEqual([
+    `observeAuthority:${grant.authorityUrl}`,
+  ]);
+  const state = await f.read();
+  expect(state.state).toBe("pending-author");
+  expect(state.input.main).toBe(movedMain);
+  expect(state.superseded).toHaveLength(1);
+  expect(state.superseded[0]).toMatchObject({
+    state: "PENDING_HOST_REVIEW",
+    input: beforeState.input,
+    diagnostic: beforeState.diagnostic,
+  });
+  expect(state.hostReview).toEqual({
+    grantSha256: createHash("sha256").update(grantBytes).digest("hex"),
+    consumptionIdentity: grant.consumptionIdentity,
+    consumedAt: expect.any(String),
+    retainedAuthor: f.deadIds[1],
+    placement: materializedFable,
+    authority: {
+      id: f.authority.id,
+      url: f.authority.url,
+      author: f.authority.author,
+      bodySha256: hash(f.authorityBody),
+      capturedAt: f.authority.capturedAt,
+    },
+  });
+  expect(state.consumedHostReviewIdentities).toEqual([grant.consumptionIdentity]);
+  // Accounting and history: the retry stays spent, the level, outcome and both
+  // dead workers are byte-identical, and the continuation appended one worker.
+  expect(state.retryUsed).toBe(true);
+  expect(state.level).toBe("ISSUE");
+  expect(state.outcome).toEqual(beforeState.outcome);
+  expect(state.nextLevel).toBeUndefined();
+  expect(JSON.stringify(state.workers.slice(0, 2))).toBe(JSON.stringify(beforeState.workers));
+  expect(state.workers).toHaveLength(3);
+  expect(state.workers[2].config.author).toMatchObject(materializedFable);
+  expect(state.workers[2].attempt).toMatchObject({
+    placement: {
+      model: "claude-fable-5-1",
+      effort: "high",
+      family: "fable",
+      generation: 7,
+      authorityDigest: "synthetic-registry",
+    },
+    rung: 2,
+  });
+  const after = await f.retained();
+  for (const [file, bytes] of beforeFiles)
+    if (file !== f.recoveryPath) expect(after.get(file), file).toBe(bytes);
+  expect(await readFile(f.grantPath)).toEqual(grantBytes);
+  // A second observation is inert: no second consumption, launch or charge.
+  expect((await planningStep(f.operation)).status).toBe("observing-planning-author");
+  expect(f.launched).toHaveLength(1);
+  expect((await f.read()).hostReview).toEqual(state.hostReview);
+  expect((await f.read()).consumedHostReviewIdentities).toEqual([grant.consumptionIdentity]);
+  // The ordinary lifecycle continues from the granted base through review.
+  f.setRunning(false);
+  expect((await planningStep(f.operation)).status).toBe("observing-planning-reviewer");
+  expect((await planningStep(f.operation)).status).toBe("planning-accepted");
+  expect(f.history.map((row) => [row.role, row.outcome])).toEqual([
+    ["author", "dead"],
+    ["author", "dead"],
+    ["author", "passed"],
+    ["reviewer", "passed"],
+  ]);
+  expect(f.history[2]!.placement).toEqual({
+    model: "claude-fable-5-1",
+    effort: "high",
+    family: "fable",
+    generation: 7,
+    authorityDigest: "synthetic-registry",
+  });
+  expect(f.launched).toHaveLength(2);
+  expect(f.launched[1]!.config.reviewer).toMatchObject({
+    model: "claude-opus-5-5",
+    family: "opus",
+  });
+});
+
+it("host planning review: a same-main grant keeps the retained workspace and still materializes the rung", async () => {
+  const f = await hostReviewFixture();
+  await f.writeGrant(await f.grant());
+  f.setRunning(true);
+  expect((await planningStep(f.operation)).status).toBe("observing-planning-author");
+  expect(f.launched).toHaveLength(1);
+  expect(f.launched[0]!.config.base).toBe(retainedMain);
+  expect(f.launched[0]!.config.worktree).toBe(resolve(f.directory, "planning-drafts"));
+  expect(f.launched[0]!.config.author).toMatchObject(materializedFable);
+  const state = await f.read();
+  expect(state.superseded).toBeUndefined();
+  expect(state.input.main).toBe(retainedMain);
+  expect(state.workers).toHaveLength(3);
+  expect(state.workers[2].intent.role).toBe("author");
+});
+
+it.each(["refused", "missing"] as const)(
+  "host planning review: a %s registry refuses before reservation; no intent, worker directory or launch exists",
+  async (kind) => {
+    const f = await hostReviewFixture({ currentMain: movedMain });
+    await f.writeGrant(await f.grant());
+    if (kind === "refused")
+      await f.saveRegistry((registry) => {
+        registry.families.fable.current = null;
+      });
+    else await rm(f.registryPath);
+    const before = await f.retained();
+    await expect(planningStep(f.operation)).rejects.toMatchObject({
+      reason: kind === "refused" ? "provider-model-refused" : "model-registry-unavailable",
+    });
+    expect(await f.retained()).toEqual(before);
+    expect((await f.read()).hostReview).toBeUndefined();
+    expect(f.launched).toEqual([]);
+    await expect(readdir(f.directory)).resolves.not.toContain("planning-worker-3");
+    expect(f.history).toHaveLength(2);
+  },
+);
+
+it("host planning review: a re-entered pending state refuses the spent grant as duplicate and admits a fresh grant without re-resolving", async () => {
+  const f = await hostReviewFixture();
+  const first = await f.grant();
+  await f.writeGrant(first);
+  f.setStatus("dead");
+  expect((await planningStep(f.operation)).status).toBe("planning-pending-host-review");
+  expect(f.launched).toHaveLength(1);
+  expect(f.history.map((row) => row.outcome)).toEqual(["dead", "dead", "dead"]);
+  const reentered = await f.read();
+  expect(reentered).toMatchObject({ state: "PENDING_HOST_REVIEW", retryUsed: true });
+  expect(reentered.workers).toHaveLength(3);
+  // The consumed grant still sits beside the recovery; it cannot be spent again.
+  const before = await f.retained();
+  expect((await planningStep(f.operation)).diagnostic).toMatch(/^host-verdict-duplicate: /);
+  expect(await f.retained()).toEqual(before);
+  // A new grant must rebind the changed recovery, all three failed launches and
+  // a new consumption identity; reusing the spent identity is still a duplicate.
+  const second = await f.grant();
+  expect(second.deadAttempts).toHaveLength(3);
+  expect(second.recoverySha256).not.toBe(first.recoverySha256);
+  await f.writeGrant({ ...second, consumptionIdentity: first.consumptionIdentity });
+  expect((await planningStep(f.operation)).diagnostic).toMatch(/^host-verdict-duplicate: /);
+  expect(f.launched).toHaveLength(1);
+  // The retained third author is already materialized: no registry read is needed.
+  await rm(f.registryPath);
+  await f.writeGrant(second);
+  f.setRunning(true);
+  expect((await planningStep(f.operation)).status).toBe("observing-planning-author");
+  expect(f.launched).toHaveLength(2);
+  expect(f.launched[1]!.config.author).toMatchObject(materializedFable);
+  const state = await f.read();
+  expect(state.hostReview).toMatchObject({
+    consumptionIdentity: second.consumptionIdentity,
+    retainedAuthor: reentered.workers[2].attempt.id,
+    placement: materializedFable,
+  });
+  expect(state.consumedHostReviewIdentities).toEqual([
+    first.consumptionIdentity,
+    second.consumptionIdentity,
+  ]);
+  expect(state.retryUsed).toBe(true);
+  expect(JSON.stringify(state.workers.slice(0, 3))).toBe(JSON.stringify(reentered.workers));
+});
+
+it("host planning review: an unmaterialized retained author placement stops before any intent instead of launching a null model", async () => {
+  const f = await hostReviewFixture({ retryUsed: false });
+  // Pre-ISS-269 shape with the shared retry still available: the ordinary retry
+  // would reuse the family-only placement. It must not reach the launcher.
+  const recovery = await f.read();
+  recovery.state = "pending-author";
+  delete recovery.diagnostic;
+  delete recovery.nextLevel;
+  await writeFile(f.recoveryPath, JSON.stringify(recovery, null, 2) + "\n");
+  const result = await planningStep(f.operation);
+  expect(result.status).toBe("planning-pending-host-review");
+  expect(result.diagnostic).toContain(
+    "planning placement is unmaterialized; no intent or launch is admitted",
+  );
+  expect(f.launched).toEqual([]);
+  expect((await f.read()).workers).toHaveLength(2);
+  await expect(readdir(f.directory)).resolves.not.toContain("planning-worker-3");
+  // The resulting pending state is exactly what the host grant consumes.
+  await f.writeGrant(await f.grant());
+  f.setRunning(true);
+  expect((await planningStep(f.operation)).status).toBe("observing-planning-author");
+  expect(f.launched).toHaveLength(1);
+  expect(f.launched[0]!.config.author).toMatchObject(materializedFable);
+  expect((await f.read()).retryUsed).toBe(false);
+});
+
+it("host planning review: a pending yield without a failed author keeps planning-review-required and refuses a grant as mismatch", async () => {
+  const f = await hostReviewFixture({ currentMain: movedMain });
+  const recovery = await f.read();
+  // A reviewer-unavailable yield: the proposal exists and the latest launch passed.
+  recovery.workers[1].terminal = { ...recovery.workers[1].terminal, status: "passed", summary: "" };
+  recovery.proposal = {
+    raw: "{}",
+    digest: hash("{}"),
+    bodies: [],
+    author: recovery.workers[1].attempt.id,
+    participants: [],
+  };
+  recovery.diagnostic =
+    "PENDING_HOST_REVIEW: no admitted distinct planning reviewer is available. No CLI fallback or parking.";
+  await writeFile(f.recoveryPath, JSON.stringify(recovery, null, 2) + "\n");
+  const before = await f.retained();
+  const result = await planningStep(f.operation);
+  expect(result).toEqual({
+    status: "planning-pending-host-review",
+    recovery: f.recoveryPath,
+    diagnostic: recovery.diagnostic,
+  });
+  await f.writeGrant(await f.grant());
+  expect((await planningStep(f.operation)).diagnostic).toMatch(
+    /^host-verdict-mismatch: the retained pending state has no failed author launch to continue/,
+  );
+  expect(await f.retained()).toEqual(before);
+  expect(f.launched).toEqual([]);
+  expect(f.calls.filter((call) => /^(authority|observeAuthority)/.test(call))).toEqual([]);
 });
 
 it("retains malformed/dead partial drafts and spends only the shared retry", async () => {

@@ -1,6 +1,7 @@
 // ISS-164: the private request stream exported by the supervisor entry.
 import type { Readable, Writable } from "node:stream";
 import type { Adapter, NativeDbIdentity, NativeDbOwner, NativeDbReply } from "./flow.js";
+import type { QueueBlocked } from "./flow.js";
 import type { LoopConfig } from "./queue.js";
 import type { RepositoryAdapter } from "./repository-adapter.js";
 
@@ -10,6 +11,13 @@ export function executorUpgrade(
   repository: Pick<RepositoryAdapter, "requiredChecks">,
   command?: UpgradeCommand,
 ): Promise<{ sha?: string; reason?: string } | undefined>;
+// ISS-270: a planning yield's supervisor stop, named by its typed host-verdict
+// diagnostic when one is present.
+export function planningStop(result: {
+  status: string;
+  recovery: string;
+  diagnostic?: string;
+}): QueueBlocked;
 export function upgradeBoundary(
   config: LoopConfig,
   repository: Pick<RepositoryAdapter, "requiredChecks">,

@@ -84,6 +84,11 @@ import {
   type RoutingRow,
 } from "../../scripts/dogfood/routing.mjs";
 import { sourceFailureFixture, repairFailureFixture, snapshot } from "./fixtures/source-failure.js";
+import {
+  externalIdentity,
+  planningHistoryDigest,
+  type HostPlanningReview,
+} from "../../scripts/dogfood/planning-repair.js";
 import { startCaseTiming, type CaseTiming } from "./fixtures/iss212-timing.js";
 
 let timing: CaseTiming | undefined;
@@ -11451,4 +11456,225 @@ it("stores an inline gate retry count in the single attempt record", async () =>
   expect(
     JSON.parse(await readFile(resolve(current.config.stateDirectory, "attempt.json"), "utf8")),
   ).toMatchObject({ phase: "complete", retries: 1 });
+});
+
+// ISS-270: the queue yields a retained PENDING_HOST_REVIEW before any queue work,
+// binds the host grant to its immutable selection and source records, and
+// continues the same planning record through the ordinary author lifecycle.
+it("planning review: the queue maps a retained pending host review to typed host-verdict yields and consumes one bound grant before queue work", async () => {
+  const f = await sourceFailureFixture();
+  roots.push(f.root);
+  const remote = resolve(f.root, "remote.git");
+  await f.git(f.repository, ["clone", "--bare", f.repository, remote]);
+  await f.git(f.repository, ["remote", "add", "origin", remote]);
+  const config = f.current.config;
+  const item = config.items[0]!;
+  const directory = config.stateDirectory;
+  const planningLaunches: { base: string; author: unknown; worktree: string }[] = [];
+  const launch = f.native.launch;
+  f.native.launch = async (role, current, prompt) => {
+    if (current.purpose === "planning") {
+      planningLaunches.push({
+        base: current.base,
+        author: structuredClone(current.author),
+        worktree: current.worktree,
+      });
+      return {
+        id: randomUUID(),
+        trace: resolve(current.stateDirectory, "planning.jsonl"),
+        pid: 123,
+        launchedAt: 1,
+      };
+    }
+    if (role === "author")
+      await writeFile(resolve(current.worktree, "product.txt"), "rejected implementation\n");
+    return launch(role, current, prompt);
+  };
+  let planningAuthor: "dead" | "running" = "dead";
+  const observe = f.native.observe;
+  f.native.observe = async (role, current, attempt) => {
+    if (current.purpose === "planning")
+      return planningAuthor === "running"
+        ? { id: attempt.id, status: "running" }
+        : {
+            id: attempt.id,
+            status: "dead",
+            summary:
+              '{"error":{"code":"model_not_found","message":"unknown provider for model null","param":"model","type":"invalid_request_error"}}',
+          };
+    const result = await observe(role, current, attempt);
+    if (role === "author") return { ...result, status: "passed", summary: "" };
+    return {
+      ...result,
+      status: "failed",
+      summary: JSON.stringify({
+        run: current.run,
+        role,
+        head: result.head,
+        verdict: "FAIL",
+        findings: [
+          { file: "product.txt", line: 1, severity: "blocking", text: "Preserve the invariant." },
+        ],
+        g0: "No; the brief's ownership is ambiguous.",
+        defect: {
+          defectClass: "brief",
+          explanation: "The accepted scope has ambiguous ownership.",
+          rootCause: "ambiguous-scope",
+          evidenceStatus: "established",
+          evidence: ["product.txt:1"],
+        },
+      }),
+    };
+  };
+  const decision =
+    "\n## Decision\nPreserve the accepted outcome.\n\n## Done when\n- Observe an exact body.\n";
+  f.policy.planningContext = async () =>
+    structuredClone({
+      context: {
+        title: "Fixture",
+        body: decision,
+        acceptanceCriteria: ["Observe an exact body."],
+        rules: "Fixture",
+      },
+      planning: null,
+      issues: [{ number: 110, body: decision, updatedAt: "2026-10-10T00:00:00Z", milestone: null }],
+    });
+  const authorityUrl = `${item.issue}#issuecomment-5900000001`;
+  const authorityBody =
+    "Host planning review: the retained ISS lineage is attested; continue at current main.";
+  const observed: string[] = [];
+  const adapter = repositoryQueueAdapter(config, f.repository, {
+    native: f.native,
+    repository: f.policy,
+    gitExecutable: f.loop.gitExecutable,
+    observeAuthority: async (url) => {
+      observed.push(url);
+      return {
+        id: "5900000001",
+        url: authorityUrl,
+        author: "todd-skelton",
+        body: authorityBody,
+        capturedAt: "2026-10-24T00:00:00.000Z",
+      };
+    },
+  });
+  adapter.setup = f.current.adapter.setup;
+  await startCycle(f.loop, f.cycle, f.host);
+  // Source review FAIL classified brief: planning dispatches, both authors die.
+  expect((await queueStep(config, adapter)).status).toBe("observing-planning-author");
+  const planningYield = async () => {
+    const result = await queueStep(config, adapter);
+    if (!result.status.startsWith("planning-")) throw new Error(`unexpected ${result.status}`);
+    return result as Extract<typeof result, { recovery: string }>;
+  };
+  const pending = await planningYield();
+  expect(pending.status).toBe("planning-pending-host-review");
+  expect(pending.diagnostic).toMatch(
+    /^PENDING_HOST_REVIEW: planning author dead; shared mechanical retry consumed/,
+  );
+  expect(planningLaunches).toHaveLength(2);
+  const recoveryPath = resolve(directory, "planning-recovery.json");
+  const recovery = JSON.parse(await readFile(recoveryPath, "utf8"));
+  expect(recovery).toMatchObject({ state: "PENDING_HOST_REVIEW", retryUsed: true });
+  expect(recovery.workers.map((worker: any) => worker.terminal.status)).toEqual(["dead", "dead"]);
+  const retained = await snapshot(directory);
+  const historyBefore = await adapter.history();
+  const launchesBefore = f.calls.filter((call) => call.startsWith("launch:")).length;
+  // Without a grant the yield is typed host-verdict-missing and nothing changes;
+  // the queue never reaches repair or a successor attempt.
+  const missing = await planningYield();
+  expect(missing).toMatchObject({ status: "planning-pending-host-review", recovery: recoveryPath });
+  expect(missing.diagnostic).toMatch(/^host-verdict-missing: /);
+  expect(await snapshot(directory)).toEqual(retained);
+  expect(await adapter.history()).toEqual(historyBefore);
+  expect(JSON.parse(await readFile(resolve(directory, "attempt.json"), "utf8")).phase).toBe(
+    "source",
+  );
+  expect((await readdir(f.runState)).some((name) => name.endsWith("-attempt-2"))).toBe(false);
+  const fileHash = async (path: string) =>
+    createHash("sha256")
+      .update(await readFile(path))
+      .digest("hex");
+  const grant: HostPlanningReview = {
+    schemaVersion: "host-planning-review/v1",
+    repository: item.source.repository,
+    issueKey: "fixture-110",
+    issueUrl: item.issue,
+    run: config.run,
+    recoveryPath,
+    recoverySha256: await fileHash(recoveryPath),
+    selectionSha256: await fileHash(resolve(f.runState, "cycle-1-selected.json")),
+    configSha256: await fileHash(resolve(item.source.stateDirectory, "config.json")),
+    main: f.base,
+    deadAttempts: await Promise.all(
+      recovery.workers.map(async (worker: any) => ({
+        id: worker.attempt.id,
+        status: "dead" as const,
+        terminalSha256: await fileHash(
+          resolve(worker.config.stateDirectory, "author-terminal.json"),
+        ),
+      })),
+    ),
+    outcomeSha256: recovery.outcome.sha256,
+    externalIdentitySha256: externalIdentity(recovery.input, undefined),
+    decisionSha256: createHash("sha256").update(decision).digest("hex"),
+    level: "ISSUE",
+    historySha256: planningHistoryDigest(recovery, historyBefore),
+    verdictIdentity: "platform-fixture-recovery-decision-r1",
+    consumptionIdentity: "host-planning-review-1",
+    authorityUrl,
+    authorityAuthor: "todd-skelton",
+    authorityBodySha256: createHash("sha256").update(authorityBody).digest("hex"),
+  };
+  const grantPath = resolve(directory, "host-planning-review.json");
+  // A grant bound to another selection record refuses as mismatch, byte-identically.
+  await writeFile(
+    grantPath,
+    JSON.stringify({ ...grant, selectionSha256: "0".repeat(64) }, null, 2) + "\n",
+    { flag: "wx" },
+  );
+  const mismatch = await planningYield();
+  expect(mismatch.status).toBe("planning-pending-host-review");
+  expect(mismatch.diagnostic).toMatch(/^host-verdict-mismatch: selectionSha256 differ/);
+  expect(observed).toEqual([]);
+  expect(await snapshot(directory)).toEqual(
+    new Map([...retained, [grantPath, await readFile(grantPath, "utf8")]]),
+  );
+  await rm(grantPath);
+  await writeFile(grantPath, JSON.stringify(grant, null, 2) + "\n", { flag: "wx" });
+  // The exact grant is consumed once and the retained author placement, already
+  // materialized by ISS-269, launches at the granted main without re-resolution.
+  planningAuthor = "running";
+  expect((await queueStep(config, adapter)).status).toBe("observing-planning-author");
+  expect(observed).toEqual([authorityUrl]);
+  expect(planningLaunches).toHaveLength(3);
+  expect(planningLaunches[2]).toMatchObject({
+    base: f.base,
+    author: recovery.workers[1].config.author,
+    worktree: resolve(directory, "planning-drafts"),
+  });
+  const consumed = JSON.parse(await readFile(recoveryPath, "utf8"));
+  expect(consumed).toMatchObject({
+    state: "pending-author",
+    retryUsed: true,
+    level: "ISSUE",
+    hostReview: {
+      consumptionIdentity: "host-planning-review-1",
+      retainedAuthor: recovery.workers[1].attempt.id,
+      authority: { id: "5900000001", url: authorityUrl, author: "todd-skelton" },
+    },
+    consumedHostReviewIdentities: ["host-planning-review-1"],
+  });
+  expect(JSON.stringify(consumed.workers.slice(0, 2))).toBe(JSON.stringify(recovery.workers));
+  expect(consumed.workers).toHaveLength(3);
+  expect(f.calls.filter((call) => call.startsWith("launch:")).length).toBe(launchesBefore);
+  expect(JSON.parse(await readFile(resolve(directory, "attempt.json"), "utf8")).phase).toBe(
+    "source",
+  );
+  expect((await readdir(f.runState)).some((name) => name.endsWith("-attempt-2"))).toBe(false);
+  // Repeated observation of the running author is inert for the grant.
+  expect((await queueStep(config, adapter)).status).toBe("observing-planning-author");
+  expect(observed).toEqual([authorityUrl]);
+  expect(planningLaunches).toHaveLength(3);
+  expect(f.calls.some((call) => /^(park|note|delivery):/.test(call))).toBe(false);
 });

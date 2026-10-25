@@ -108,6 +108,7 @@ export const stopRules: readonly StopRule[] = [
       "host-verdict-stale",
       "host-verdict-mismatch",
       "host-verdict-forged",
+      "host-verdict-duplicate",
     ],
   },
   {

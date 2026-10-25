@@ -502,6 +502,22 @@ export function upgradeBoundary(
   };
 }
 
+// A planning yield stops the supervisor before any queue work. A pending host
+// review names its typed `host-verdict-*` refusal when a grant beside the
+// retained recovery was observed; every other pending yield keeps
+// `planning-review-required`.
+export function planningStop(result) {
+  const hostVerdict = /^(host-verdict-[a-z-]+)(?::|$)/.exec(result.diagnostic ?? "")?.[1];
+  return new QueueBlocked(
+    result.status === "planning-accepted"
+      ? "planning-application-pending"
+      : result.status === "planning-rejected"
+        ? "planning-repair-rejected"
+        : (hostVerdict ?? "planning-review-required"),
+    `${result.diagnostic ?? "Planning handoff"} Recovery: ${result.recovery}`.slice(0, 500),
+  );
+}
+
 function blocked(error, lifecycleReason, lifecycleDiagnostics) {
   const reason = error instanceof QueueBlocked ? error.reason : "queue-internal-error";
   const diagnostics =
@@ -685,20 +701,7 @@ async function main() {
           continue;
         }
         if (result.status.startsWith("planning-")) {
-          const hostVerdict = /^(host-verdict-[a-z-]+)(?::|$)/.exec(result.diagnostic ?? "")?.[1];
-          blocked(
-            new QueueBlocked(
-              result.status === "planning-accepted"
-                ? "planning-application-pending"
-                : result.status === "planning-rejected"
-                  ? "planning-repair-rejected"
-                  : (hostVerdict ?? "planning-review-required"),
-              `${result.diagnostic ?? "Planning handoff"} Recovery: ${result.recovery}`.slice(
-                0,
-                500,
-              ),
-            ),
-          );
+          blocked(planningStop(result));
           break;
         }
         await completeCycle(loop, active, await queueAdapter.history(), supervisor);
