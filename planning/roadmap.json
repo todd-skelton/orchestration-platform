@@ -1191,6 +1191,22 @@
       "summary": "After explicit ready unpark, project retained dead source or repair evidence through existing composition and successor calculation, fence failed-only readers, and prove saved-cycle admission and replay in one slice with unchanged charges and four-attempt ceiling.",
       "milestone": "M1",
       "blockedBy": []
+    },
+    {
+      "key": "ISS-272",
+      "file": "planning/drafts/ISS-272.md",
+      "title": "[executor] Upgrade the bundled Node runtime to the Chase Sets engine floor",
+      "summary": "Pin the executor and attached launch/status paths to verified Node v24.16.0 with a clean install receipt and focused evidence, without changing loop authority or timeout policy.",
+      "milestone": "M1",
+      "blockedBy": []
+    },
+    {
+      "key": "ISS-273",
+      "file": "planning/drafts/ISS-273.md",
+      "title": "[supervisor] Preserve complete local-gate diagnostics in stop records",
+      "summary": "Preserve complete local-gate diagnostics through digest-bound artifact references and bounded metadata without changing stop, retry, reservation, charge or review authority.",
+      "milestone": "M1",
+      "blockedBy": []
     }
   ]
 }
