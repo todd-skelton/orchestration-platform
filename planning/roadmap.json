@@ -1198,7 +1198,7 @@
       "title": "[executor] Upgrade the bundled Node runtime to the Chase Sets engine floor",
       "summary": "Pin the executor and attached launch/status paths to verified Node v24.16.0 with a clean install receipt and focused evidence, without changing loop authority or timeout policy.",
       "milestone": "M1",
-      "blockedBy": []
+      "blockedBy": ["ISS-267"]
     },
     {
       "key": "ISS-273",
