@@ -1214,7 +1214,15 @@
       "title": "[delivery] Scope the test-gate host-failure guard to failure output so platform test failures can reach the base control",
       "summary": "Scope the test-gate host/resource guard to failure output so passing test titles cannot suppress the existing base control, without changing attribution policy or loop authority.",
       "milestone": "M1",
-      "blockedBy": ["ISS-273"]
+      "blockedBy": []
+    },
+    {
+      "key": "ISS-275",
+      "file": "planning/drafts/ISS-275.md",
+      "title": "[queue] Admit one candidate-internal successor after an inert delivery gate stop",
+      "summary": "Admit one exact-authority, same-run successor for the latest candidate-internal ordinary delivery gate stop while preserving the original stop, evidence, history and unchanged attempt ceilings.",
+      "milestone": "M1",
+      "blockedBy": ["ISS-274"]
     }
   ]
 }
