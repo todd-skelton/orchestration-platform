@@ -1223,6 +1223,14 @@
       "summary": "Admit one exact-authority, same-run successor for the latest candidate-internal ordinary delivery gate stop while preserving the original stop, evidence, history and unchanged attempt ceilings.",
       "milestone": "M1",
       "blockedBy": ["ISS-274"]
+    },
+    {
+      "key": "ISS-276",
+      "file": "planning/drafts/ISS-276.md",
+      "title": "Prevent worker self-interrupts during silent heavy verification under the host-decided corrective-prompt cap",
+      "summary": "Add one author-only quiet heavy-command protocol and focused prompt regression, retaining host-attributed verification and all existing attempt, charge, retry, parking, review, and semantic-verdict authority.",
+      "milestone": "M1",
+      "blockedBy": ["ISS-268", "ISS-269"]
     }
   ]
 }
