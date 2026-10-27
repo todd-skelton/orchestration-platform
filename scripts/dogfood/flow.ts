@@ -280,7 +280,7 @@ export function workerPrompt(config: Config, role: Role, head: string, prompt: s
     role === "author"
       ? !defaultVerification
         ? ` Before reporting, run applicable focused checks in this worktree and fix concrete source defects. Report source readiness: a remaining concrete source defect requires FAIL. The executor will commit the candidate and must run ${gateList} before publication. Checks that require a committed candidate or unavailable sandbox operations are not prerequisites for your source report; describe their limitations and all observed failures honestly in progress messages and the final summary for executor verification. Do not claim an unrun or failed check passed, or change product source to evade a sandbox limitation.`
-        : ` Before reporting, run ${gateList} in this worktree, and fix what fails.`
+        : ` Before reporting, run ${gateList} in this worktree, and fix what fails. Let every verification command, including focused Vitest, run to exit; quiet output never warrants input or Ctrl-C, empty polls are not input, and record each exit code. Run the full suite as pnpm test > "$TMPDIR/pnpm-test.log" 2>&1; echo "exit=$?" (PowerShell: pnpm test *> "$env:TEMP\\pnpm-test.log"; "exit=$LASTEXITCODE"), then read at most its last 40 lines plus the exit; never put raw log in the summary. Do not rerun an unchanged tree merely to reread; after source edits rerun the affected checks. PASS needs every gate's latest run complete and green on the final tree; otherwise report FAIL and say which check did not complete.`
       : "";
   const report =
     role === "author"
