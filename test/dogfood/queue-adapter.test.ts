@@ -1278,7 +1278,7 @@ it.each([
     expect(evidence).toContain(base);
     expect(evidence).toContain('"number":8002');
     expect(prompts[0]!.prompt).toContain(JSON.stringify(evidencePath));
-    expect(prompts[0]!.prompt.length).toBeLessThan(8000);
+    expect(prompts[0]!.prompt.length).toBeLessThan(8700);
     expect(prompts[0]!.prompt).not.toContain("actual underlying diagnostic");
     if (mode === "legacy retry") {
       expect(prompts[0]!.prompt).toContain(JSON.stringify(oldTrace));

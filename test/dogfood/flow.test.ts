@@ -2068,7 +2068,7 @@ describe("supervised sequential pilot (fake attempts, never live acceptance)", (
     ).toBe(
       `Improve the selected issue.\n\nPilot run one-trial; role author; exact base: ${base}.\n` +
         'Allowed author paths: ["scripts/repair.mjs"]. Author may edit source only: do not stage, commit, or change Git metadata; leave HEAD at the exact base. Reviewer must leave its worktree unchanged. Never push, publish, merge, or change credentials.\n' +
-        `Explain substantive findings in progress messages before the final response; these remain in the captured trace. Final response must be ONLY JSON: {"run":"one-trial","role":"author","head":"${base}","verdict":"PASS","summary":""} (or verdict FAIL), with a short "summary" string of at most ${MAX_TERMINAL_SUMMARY_LENGTH} characters; use an empty string when there are no findings. Review every changed assertion independently. Before reporting, run \`pnpm typecheck\`, \`pnpm format:check\` and \`pnpm test\` in this worktree, and fix what fails.\n`,
+        `Explain substantive findings in progress messages before the final response; these remain in the captured trace. Final response must be ONLY JSON: {"run":"one-trial","role":"author","head":"${base}","verdict":"PASS","summary":""} (or verdict FAIL), with a short "summary" string of at most ${MAX_TERMINAL_SUMMARY_LENGTH} characters; use an empty string when there are no findings. Review every changed assertion independently. Before reporting, run \`pnpm typecheck\`, \`pnpm format:check\` and \`pnpm test\` in this worktree, and fix what fails. Let every verification command, including focused Vitest, run to exit; quiet output never warrants input or Ctrl-C, empty polls are not input, and record each exit code. Run the full suite as pnpm test > "$TMPDIR/pnpm-test.log" 2>&1; echo "exit=$?" (PowerShell: pnpm test *> "$env:TEMP\\pnpm-test.log"; "exit=$LASTEXITCODE"), then read at most its last 40 lines plus the exit; never put raw log in the summary. Do not rerun an unchanged tree merely to reread; after source edits rerun the affected checks. PASS needs every gate's latest run complete and green on the final tree; otherwise report FAIL and say which check did not complete.\n`,
     );
     expect(
       workerPrompt(f.config, "reviewer", head, "Improve the selected issue.").replace(
@@ -2080,6 +2080,27 @@ describe("supervised sequential pilot (fake attempts, never live acceptance)", (
         'Allowed author paths: ["scripts/repair.mjs"]. Author may edit source only: do not stage, commit, or change Git metadata; leave HEAD at the exact base. Reviewer must leave its worktree unchanged. Never push, publish, merge, or change credentials.\n' +
         `Explain substantive findings in progress messages before the final response; these remain in the captured trace. Final response must be ONLY JSON: {"run":"one-trial","role":"reviewer","head":"${head}","verdict":"PASS","findings":[],"g0":"<answer>"} (or verdict FAIL). Answer G0 with a string: "Is there a simpler shape that still satisfies every acceptance criterion and every stated not-built reason? Answer No with one reason, or name the shape and the constraint you checked it against." Return the JSON object alone; its serialized length (JSON.stringify) must be at most ${MAX_TERMINAL_SUMMARY_LENGTH} characters. Write findings and G0 to fit within that total. Each finding is exactly {"file":"<repository path>","line":1,"severity":"blocking"|"note","text":"<finding>"}. Blocking findings must use changed candidate files. Advisory notes may cite existing unchanged files at the exact reviewed head. Both require a file, not a directory, and a valid one-based line at that head. A blocking finding requires FAIL; notes never block and grant no edit, repair or landing authority. Review every changed assertion independently.\n`,
     );
+  });
+  it("keeps the quiet-verification protocol on only the default author gate branch", async () => {
+    const f = await fixture();
+    const defaultAuthor = workerPrompt(f.config, "author", base, "Improve.");
+    expect(defaultAuthor).toContain("never warrants input or Ctrl-C");
+    expect(defaultAuthor).toContain('pnpm test > "$TMPDIR/pnpm-test.log" 2>&1; echo "exit=$?"');
+
+    f.config.localGates = ["verify:static:scoped", "typecheck"];
+    expect(workerPrompt(f.config, "author", base, "Improve.")).not.toContain(
+      "never warrants input or Ctrl-C",
+    );
+    expect(workerPrompt(f.config, "reviewer", head, "Review.")).not.toContain(
+      "never warrants input or Ctrl-C",
+    );
+    const { localGates: _localGates, ...planningConfig } = f.config;
+    expect(
+      workerPrompt({ ...planningConfig, purpose: "planning" }, "author", base, "Plan."),
+    ).not.toContain("never warrants input or Ctrl-C");
+    expect(
+      workerPrompt({ ...planningConfig, purpose: "planning" }, "reviewer", head, "Review."),
+    ).not.toContain("never warrants input or Ctrl-C");
   });
   it("leaves configured commit-bound gates to the executor while requiring honest source readiness", async () => {
     const f = await fixture();
