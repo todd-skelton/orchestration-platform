@@ -1,10 +1,12 @@
 import { execFile, spawn, type ChildProcess } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readdir, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { createServer, get, type Server } from "node:http";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { promisify } from "node:util";
 import { afterEach, expect, it } from "vitest";
+import { verifyNodeBundle } from "../scripts/executor/node-bundle.mjs";
 
 // ISS-162: the executor entrypoints that carry the pool status URL and its
 // bridge. Local fixtures and command doubles only; no pool, WSL loop or
@@ -48,12 +50,177 @@ async function until(check: () => Promise<boolean>) {
   }
 }
 
-async function installFixture(path = "source.txt", mutant?: "exclusive" | "descriptor") {
+// Linux-runnable pin controls include the PowerShell paths and every existing
+// fixture pin. No PowerShell skip can stand in for this evidence (ISS-272).
+const nodeDirectory = ["node", "v24.16.0", "linux", "x64"].join("-");
+const pinInventory = [
+  ["scripts/executor/run-loop.sh", 3],
+  ["scripts/executor/start-loop.ps1", 1],
+  ["scripts/executor/status-loop.ps1", 2],
+  ["test/executor.test.ts", 5],
+  ["test/dogfood/status.test.ts", 2],
+  ["test/dogfood/process-ownership-fixtures/harness.ts", 1],
+] as const;
+function assertPins(source: string, count: number) {
+  expect(source.match(/node-v[\d.]+-linux-x64/g)).toEqual(Array(count).fill(nodeDirectory));
+}
+it.each(pinInventory)("ISS-272 exact pins: %s", async (path, count) => {
+  const source = await readFile(resolve(executor, "../..", path), "utf8");
+  assertPins(source, count);
+  // One sibling at a time; unchanged siblings cannot hide the stale path.
+  const positions = [...source.matchAll(/node-v[\d.]+-linux-x64/g)];
+  for (const position of positions) {
+    const mutant =
+      source.slice(0, position.index) +
+      ["node", "v24.15.0", "linux", "x64"].join("-") +
+      source.slice(position.index + position[0].length);
+    expect(() => assertPins(mutant, count), `${path}:${position.index}`).toThrow();
+  }
+});
+
+it("ISS-272 launcher commands use versioned binaries without host-node fallback", async () => {
+  const shell = (await readFile(resolve(executor, "run-loop.sh"), "utf8")).replaceAll("\r\n", "\n");
+  expect(shell).toContain(
+    `exec "$TASK_ROOT/tools/${nodeDirectory}/bin/node" "\${SELF%/*}/../dogfood/process-ownership.mjs" "$CONFIG" "$SELF"\n`,
+  );
+  expect(shell).toContain(`NODE="$TASK_ROOT/tools/${nodeDirectory}/bin/node"\n`);
+  expect(shell).toContain(
+    `export PATH="$TASK_ROOT/tools/git/bin:$TASK_ROOT/tools/${nodeDirectory}/bin:$TASK_ROOT/tools/cli/node_modules/.bin:$TASK_ROOT/tools/gh_2.93.0_linux_amd64/bin:/usr/local/bin:/usr/bin:/bin"\n`,
+  );
+  const start = (await readFile(resolve(executor, "start-loop.ps1"), "utf8")).replaceAll(
+    "\r\n",
+    "\n",
+  );
+  expect(start).toContain(
+    `foreach ($argument in @("-d", "Ubuntu", "--exec",\n  "/root/orchestration-m1/tools/${nodeDirectory}/bin/node",\n  "/root/orchestration-m1/repo/scripts/dogfood/control.mjs", $Config, $action))`,
+  );
+  const status = (await readFile(resolve(executor, "status-loop.ps1"), "utf8")).replaceAll(
+    "\r\n",
+    "\n",
+  );
+  expect(status).toContain(
+    `"PATH=/root/orchestration-m1/tools/git/bin:/root/orchestration-m1/tools/${nodeDirectory}/bin:/root/orchestration-m1/tools/gh_2.93.0_linux_amd64/bin:/usr/local/bin:/usr/bin:/bin",\n  "/root/orchestration-m1/tools/${nodeDirectory}/bin/node",\n  "$ExecutorRoot/scripts/dogfood/status.mjs", $Config)`,
+  );
+});
+
+const digest = (bytes: string) => createHash("sha256").update(bytes).digest("hex");
+async function syntheticBundle() {
+  const directory = await mkdtemp(resolve(tmpdir(), "iss-272-synthetic-bundle-"));
+  cleanup.push(() => rm(directory, { recursive: true, force: true }));
+  // Deliberately not an official Node artifact or digest. No staging reads.
+  const archive = "synthetic-node-bundle.txt";
+  const bytes = "ISS-272 SYNTHETIC ARCHIVE; NOT A NODE DISTRIBUTION\n";
+  const bundle = { version: "synthetic-version", archive, archiveSha256: digest(bytes) };
+  const manifest = `${bundle.archiveSha256}  ${archive}\n`;
+  const receipt = {
+    schema: "iss-272-node-receipt/v1",
+    ...bundle,
+    manifest: "SHASUMS256.txt",
+    manifestSha256: digest(manifest),
+    stagedAt: "2026-01-01T00:00:00Z",
+  };
+  await writeFile(resolve(directory, archive), bytes);
+  await writeFile(resolve(directory, "SHASUMS256.txt"), manifest);
+  await writeFile(resolve(directory, "receipt.json"), JSON.stringify(receipt));
+  return { directory, bundle, receipt, manifest };
+}
+
+it("ISS-272 synthetic receipt passes; missing inputs refuse", async () => {
+  const f = await syntheticBundle();
+  expect(await verifyNodeBundle(f.directory, f.bundle)).toEqual({
+    ...f.bundle,
+    archive: resolve(f.directory, f.bundle.archive),
+  });
+  for (const path of ["receipt.json", "SHASUMS256.txt", f.bundle.archive]) {
+    const bytes = await readFile(resolve(f.directory, path));
+    await rm(resolve(f.directory, path));
+    await expect(verifyNodeBundle(f.directory, f.bundle)).rejects.toThrow();
+    await writeFile(resolve(f.directory, path), bytes);
+  }
+});
+
+it.each([
+  "schema",
+  "version",
+  "archive",
+  "manifest",
+  "archiveSha256",
+  "manifestSha256",
+  "manifest-entry",
+  "duplicate-entry",
+  "archive-bytes",
+] as const)("ISS-272 synthetic receipt guard and bypass mutant: %s", async (guard) => {
+  const f = await syntheticBundle();
+  let helper = await readFile(resolve(executor, "node-bundle.mjs"), "utf8");
+  let bypass: string;
+  if (guard === "manifest-entry" || guard === "duplicate-entry") {
+    const manifest =
+      guard === "duplicate-entry"
+        ? f.manifest.repeat(2)
+        : `${"0".repeat(64)}  ${f.bundle.archive}\n`;
+    await writeFile(resolve(f.directory, "SHASUMS256.txt"), manifest);
+    // Keep the manifest's own receipt hash valid to isolate the entry check.
+    f.receipt.manifestSha256 = digest(manifest);
+    bypass = "matching.length !== 1 || matching[0][1] !== bundle.archiveSha256";
+  } else if (guard === "archive-bytes") {
+    await writeFile(resolve(f.directory, f.bundle.archive), "SYNTHETIC CORRUPTION");
+    bypass = "sha256(await readFile(archivePath)) !== bundle.archiveSha256";
+  } else {
+    f.receipt[guard] = "SYNTHETIC MISMATCH";
+    bypass =
+      guard === "manifestSha256"
+        ? "sha256(manifest) !== receipt.manifestSha256"
+        : "receipt[field] !== expected";
+  }
+  await writeFile(resolve(f.directory, "receipt.json"), JSON.stringify(f.receipt));
+  await expect(verifyNodeBundle(f.directory, f.bundle)).rejects.toThrow(
+    /mismatch|matching archive/,
+  );
+  expect(helper).toContain(bypass);
+  helper = helper.replace(bypass, "false");
+  await writeFile(resolve(f.directory, "bypass.mjs"), helper);
+  await writeFile(resolve(f.directory, "node-bundle.json"), JSON.stringify(f.bundle));
+  // Execute the bypass against the very same single-fault fixture. Its false
+  // acceptance demonstrates that the corresponding rejection is discriminating.
+  const result = await exec(
+    process.execPath,
+    [
+      "--input-type=module",
+      "-e",
+      `import {verifyNodeBundle} from './bypass.mjs'; await verifyNodeBundle('.', ${JSON.stringify(f.bundle)});`,
+    ],
+    { cwd: f.directory },
+  );
+  expect(result.stderr).toBe("");
+});
+
+it.each(["0".repeat(64), "placeholder", digest("another synthetic archive")])(
+  "ISS-272 changed checked-in digest refuses: %s",
+  async (archiveSha256) => {
+    const f = await syntheticBundle();
+    await expect(verifyNodeBundle(f.directory, { ...f.bundle, archiveSha256 })).rejects.toThrow(
+      "archiveSha256 mismatch",
+    );
+  },
+);
+
+it("ISS-272 bundle identifies the chosen engine floor", async () => {
+  const bundle = JSON.parse(await readFile(resolve(executor, "node-bundle.json"), "utf8"));
+  expect(bundle.version).toBe("v24.16.0");
+  expect(bundle.archive).toBe(`${nodeDirectory}.tar.xz`);
+  // The real digest equality is established by the named staging command,
+  // never by fabricated external authority in a committed test.
+});
+
+async function installFixture(
+  path = "source.txt",
+  mutant?: "exclusive" | "descriptor" | "porcelain" | "restart" | "live-install",
+) {
   const root = await mkdtemp(resolve(tmpdir(), "executor-install-"));
   cleanup.push(() => rm(root, { recursive: true, force: true, maxRetries: 3, retryDelay: 100 }));
   const task = resolve(root, "task");
   const repo = resolve(task, "repo");
-  const bin = resolve(task, "tools/node-v24.15.0-linux-x64/bin");
+  const bin = resolve(task, "tools/node-v24.16.0-linux-x64/bin");
   const fakes = resolve(root, "fakes");
   for (const directory of [
     repo,
@@ -91,6 +258,13 @@ async function installFixture(path = "source.txt", mutant?: "exclusive" | "descr
   let body = await readFile(resolve(executor, "run-loop.sh"), "utf8");
   if (mutant === "exclusive") body = body.replace("if ! flock -xn 9; then", "if false; then");
   if (mutant === "descriptor") body = body.replaceAll(" 9>&-", "");
+  if (mutant === "porcelain") body = body.replace('[[ -z "$PORCELAIN" ]] || failed porcelain', ":");
+  if (mutant === "restart") body = body.replace('if [[ -n "$CHANGED" ]]; then', "if false; then");
+  if (mutant === "live-install")
+    body = body.replace(
+      'SHA="\${BASH_REMATCH[1]}"',
+      'SHA="\${BASH_REMATCH[1]}"; pnpm install --frozen-lockfile',
+    );
   await writeFile(launcher, body);
   await writeFile(
     resolve(root, "launcher/scripts/dogfood/process-ownership.mjs"),
@@ -102,6 +276,8 @@ async function installFixture(path = "source.txt", mutant?: "exclusive" | "descr
 set -eu
 if [[ "$1" == install ]]; then
   touch '${root}/install-entered'
+  printf '%s\\n' "$*" > '${root}/install-args'
+  if [[ -e '${root}/dirty-install' ]]; then touch '${repo}/dirty.txt'; fi
   if [[ -e '${root}/hold-install' ]]; then
     while [[ ! -e '${root}/release-install' ]]; do sleep 0.02; done
   fi
@@ -116,7 +292,12 @@ if [[ -e '${root}/child' ]]; then
 fi
 if [[ "$run" == self && ! -e '${root}/offered' ]]; then
   touch '${root}/offered'
+  if [[ -e '${root}/hold-supervisor' ]]; then touch '${root}/supervisor-live'; fi
   echo '{"status":"upgrade-ready","sha":"${sha}","run":"self"}'
+  if [[ -e '${root}/hold-supervisor' ]]; then
+    while [[ ! -e '${root}/release-supervisor' ]]; do sleep 0.02; done
+    rm '${root}/supervisor-live'
+  fi
 else
   echo "{\\"status\\":\\"idle\\",\\"run\\":\\"$run\\"}"
 fi
@@ -186,10 +367,75 @@ it.skipIf(process.platform !== "linux")(
       `self ${f.from}\nself ${f.sha}\n`,
     );
     expect(await f.exists("task/executor-install.json")).toBe(false);
+    expect(await readFile(resolve(f.root, "install-args"), "utf8")).toBe(
+      "install --frozen-lockfile\n",
+    );
     expect(await readdir(resolve(f.root, "state/self/process-ownership"))).toHaveLength(1);
     // A later origin/main neither substitutes for S nor defers its installation.
     expect(await f.git("rev-parse", "HEAD")).toBe(f.sha);
     expect(await f.git("rev-parse", "refs/remotes/origin/main")).toBe(later);
+  },
+);
+
+it.skipIf(process.platform !== "linux").each([false, true])(
+  "ISS-272 clean-tree guard (bypass mutant=%s)",
+  async (mutant) => {
+    const f = await installFixture("source.txt", mutant ? "porcelain" : undefined);
+    await writeFile(resolve(f.root, "dirty-install"), "");
+    const result = await (await f.launch()).done;
+    const accepted = result.code === 0 && result.stdout.includes('"status":"executor-upgraded"');
+    expect(accepted).toBe(mutant);
+    if (!mutant) {
+      expect(result.code).toBe(1);
+      const saved = await readFile(resolve(f.task, "executor-install.json"), "utf8");
+      expect(JSON.parse(saved)).toEqual({
+        state: "failed",
+        from: f.from,
+        to: f.sha,
+        at: expect.any(String),
+        step: "porcelain",
+      });
+      expect((await (await f.launch("m2")).done).code).toBe(1);
+      expect(await readFile(resolve(f.task, "executor-install.json"), "utf8")).toBe(saved);
+    }
+  },
+);
+
+it.skipIf(process.platform !== "linux").each([false, true])(
+  "ISS-272 restart boundary (bypass mutant=%s)",
+  async (mutant) => {
+    const f = await installFixture("scripts/executor/pin.json", mutant ? "restart" : undefined);
+    const result = await (await f.launch()).done;
+    expect(await f.exists("install-entered")).toBe(mutant);
+    expect(await f.git("rev-parse", "HEAD")).toBe(mutant ? f.sha : f.from);
+    expect(result.code).toBe(mutant ? 0 : 1);
+    if (!mutant)
+      expect(JSON.parse(result.stdout.trim().split("\n").at(-1)!)).toEqual({
+        status: "upgrade-requires-restart",
+        run: "self",
+        observedAt: expect.any(String),
+      });
+  },
+);
+
+it.skipIf(process.platform !== "linux").each([false, true])(
+  "ISS-272 wait for supervisor exit (live-install mutant=%s)",
+  async (mutant) => {
+    const f = await installFixture("source.txt", mutant ? "live-install" : undefined);
+    await writeFile(resolve(f.root, "hold-supervisor"), "");
+    const running = await f.launch();
+    try {
+      await until(() => f.exists("supervisor-live"));
+      if (mutant) await until(() => f.exists("install-entered"));
+      else await new Promise((done) => setTimeout(done, 300));
+      expect(await f.exists("supervisor-live")).toBe(true);
+      expect(await f.exists("install-entered")).toBe(mutant);
+    } finally {
+      await writeFile(resolve(f.root, "release-supervisor"), "");
+      await running.done;
+    }
+    expect(await f.exists("install-entered")).toBe(true);
+    expect(await f.exists("supervisor-live")).toBe(false);
   },
 );
 
@@ -544,7 +790,7 @@ it.for([
         "-d",
         "Ubuntu",
         "--exec",
-        "/root/orchestration-m1/tools/node-v24.15.0-linux-x64/bin/node",
+        "/root/orchestration-m1/tools/node-v24.16.0-linux-x64/bin/node",
         "/root/orchestration-m1/repo/scripts/dogfood/control.mjs",
         config,
         action,
@@ -897,8 +1143,8 @@ it.skipIf(process.platform !== "linux")(
     await mkdir(resolve(taskRoot, "repo"));
     await mkdir(fakes);
     // ISS-219: the entry execs the tools' Node before any other subprocess.
-    await mkdir(resolve(taskRoot, "tools/node-v24.15.0-linux-x64/bin"), { recursive: true });
-    await symlink(process.execPath, resolve(taskRoot, "tools/node-v24.15.0-linux-x64/bin/node"));
+    await mkdir(resolve(taskRoot, "tools/node-v24.16.0-linux-x64/bin"), { recursive: true });
+    await symlink(process.execPath, resolve(taskRoot, "tools/node-v24.16.0-linux-x64/bin/node"));
     const result = resolve(root, "result.json");
     await writeFile(
       resolve(taskRoot, "codex-home/config.toml"),
@@ -1005,7 +1251,7 @@ it.skipIf(process.platform !== "linux")(
       'CONFIG="${1:-$TASK_ROOT/loop.json}"',
       'SELF="${BASH_SOURCE[0]}"',
       '[[ "$SELF" == */* ]] || SELF="./$SELF"',
-      'exec "$TASK_ROOT/tools/node-v24.15.0-linux-x64/bin/node" "${SELF%/*}/../dogfood/process-ownership.mjs" "$CONFIG" "$SELF"',
+      'exec "$TASK_ROOT/tools/node-v24.16.0-linux-x64/bin/node" "${SELF%/*}/../dogfood/process-ownership.mjs" "$CONFIG" "$SELF"',
     ]);
     for (const line of commands) expect(line).not.toMatch(/\$\(|`|[^|]\|[^|]/);
   },

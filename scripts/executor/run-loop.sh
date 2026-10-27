@@ -13,7 +13,7 @@ CONFIG="${1:-$TASK_ROOT/loop.json}"
 # body below as its first child with inherited stdio.
 SELF="${BASH_SOURCE[0]}"
 [[ "$SELF" == */* ]] || SELF="./$SELF"
-exec "$TASK_ROOT/tools/node-v24.15.0-linux-x64/bin/node" "${SELF%/*}/../dogfood/process-ownership.mjs" "$CONFIG" "$SELF"
+exec "$TASK_ROOT/tools/node-v24.16.0-linux-x64/bin/node" "${SELF%/*}/../dogfood/process-ownership.mjs" "$CONFIG" "$SELF"
 
 # ISS-219 ATTACHED BODY
 # The wrapper starts this body only after enrollment and publication, as
@@ -23,7 +23,7 @@ TASK_ROOT="${TASK_ROOT:-/root/orchestration-m1}"
 CONFIG="$1"
 # One log per config, including Chase Sets runs under orchestration-m2.
 LOG="$(cd "$(dirname "$CONFIG")" && pwd)/supervisor.log"
-NODE="$TASK_ROOT/tools/node-v24.15.0-linux-x64/bin/node"
+NODE="$TASK_ROOT/tools/node-v24.16.0-linux-x64/bin/node"
 RUN=$("$NODE" -e 'process.stdout.write(JSON.parse(require("fs").readFileSync(process.argv[1])).run)' "$CONFIG")
 protocol() {
   "$NODE" -e 'process.stdout.write(JSON.stringify({status:process.argv[1],run:process.argv[2],observedAt:new Date().toISOString(),...(process.argv[3] ? JSON.parse(process.argv[3]) : {})})+"\n")' "$1" "$RUN" "${2:-}" | tee -a "$LOG"
@@ -48,7 +48,7 @@ export CODEX_PROVIDER_AUTH_COMMAND="$TASK_ROOT/pool-key.sh"
 export CODEX_POOL_STATUS_URL="http://$HOST:8318/api/status"
 export DOGFOOD_MODEL_REGISTRY="${DOGFOOD_MODEL_REGISTRY:-/mnt/d/Users/ToddS/AgentPools/state/model-registry.json}"
 sed -i "s#http://[0-9.]*:8317/v1#$CODEX_PROVIDER_BASE_URL#" "$TASK_ROOT/codex-home/config.toml"
-export PATH="$TASK_ROOT/tools/git/bin:$TASK_ROOT/tools/node-v24.15.0-linux-x64/bin:$TASK_ROOT/tools/cli/node_modules/.bin:$TASK_ROOT/tools/gh_2.93.0_linux_amd64/bin:/usr/local/bin:/usr/bin:/bin"
+export PATH="$TASK_ROOT/tools/git/bin:$TASK_ROOT/tools/node-v24.16.0-linux-x64/bin:$TASK_ROOT/tools/cli/node_modules/.bin:$TASK_ROOT/tools/gh_2.93.0_linux_amd64/bin:/usr/local/bin:/usr/bin:/bin"
 export CODEX_HOME="$TASK_ROOT/codex-home"
 export npm_execpath="$TASK_ROOT/tools/cli/node_modules/pnpm/bin/pnpm.cjs"
 cd "$TASK_ROOT/repo"

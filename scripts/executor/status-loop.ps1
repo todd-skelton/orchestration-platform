@@ -13,8 +13,8 @@ $info.Environment["WSLENV"] = ""
 # --exec bypasses WSL's default shell. env supplies the installed tools to
 # read-only Git/GitHub subprocesses without a shell interpreting any argument.
 $arguments = @("-d", "Ubuntu", "--exec", "/usr/bin/env",
-  "PATH=/root/orchestration-m1/tools/git/bin:/root/orchestration-m1/tools/node-v24.15.0-linux-x64/bin:/root/orchestration-m1/tools/gh_2.93.0_linux_amd64/bin:/usr/local/bin:/usr/bin:/bin",
-  "/root/orchestration-m1/tools/node-v24.15.0-linux-x64/bin/node",
+  "PATH=/root/orchestration-m1/tools/git/bin:/root/orchestration-m1/tools/node-v24.16.0-linux-x64/bin:/root/orchestration-m1/tools/gh_2.93.0_linux_amd64/bin:/usr/local/bin:/usr/bin:/bin",
+  "/root/orchestration-m1/tools/node-v24.16.0-linux-x64/bin/node",
   "$ExecutorRoot/scripts/dogfood/status.mjs", $Config)
 if ($Json) { $arguments += "--json" }
 foreach ($argument in $arguments) { $info.ArgumentList.Add($argument) }

@@ -324,7 +324,7 @@ $control = [System.Diagnostics.ProcessStartInfo]::new("C:\Windows\System32\wsl.e
 $control.UseShellExecute = $false
 $control.Environment["WSLENV"] = ""
 foreach ($argument in @("-d", "Ubuntu", "--exec",
-  "/root/orchestration-m1/tools/node-v24.15.0-linux-x64/bin/node",
+  "/root/orchestration-m1/tools/node-v24.16.0-linux-x64/bin/node",
   "/root/orchestration-m1/repo/scripts/dogfood/control.mjs", $Config, $action)) {
   $control.ArgumentList.Add($argument)
 }

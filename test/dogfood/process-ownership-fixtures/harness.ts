@@ -134,7 +134,7 @@ export async function ownershipHarness(
       closeSync(fd);
     }
   };
-  const node = resolve(task, "tools/node-v24.15.0-linux-x64/bin/node");
+  const node = resolve(task, "tools/node-v24.16.0-linux-x64/bin/node");
   await mkdir(dirname(node), { recursive: true });
   await symlink(process.execPath, node);
   await mkdir(resolve(task, "repo"));
