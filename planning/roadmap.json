@@ -1233,6 +1233,14 @@
       "blockedBy": ["ISS-268", "ISS-269"]
     },
     {
+      "key": "ISS-277",
+      "file": "planning/drafts/ISS-277.md",
+      "title": "[routing] Hold the author rung after environment or mechanical failures and skip registry-unadmitted efforts",
+      "summary": "Keep the author rung after a mechanical or environment-tooling author failure, skip family rungs whose effort the model registry does not admit, and preserve every count, charge, ceiling, refusal and legacy record.",
+      "milestone": "M1",
+      "blockedBy": []
+    },
+    {
       "key": "ISS-278",
       "file": "planning/drafts/ISS-278.md",
       "title": "[test] Bound the ISS-235 verification-charge queue rows by a deterministic child-process census under the unchanged 30 s limit",
