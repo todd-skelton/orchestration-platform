@@ -1239,6 +1239,14 @@
       "summary": "Keep the author rung after a mechanical or environment-tooling author failure, skip family rungs whose effort the model registry does not admit, and preserve every count, charge, ceiling, refusal and legacy record.",
       "milestone": "M1",
       "blockedBy": []
+    },
+    {
+      "key": "ISS-278",
+      "file": "planning/drafts/ISS-278.md",
+      "title": "[test] Bound the ISS-235 verification-charge queue rows by a deterministic child-process census under the unchanged 30 s limit",
+      "summary": "Assert an exact per-row child-process census for the four ISS-235 verification-charge queue rows and remove their redundant executor re-validation through existing seams, keeping every assertion and the unchanged 30 s limits.",
+      "milestone": "M1",
+      "blockedBy": []
     }
   ]
 }
