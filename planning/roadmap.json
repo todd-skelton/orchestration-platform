@@ -1231,6 +1231,14 @@
       "summary": "Add one author-only quiet heavy-command protocol and focused prompt regression, retaining host-attributed verification and all existing attempt, charge, retry, parking, review, and semantic-verdict authority.",
       "milestone": "M1",
       "blockedBy": ["ISS-268", "ISS-269"]
+    },
+    {
+      "key": "ISS-277",
+      "file": "planning/drafts/ISS-277.md",
+      "title": "[routing] Hold the author rung after environment or mechanical failures and skip registry-unadmitted efforts",
+      "summary": "Keep the author rung after a mechanical or environment-tooling author failure, skip family rungs whose effort the model registry does not admit, and preserve every count, charge, ceiling, refusal and legacy record.",
+      "milestone": "M1",
+      "blockedBy": []
     }
   ]
 }
