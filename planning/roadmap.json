@@ -1231,6 +1231,14 @@
       "summary": "Add one author-only quiet heavy-command protocol and focused prompt regression, retaining host-attributed verification and all existing attempt, charge, retry, parking, review, and semantic-verdict authority.",
       "milestone": "M1",
       "blockedBy": ["ISS-268", "ISS-269"]
+    },
+    {
+      "key": "ISS-278",
+      "file": "planning/drafts/ISS-278.md",
+      "title": "[test] Bound the ISS-235 verification-charge queue rows by a deterministic child-process census under the unchanged 30 s limit",
+      "summary": "Assert an exact per-row child-process census for the four ISS-235 verification-charge queue rows and remove their redundant executor re-validation through existing seams, keeping every assertion and the unchanged 30 s limits.",
+      "milestone": "M1",
+      "blockedBy": []
     }
   ]
 }
