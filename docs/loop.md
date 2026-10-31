@@ -281,6 +281,18 @@ An absent previously admitted entry stops as `merge-queue-removed`, including
 removal caused by a conflict; it does not enter automatic conflict recovery
 through the hosted-check reader. The operator must inspect that removal.
 
+ISS-253 retains a failed nonqueued squash's category-only `GithubCommandFailure`
+diagnostic through the existing delivery/queue stop channel and bounded stop body.
+The saved source, publication and `merge-intent.json` bind repository, run,
+issue/attempt, PR, candidate head and operation before the post-mutation read;
+raw exception messages, stdout, stderr and provider bodies are not retained.
+OPEN keeps `merge-unconfirmed-reconcile-before-retry`; unknown keeps
+`merge-outcome-unknown`. Both remain non-parking retry-class stops, without new
+retry or restart authority. Only an observed valid MERGED result records its
+merge commit, including on replay; the failure category supplies no merge fact
+or diagnosis of the original ISS-252 incident. Existing records and stops without
+diagnostics remain unchanged, and completed delivery remains inert.
+
 The self adapter's `afterMirror` board gate validates candidate planning locally
 and checks only keys changed by its planning delta against the live board and
 project. Ownership compares both sides of the diff, including deleted rows,
