@@ -27,6 +27,7 @@ import {
   repositoryQueueAdapter,
   queueStep,
   readQueueHistory,
+  deriveAuthorHolds,
   validateHistory,
   retainedSourceFailure,
   retainedPostMergeDelivery,
@@ -81,6 +82,7 @@ import {
 import {
   parseRoutingMarker,
   SELF_ROUTING,
+  authorFailureRung,
   type RoutingRow,
 } from "../../scripts/dogfood/routing.mjs";
 import { sourceFailureFixture, repairFailureFixture, snapshot } from "./fixtures/source-failure.js";
@@ -90,6 +92,507 @@ import {
   type HostPlanningReview,
 } from "../../scripts/dogfood/planning-repair.js";
 import { startCaseTiming, type CaseTiming } from "./fixtures/iss212-timing.js";
+import type { Terminal } from "../../scripts/dogfood/flow.js";
+import type { DefectClass } from "../../scripts/dogfood/outcome.js";
+
+const iss277Defect = (defectClass: DefectClass) => ({
+  defectClass,
+  explanation: "Synthetic routing evidence.",
+  rootCause: "iss277-fixture",
+  evidenceStatus: "established" as const,
+  evidence: ["docs/loop.md:1"],
+});
+
+async function iss277Queue(failure: Omit<Terminal, "id">, review = false) {
+  const f = await loopFixture();
+  const policy: RepositoryAdapter = {
+    ...repositoryPolicy,
+    issueContext: async (input) => ({
+      ...(await repositoryPolicy.issueContext(input)),
+      routing: { row: "self" },
+    }),
+  };
+  const q = await queueConfigFromLoop(f.loop, f.repository, f.selected, policy);
+  const item = q.items[0]!;
+  const real = codexAdapter(f.gitExecutable);
+  const launches: {
+    role: string;
+    rung: number | undefined;
+    model: string | undefined;
+    effort: string;
+  }[] = [];
+  const native: Adapter = {
+    ...real,
+    async preflight() {},
+    async waitForProvider() {},
+    async launch(role, config) {
+      launches.push({
+        role,
+        rung: config[role].rung,
+        model: config[role].model,
+        effort: config[role].effort,
+      });
+      if (review && role === "author")
+        await writeFile(resolve(config.worktree, "docs/loop.md"), "Synthetic change\n");
+      return {
+        id: `iss277-${launches.length}`,
+        pid: 123,
+        launchedAt: 1,
+        trace: resolve(config.stateDirectory, `${role}.jsonl`),
+      };
+    },
+    async observe(role, current, attempt) {
+      if (!review && launches.length > 1) return { id: attempt.id, status: "running" };
+      if (review && role === "author")
+        return { id: attempt.id, status: "passed", head: current.base };
+      const head =
+        role === "reviewer"
+          ? await real.git(current.worktree, ["rev-parse", "HEAD"])
+          : current.base;
+      return {
+        ...failure,
+        id: attempt.id,
+        head,
+        ...(role === "reviewer"
+          ? {
+              summary: JSON.stringify({
+                run: current.run,
+                role,
+                head,
+                verdict: "FAIL",
+                findings: [
+                  {
+                    file: "docs/loop.md",
+                    line: 1,
+                    severity: "blocking",
+                    text: "Synthetic finding",
+                  },
+                ],
+                g0: "No; preserve the contract.",
+                defect: failure.defect,
+              }),
+            }
+          : {}),
+      };
+    },
+  };
+  const setup = gitSetupAdapter({
+    gitExecutable: f.gitExecutable,
+    async install(_a, _b, cwd) {
+      await mkdir(resolve(cwd, "node_modules"), { recursive: true });
+      await writeFile(resolve(cwd, "node_modules/.modules.yaml"), "fixture: true\n");
+      return "succeeded";
+    },
+  });
+  const adapter = repositoryQueueAdapter(q, f.repository, {
+    native,
+    setup,
+    gitExecutable: f.gitExecutable,
+  });
+  const read = async (name = "attempt") =>
+    JSON.parse(await readFile(resolve(q.stateDirectory, `${name}.json`), "utf8"));
+  return { ...f, q, item, native, adapter, policy, launches, read, setup };
+}
+
+it.each([
+  ["mechanical", true],
+  ["environment-tooling", true],
+  ["external-dependency", true],
+  ["product-scope", true],
+  ["implementation-known-remedy", false],
+  ["malformed", true],
+  ["dead", true],
+  ["refused-dead", false],
+] as const)("ISS-277 queue counts and holds %s exactly once", async (kind, held) => {
+  const status = kind === "malformed" ? "malformed" : kind.includes("dead") ? "dead" : "failed";
+  const failure = {
+    status,
+    ...(status === "failed" ? { defect: iss277Defect(kind as DefectClass) } : {}),
+    ...(kind === "refused-dead" ? { modelRefused: true } : {}),
+  } as Omit<Terminal, "id">;
+  const f = await iss277Queue(failure);
+  if (status === "failed") await expect(queueStep(f.q, f.adapter)).rejects.toThrow("author-failed");
+  else expect((await queueStep(f.q, f.adapter)).status).toBe("observing-author");
+  const state = (await f.read()).authorFailures;
+  expect(state.count).toBe(1);
+  expect(state.ids).toEqual(["iss277-1"]);
+  expect(state.held ?? []).toEqual(held ? ["iss277-1"] : []);
+  expect(authorFailureRung(state)).toBe(held ? 0 : 1);
+  if (status !== "failed") expect(f.launches[1]!.rung).toBe(held ? 0 : 1);
+  for (let n = 0; n < 2; n++) {
+    if (status === "failed")
+      await expect(f.adapter.source(f.item)).rejects.toThrow("author-failed");
+    else await f.adapter.source(f.item);
+    expect((await f.read()).authorFailures).toEqual(state);
+  }
+});
+
+it("ISS-277 count-only ISS-265 replay launches attempt 2 at Astra/high without rewriting predecessor evidence", async () => {
+  const f = await iss277Queue({ status: "failed", defect: iss277Defect("environment-tooling") });
+  await expect(queueStep(f.q, f.adapter)).rejects.toThrow("author-failed");
+  const old = await f.read();
+  await writeFile(
+    resolve(f.q.stateDirectory, "attempt.json"),
+    JSON.stringify({
+      ...old,
+      phase: "failed",
+      head: f.selected.base,
+      reviewId: "",
+      findings: [],
+      acceptedStage: null,
+      stateDirectory: null,
+      rebasedBase: f.selected.base,
+      rebasedMainBase: f.selected.base,
+      authorFailures: { count: 1 },
+    }),
+  );
+  const before = await snapshot(f.q.stateDirectory);
+  const next = await queueConfigFromLoop(f.loop, f.repository, f.selected, f.policy);
+  expect(next.items[0]!.source.author.rung).toBe(0);
+  expect(next.items[0]!.source.authorFailures).toEqual({
+    count: 1,
+    ids: ["iss277-1"],
+    held: ["iss277-1"],
+  });
+  const adapter = repositoryQueueAdapter(next, f.repository, {
+    native: f.native,
+    setup: f.setup,
+    gitExecutable: f.gitExecutable,
+  });
+  await expect(queueStep(next, adapter)).resolves.toMatchObject({ status: "observing-author" });
+  expect(f.launches.at(-1)).toMatchObject({ rung: 0, model: "gpt-6-astra", effort: "high" });
+  const reserved = JSON.parse(await readFile(resolve(next.stateDirectory, "attempt.json"), "utf8"));
+  expect(reserved.authorFailures).toEqual(next.items[0]!.source.authorFailures);
+  expect(await queueConfigFromLoop(f.loop, f.repository, f.selected, f.policy)).toEqual(next);
+  expect(await snapshot(f.q.stateDirectory)).toEqual(before);
+});
+
+it("ISS-277 resumes a pinned legacy successor without changing its failure seed or rung", async () => {
+  const f = await iss277Queue({ status: "failed", defect: iss277Defect("environment-tooling") });
+  await expect(queueStep(f.q, f.adapter)).rejects.toThrow("author-failed");
+  await writeFile(
+    resolve(f.q.stateDirectory, "attempt.json"),
+    JSON.stringify({
+      ...(await f.read()),
+      phase: "failed",
+      head: f.selected.base,
+      reviewId: "",
+      findings: [],
+      acceptedStage: null,
+      stateDirectory: null,
+      rebasedBase: f.selected.base,
+      rebasedMainBase: f.selected.base,
+      authorFailures: { count: 1, ids: ["iss277-1"] },
+    }),
+  );
+  const predecessor = await snapshot(f.q.stateDirectory);
+  const next = await queueConfigFromLoop(f.loop, f.repository, f.selected, f.policy);
+  const source = next.items[0]!.source;
+  source.authorFailures = { count: 1, ids: ["iss277-1"] };
+  source.author = { ...source.author, rung: 1, effort: "xhigh" };
+  const adapter = repositoryQueueAdapter(next, f.repository, {
+    native: f.native,
+    setup: f.setup,
+    gitExecutable: f.gitExecutable,
+  });
+  await expect(queueStep(next, adapter)).resolves.toMatchObject({ status: "observing-author" });
+  const pinned = await snapshot(source.stateDirectory);
+  const resumed = await queueConfigFromLoop(f.loop, f.repository, f.selected, f.policy);
+  expect(resumed.items[0]!.source.authorFailures).toEqual(source.authorFailures);
+  expect(resumed.items[0]!.source.author.rung).toBe(1);
+  await expect(
+    queueStep(
+      resumed,
+      repositoryQueueAdapter(resumed, f.repository, {
+        native: f.native,
+        setup: f.setup,
+        gitExecutable: f.gitExecutable,
+      }),
+    ),
+  ).resolves.toMatchObject({ status: "observing-author" });
+  expect(f.launches).toHaveLength(2);
+  expect(await snapshot(source.stateDirectory)).toEqual(pinned);
+  expect(await snapshot(f.q.stateDirectory)).toEqual(predecessor);
+});
+
+it.each(["brief", "slice", "design", "implementation-known-remedy"] as const)(
+  "ISS-277 reviewer %s counts the associated author with raw terminal evidence",
+  async (kind) => {
+    const f = await iss277Queue({ status: "failed", defect: iss277Defect(kind) }, true);
+    await queueStep(f.q, { ...f.adapter, source: async () => ({ status: "observing-author" }) });
+    expect((await f.adapter.source(f.item)).status).toBe("fixable-review");
+    const failures = (await f.read()).authorFailures;
+    expect(failures.count).toBe(1);
+    expect(failures.ids).toEqual(["iss277-1"]);
+    expect(failures.held ?? []).toEqual(kind === "implementation-known-remedy" ? [] : ["iss277-1"]);
+    await queueStep(f.q, f.adapter);
+    expect(f.launches.filter((p) => p.role === "author").map((p) => p.rung)).toEqual([
+      0,
+      kind === "implementation-known-remedy" ? 1 : 0,
+    ]);
+  },
+);
+
+it.each([
+  "mechanical",
+  "environment-tooling",
+  "external-dependency",
+  "brief",
+  "slice",
+  "design",
+  "product-scope",
+  "implementation-known-remedy",
+  "malformed",
+  "dead",
+  "refused",
+  "missing",
+  "invalid-json",
+  "ambiguous",
+])("ISS-277 legacy raw %s derives once without historical writes", async (kind) => {
+  const directory = await mkdtemp(resolve(tmpdir(), "iss277-legacy-"));
+  roots.push(directory);
+  const source = resolve(directory, "source");
+  await mkdir(source);
+  const status =
+    kind === "malformed" ? "malformed" : ["dead", "refused"].includes(kind) ? "dead" : "failed";
+  const row = participant(1, "ISS-265:1", "source", "author", status);
+  const history = [row];
+  if (kind === "ambiguous")
+    history.push({
+      ...participant(2, row.item, "source", "author", "failed"),
+      id: "another-author",
+    });
+  for (const p of history)
+    await writeFile(
+      resolve(directory, `participant-${p.ordinal}-terminal.json`),
+      JSON.stringify(p),
+    );
+  await writeFile(resolve(source, "author-attempt.json"), JSON.stringify({ id: row.id }));
+  const raw = {
+    id: row.id,
+    status,
+    ...(kind === "refused" ? { modelRefused: true } : {}),
+    ...(status === "failed" ? { defect: iss277Defect(kind as DefectClass) } : {}),
+  };
+  if (kind !== "missing")
+    await writeFile(
+      resolve(source, "author-terminal.json"),
+      kind === "invalid-json" ? "{" : JSON.stringify(raw),
+    );
+  await writeFile(
+    resolve(directory, "attempt.json"),
+    JSON.stringify({ authorFailures: { count: 1 } }),
+  );
+  const before = await snapshot(directory);
+  for (const ids of [undefined, [row.id]]) {
+    const failures = { count: 1, ...(ids ? { ids } : {}) };
+    const result = await deriveAuthorHolds(failures, history, "ISS-265:2", [directory], 64);
+    const unavailable =
+      ["missing", "invalid-json"].includes(kind) || (kind === "ambiguous" && !ids);
+    const held =
+      !unavailable && !["implementation-known-remedy", "refused", "ambiguous"].includes(kind);
+    expect(result.count).toBe(1);
+    expect(result.ids ?? []).toEqual(unavailable && !ids ? [] : [row.id]);
+    expect(result.held ?? []).toEqual(held ? [row.id] : []);
+    expect(authorFailureRung(result)).toBe(held ? 0 : 1);
+    if (unavailable)
+      expect(Object.values(result.holdDiagnostics ?? {}).join(" ")).toMatch(
+        /retained-author-terminal-(unavailable|unreadable)/,
+      );
+    expect(await deriveAuthorHolds(result, history, "ISS-265:2", [directory], 64)).toEqual(result);
+    expect(await snapshot(directory)).toEqual(before);
+  }
+  const persisted = { count: 1, ids: [row.id], held: [row.id, row.id, "foreign"] };
+  expect(await deriveAuthorHolds(persisted, history, "ISS-265:2", [directory], 64)).toBe(persisted);
+  expect(authorFailureRung(persisted)).toBe(0);
+});
+
+it.each([
+  ["brief", "ISSUE"],
+  ["slice", "SET"],
+  ["design", "EPIC"],
+] as const)(
+  "ISS-277 planning %s retries its literal author at rung zero then stops semantic FAIL at %s",
+  async (kind, level) => {
+    const f = await sourceFailureFixture();
+    roots.push(f.root);
+    const remote = resolve(f.root, "remote.git");
+    await f.git(f.repository, ["clone", "--bare", f.repository, remote]);
+    await f.git(f.repository, ["remote", "add", "origin", remote]);
+    const config = f.current.config;
+    const item = config.items[0]!;
+    const placements: { rung: number | undefined; model: string | undefined; effort: string }[] =
+      [];
+    const launch = f.native.launch;
+    f.native.launch = async (role, current, prompt) => {
+      if (current.purpose === "planning")
+        placements.push({
+          rung: current.author.rung,
+          model: current.author.model,
+          effort: current.author.effort,
+        });
+      else if (role === "author")
+        await writeFile(resolve(current.worktree, "product.txt"), "changed\n");
+      return launch(role, current, prompt);
+    };
+    f.native.observe = async (role, current, attempt) => {
+      const defect = iss277Defect(kind);
+      if (current.purpose === "planning")
+        return {
+          id: attempt.id,
+          head: current.base,
+          status: placements.length === 1 ? "dead" : "failed",
+          defect,
+        };
+      const head =
+        role === "author" ? current.base : await f.git(current.worktree, ["rev-parse", "HEAD"]);
+      if (role === "author") return { id: attempt.id, head, status: "passed" };
+      return {
+        id: attempt.id,
+        head,
+        status: "failed",
+        defect,
+        summary: JSON.stringify({
+          run: current.run,
+          role,
+          head,
+          verdict: "FAIL",
+          findings: [
+            { file: "product.txt", line: 1, severity: "blocking", text: "Ambiguous ownership" },
+          ],
+          g0: "No; resolve the scope.",
+          defect,
+        }),
+      };
+    };
+    const body = "## Decision\nPreserve the outcome.\n\n## Done when\n- Observe exact bytes.\n";
+    f.policy.planningContext = async () => ({
+      context: {
+        title: "Fixture",
+        body,
+        acceptanceCriteria: ["Observe exact bytes."],
+        rules: "Fixture",
+      },
+      planning: null,
+      issues: [{ number: 110, body, updatedAt: "2026-10-10T00:00:00Z", milestone: null }],
+    });
+    const adapter = repositoryQueueAdapter(config, f.repository, {
+      native: f.native,
+      repository: f.policy,
+      gitExecutable: f.loop.gitExecutable,
+    });
+    adapter.setup = f.current.adapter.setup;
+    expect((await queueStep(config, adapter)).status).toBe("observing-planning-author");
+    expect(placements).toHaveLength(1);
+    const first = JSON.parse(
+      await readFile(resolve(config.stateDirectory, "attempt.json"), "utf8"),
+    );
+    expect(first.authorFailures.held).toContain(
+      first.history.find((p: QueueParticipant) => p.role === "author")!.id,
+    );
+    expect((await queueStep(config, adapter)).status).toBe("planning-rejected");
+    expect(placements).toEqual([
+      { rung: 0, model: "gpt-6-astra", effort: "high" },
+      { rung: 0, model: "gpt-6-astra", effort: "high" },
+    ]);
+    const recovery = JSON.parse(
+      await readFile(resolve(config.stateDirectory, "planning-recovery.json"), "utf8"),
+    );
+    expect(recovery).toMatchObject({ level, state: "rejected", retryUsed: true });
+    const before = await snapshot(config.stateDirectory);
+    expect((await queueStep(config, adapter)).status).toBe("planning-rejected");
+    expect(placements).toHaveLength(2);
+    expect(await snapshot(config.stateDirectory)).toEqual(before);
+    expect(item.implementationAttempt).toBe(1);
+  },
+);
+
+it.each([false, true])(
+  "ISS-277 conflict successor reconstructs a held failure (refused: %s)",
+  async (refused) => {
+    const f = await stoppedConflictFixture();
+    const path = resolve(f.old.source.stateDirectory, `refresh-${f.main}`, "author-terminal.json");
+    const raw = JSON.parse(await readFile(path, "utf8"));
+    await writeFile(
+      path,
+      JSON.stringify({
+        ...raw,
+        defect: iss277Defect("environment-tooling"),
+        ...(refused ? { modelRefused: true } : {}),
+      }),
+    );
+    // The old cursor is already terminal, so composition need not project it.
+    await writeFile(
+      resolve(f.original.stateDirectory, "attempt.json"),
+      JSON.stringify({
+        ...f.projection,
+        phase: "failed",
+        head: f.seed,
+        history: f.history,
+        acceptedStage: null,
+        stateDirectory: null,
+      }),
+    );
+    const before = await snapshot(f.original.stateDirectory);
+    const next = await f.compose();
+    const failures = next.items[0]!.source.authorFailures!;
+    expect(failures.count).toBe(1);
+    expect(failures.ids).toEqual(["failed-resolution"]);
+    expect(failures.held ?? []).toEqual(refused ? [] : ["failed-resolution"]);
+    expect(authorFailureRung(failures)).toBe(refused ? 1 : 0);
+    expect(await f.compose()).toEqual(next);
+    expect(await snapshot(f.original.stateDirectory)).toEqual(before);
+  },
+);
+
+it("ISS-277 probe refusal advances without a held failure or launch charge", async () => {
+  const f = await iss277Queue({ status: "running" });
+  const launch = f.native.launch;
+  let calls = 0;
+  f.native.launch = async (...args) => {
+    if (calls++ === 0) throw new QueueBlocked("provider-model-refused", "synthetic refusal");
+    return launch(...args);
+  };
+  expect((await queueStep(f.q, f.adapter)).status).toBe("observing-author");
+  expect(f.launches).toEqual([{ role: "author", rung: 1, model: "gpt-6-astra", effort: "xhigh" }]);
+  const failures = (await f.read()).authorFailures;
+  expect(failures.count).toBe(1);
+  expect(failures.ids).toEqual([`${f.item.source.stateDirectory}:probe:0`]);
+  expect(failures.held ?? []).toEqual([]);
+  expect(await f.adapter.history()).toHaveLength(0);
+});
+
+it("ISS-277 product-scope keeps ordinary parking and holds its explicitly unparked successor", async () => {
+  const f = await sourceFailureFixture();
+  roots.push(f.root);
+  const observe = f.native.observe;
+  f.native.observe = async (...args) => ({
+    ...(await observe(...args)),
+    defect: iss277Defect("product-scope"),
+  });
+  const remote = resolve(f.root, "remote.git");
+  await f.git(f.repository, ["clone", "--bare", f.repository, remote]);
+  await f.git(f.repository, ["remote", "add", "origin", remote]);
+  await f.fail();
+  expect(await f.stop()).toBe("item");
+  expect(f.rows[0]!.ready).toBe(false);
+  expect(await readdir(f.current.config.stateDirectory)).not.toContain("planning-recovery.json");
+  f.rows[0]!.ready = true;
+  const next = (await f.advance())!;
+  const successor = await f.compose(next);
+  expect(successor.config.items[0]!.implementationAttempt).toBe(2);
+  expect(successor.config.items[0]!.source.author.rung).toBe(0);
+  expect(successor.config.items[0]!.source.authorFailures).toMatchObject({
+    count: 1,
+    held: ["synthetic-worker-1"],
+  });
+});
+
+it("ISS-277 candidate-attributed delivery correction advances without a hold", async () => {
+  for await (const _ of prepareStructureCorrection(false, false, "candidate", false, true)) {
+    /* native phase boundary */
+  }
+});
 
 let timing: CaseTiming | undefined;
 
@@ -3675,6 +4178,8 @@ it.each(["red", "unknown", "missing-log"])(
 
 it.each([
   "green",
+  "ISS-277 correction",
+  "ISS-277 typecheck",
   "correction",
   "typecheck",
   "second-failure",
@@ -3687,6 +4192,8 @@ it.each([
 ])(
   "ISS-231 runs native gates before reviewer intent, including first-review correction: %s",
   async (mode) => {
+    const routingProof = mode.startsWith("ISS-277 ");
+    if (routingProof) mode = mode.slice("ISS-277 ".length);
     const missingFocused = mode.startsWith("missing-focused");
     const focusedCriterion =
       "Execute pnpm exec vitest run test/focused.test.ts and retain its passing result.";
@@ -3747,6 +4254,20 @@ it.each([
     const item = q.items[0]!;
     const launches: string[] = [];
     const prompts: string[] = [];
+    if (routingProof) {
+      item.source.author = {
+        ...SELF_ROUTING.author[0]!,
+        ladder: SELF_ROUTING.author,
+        rung: 0,
+        prompt: item.source.author.prompt,
+      };
+      item.source.reviewer = {
+        ...SELF_ROUTING.reviewer[0]!,
+        ladder: SELF_ROUTING.reviewer,
+        rung: 0,
+        prompt: item.source.reviewer.prompt,
+      };
+    }
     let malformed = mode === "retry" || mode === "missing-focused-retry";
     let reviewing = missingFocused;
     const missingFinding = {
@@ -4001,6 +4522,21 @@ it.each([
       JSON.parse(await readFile(resolve(q.stateDirectory, "attempt.json"), "utf8"))
         .candidateAttempt,
     ).toBe(mode === "repair" ? 2 : 1);
+    if (routingProof) {
+      const failures = JSON.parse(
+        await readFile(resolve(q.stateDirectory, "attempt.json"), "utf8"),
+      ).authorFailures;
+      expect(failures.count).toBe(1);
+      expect(failures.held ?? []).toEqual([]);
+      expect(authorFailureRung(failures)).toBe(1);
+      const correction = JSON.parse(
+        await readFile(
+          resolve(item.source.stateDirectory, "gate-correction/author-attempt.json"),
+          "utf8",
+        ),
+      );
+      expect(correction.rung).toBe(1);
+    }
   },
 );
 const unavailable = { status: "unavailable" as const };
@@ -4897,6 +5433,7 @@ async function* prepareStructureCorrection(
   afterMirror: boolean,
   mode: string,
   executorRecovery = false,
+  routingProof = false,
 ) {
   // Keep the synthetic refreshed base checkout below Windows' path limit;
   // core.longpaths alone did not fix the attempt-2 hosted control failures.
@@ -4982,6 +5519,20 @@ See docs/architecture/bounded-context-structure.md#rules-the-structure-gate-enfo
   vi.stubEnv("CHANGED_FILES_JSON", executorRecovery ? undefined : '["SYNTHETIC_AMBIENT_ONLY.ts"]');
   let q = await queueConfigFromLoop(f.loop, executor, f.selected, repositoryPolicy);
   const item = q.items[0]!;
+  if (routingProof) {
+    item.source.author = {
+      ...SELF_ROUTING.author[0]!,
+      ladder: SELF_ROUTING.author,
+      rung: 0,
+      prompt: item.source.author.prompt,
+    };
+    item.source.reviewer = {
+      ...SELF_ROUTING.reviewer[0]!,
+      ladder: SELF_ROUTING.reviewer,
+      rung: 0,
+      prompt: item.source.reviewer.prompt,
+    };
+  }
   const launches: { stage: string; head: string; prompt: string }[] = [];
   let authorRunning = false,
     reviewRunning = false,
@@ -5647,6 +6198,17 @@ See docs/architecture/bounded-context-structure.md#rules-the-structure-gate-enfo
       await readFile(resolve(correctionRoot, "gate-correction-result.json"), "utf8"),
     );
     expect(result.head).not.toBe(capture.failedHead);
+    if (routingProof) {
+      const failures = JSON.parse(
+        await readFile(resolve(q.stateDirectory, "attempt.json"), "utf8"),
+      ).authorFailures;
+      expect(failures.count).toBe(1);
+      expect(failures.held ?? []).toEqual([]);
+      const correction = JSON.parse(
+        await readFile(resolve(correctionRoot, "gate-correction/author-attempt.json"), "utf8"),
+      );
+      expect(correction.rung).toBe(1);
+    }
     expect(
       await git(item.source.worktree, ["diff", "--name-only", `${capture.main}...${result.head}`]),
     ).toBe("synthetic.ts");
@@ -6252,9 +6814,10 @@ it.each([
     expect(await read("author-attempt.json")).toBe(persisted);
     expect(launches).toEqual(authorLaunches);
     expect(await partials()).toEqual(bytes);
-    expect((await queueRecord()).authorFailures).toEqual({
+    expect((await queueRecord()).authorFailures).toMatchObject({
       count: 3,
       ids: ["synthetic-probe-0", "synthetic-probe-1", author.id],
+      held: [author.id],
     });
     await writeFile(
       retry!.trace,

@@ -3761,6 +3761,47 @@ it.each(["pass", "author-fail", "review-fail", "host-unknown", "dead", "gate-fai
   },
 );
 
+it.each([false, true])(
+  "ISS-277 spent integration reconstruction holds only non-refused raw failures (%s)",
+  async (refused) => {
+    const f = await spentFixture();
+    const terminalPath = resolve(f.failedDirectory, "author-terminal.json");
+    const terminal = JSON.parse(await readFile(terminalPath, "utf8"));
+    await writeFile(
+      terminalPath,
+      JSON.stringify({
+        ...terminal,
+        modelRefused: refused,
+        defect: {
+          defectClass: "environment-tooling",
+          explanation: "Synthetic environment failure.",
+          rootCause: "iss277-spent-fixture",
+          evidenceStatus: "established",
+          evidence: ["docs/loop.md:1"],
+        },
+      }),
+    );
+    // Exercise the older projection that has not counted the conflict author yet.
+    const attemptPath = resolve(f.old.stateDirectory, "attempt.json");
+    const attempt = JSON.parse(await readFile(attemptPath, "utf8"));
+    attempt.authorFailures = { count: 1, ids: [f.history[2]!.id] };
+    await writeFile(attemptPath, JSON.stringify(attempt));
+    const before = await snapshot(f.old.stateDirectory);
+    const next = await f.compose();
+    const failures = next.items[0]!.source.authorFailures!;
+    expect(failures.count).toBe(2);
+    expect(failures.ids).toEqual([f.history[2]!.id, terminal.id]);
+    expect(failures.held ?? []).toEqual(refused ? [] : [terminal.id]);
+    expect(next.items[0]!.source.author.rung).toBe(refused ? 2 : 1);
+    expect(await f.compose()).toEqual(next);
+    for (const [path, bytes] of before) expect(await readFile(path, "utf8"), path).toBe(bytes);
+    const reservation = JSON.parse(
+      await readFile(resolve(f.old.stateDirectory, "spent-resolution.json"), "utf8"),
+    );
+    expect(reservation.authorFailures).toEqual(failures);
+  },
+);
+
 async function spentFixture(spentRetry = false, autocrlf = false) {
   const f = await exhaustedFixture("overlap", spentRetry, autocrlf);
   const old = await f.compose(); // Original ISS-167 claim remains byte-identical.

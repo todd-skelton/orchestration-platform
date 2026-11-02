@@ -10,7 +10,12 @@ import { retainWorkerOutcome, validDefect } from "./outcome.ts";
 import { parseReview, validateLocations } from "./repair-policy.mjs";
 // @ts-expect-error Node 24 executes TypeScript directly.
 import { observeIntegrationAuthority } from "./continuation.ts";
-import { resolveRole, type ModelPlacement } from "./routing.mjs";
+import {
+  resolveRole,
+  applyAuthorFailure,
+  authorFailureRung,
+  type ModelPlacement,
+} from "./routing.mjs";
 import { bodyCriteria } from "../../adapters/chase-sets.mjs";
 import {
   extractAcceptanceCriteria,
@@ -1128,13 +1133,11 @@ export async function planningStep(operation: PlanningOperation): Promise<Planni
       const priorAuthor = state.workers.findLast(
         (row) => row.intent.role === "author" && row.config.worktree === workspace,
       );
-      // Only a materialized family placement is reused on a mechanical retry;
-      // a literal ladder keeps its failure-count/authorRung advancement.
+      // Mechanical retries retain both literal and materialized family placements.
       const retryPlacement =
         priorAuthor?.terminal &&
         !priorAuthor.terminal.modelRefused &&
-        ["malformed", "dead"].includes(priorAuthor.terminal.status) &&
-        priorAuthor.config.author.family
+        ["malformed", "dead"].includes(priorAuthor.terminal.status)
           ? priorAuthor.config.author
           : undefined;
       // A consumed host grant launches the placement it materialized for the
@@ -1149,12 +1152,17 @@ export async function planningStep(operation: PlanningOperation): Promise<Planni
         placement = retryPlacement;
       } else {
         const ladder = source.author.ladder ?? [source.author];
-        const failures = state.workers.filter(
-          (row) =>
+        const failures = state.workers.reduce(
+          (failures, row, index) =>
             row.intent.role === "author" &&
-            (row.refused || (row.terminal && row.terminal.status !== "passed")),
-        ).length;
-        const count = (await native.authorRung?.(source)) ?? (source.author.rung ?? 0) + failures;
+            (row.refused || (row.terminal && row.terminal.status !== "passed"))
+              ? applyAuthorFailure(failures, row.attempt?.id ?? `probe:${index}`, row.terminal)
+              : failures,
+          { count: 0, ids: [] } as NonNullable<Config["authorFailures"]>,
+        );
+        const count =
+          (await native.authorRung?.(source)) ??
+          (source.author.rung ?? 0) + authorFailureRung(failures);
         if (
           (state.workers.at(-1)?.refused || state.workers.at(-1)?.terminal?.modelRefused) &&
           state.workers.at(-1)!.config.author.rung === ladder.length - 1
