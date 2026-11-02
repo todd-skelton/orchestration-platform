@@ -1745,6 +1745,17 @@ it("observes check startup and pending checks without republishing", async () =>
   expect(f.calls.filter((call) => call.startsWith("gate:"))).toHaveLength(4);
 });
 
+it("does not treat passing local gates as hosted readiness", async () => {
+  const f = await fixture();
+  f.state.checks = "pending";
+
+  await expect(deliveryStep(f.config, f.adapter, f.policy)).resolves.toMatchObject({
+    status: "observing-hosted-checks",
+  });
+  expect(f.calls.filter((call) => call.startsWith("gate:")).length).toBe(4);
+  expect(f.calls).not.toContain("merge");
+});
+
 it("waits across intermediate jobs and job gaps for the real required aggregate without republishing", async () => {
   const f = await aggregateFixture();
   for (const [status, checks] of [

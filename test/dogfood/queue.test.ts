@@ -8992,7 +8992,7 @@ it("derives the complete internal queue from one compact loop config and selecte
   expect(queue.items[0]!.repair).not.toHaveProperty("sourcePaths");
 }, 30_000);
 
-it("keeps the real self adapter's configured author gates mandatory before reporting", async () => {
+it("keeps the real self adapter's cheap author gates mandatory before reporting", async () => {
   const { loop, repository, selected } = await loopFixture();
   const queue = await queueConfigFromLoop(
     { ...loop, repository: "todd-skelton/orchestration-platform" },
@@ -9001,14 +9001,20 @@ it("keeps the real self adapter's configured author gates mandatory before repor
     selfAdapter,
   );
   const source = queue.items[0]!.source;
-  expect(source.localGates).toEqual(["typecheck", "format:check", "test"]);
+  expect(source.localGates).toEqual(["typecheck", "format:check"]);
   const prompt = workerPrompt(source, "author", source.base, source.author.prompt);
   expect(prompt).toContain(
-    "Before reporting, run `pnpm typecheck`, `pnpm format:check` and `pnpm test` in this worktree, and fix what fails.",
+    "The executor will commit the candidate and must run `pnpm typecheck` and `pnpm format:check` before publication",
   );
-  expect(prompt).not.toContain("are not prerequisites for your source report");
+  expect(prompt).not.toContain("pnpm test");
+  expect(prompt).toContain("are not prerequisites for your source report");
   const { localGates: _gates, ...implicitDefaults } = source;
-  expect(prompt).toBe(workerPrompt(implicitDefaults, "author", source.base, source.author.prompt));
+  expect(prompt).not.toBe(
+    workerPrompt(implicitDefaults, "author", source.base, source.author.prompt),
+  );
+  expect(workerPrompt(implicitDefaults, "author", source.base, source.author.prompt)).toContain(
+    'Run the full suite as pnpm test > "$TMPDIR/pnpm-test.log" 2>&1; echo "exit=$?"',
+  );
 });
 
 it("recomposes a polled attempt and resumes its recorded phase", async () => {

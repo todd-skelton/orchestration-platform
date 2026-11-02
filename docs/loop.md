@@ -11,10 +11,12 @@ capability is added only when a real cycle records a blocker.
    `package.json`, which accepts one loop config and derives each phase.
 2. An issue is runnable when it is open, labeled `ready`, every `blocked_by`
    in its draft is closed, and it belongs to the earliest open milestone.
-3. Authors run `pnpm typecheck`, `pnpm format:check` and `pnpm test` in their
-   worktree before handing off. The hosted three-OS `bootstrap` workflow is
-   the only required check on a PR. The loop observes its own
-   `REQUIRED_CHECKS` before merging, unchanged;
+3. Each adapter supplies the local gates that must pass before publication.
+   The self adapter's cheap gates are `pnpm typecheck` and `pnpm format:check`;
+   its load-sensitive full `pnpm test` suite is not a local merge gate. The
+   hosted three-OS `bootstrap` workflow is the required PR check, and the loop
+   observes its own `REQUIRED_CHECKS` on the exact candidate head before
+   merging, unchanged;
    `node scripts/planning/require-bootstrap-checks.mjs check` reports whether
    GitHub currently requires those same three contexts on `main` (ISS-175).
 4. Review is a verdict (PASS or FAIL), findings with `file:line`, and a G0

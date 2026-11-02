@@ -208,7 +208,7 @@ export function requiredChecks({ repository }) {
 
 export function localGates({ repository }) {
   validateRepository(repository);
-  return ["typecheck", "format:check", "test"];
+  return ["typecheck", "format:check"];
 }
 
 export const unparkInstructions = "add the `ready` label after acting on the note";
