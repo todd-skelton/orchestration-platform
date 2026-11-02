@@ -206,6 +206,10 @@ it("loads the named self adapter with the complete repository seam", async () =>
     "Node 24 / windows-latest",
     "Node 24 / macos-latest",
   ]);
+  expect(self.localGates({ repository: "todd-skelton/orchestration-platform" })).toEqual([
+    "typecheck",
+    "format:check",
+  ]);
   await expect(
     self.issueContext({
       repository: "todd-skelton/orchestration-platform",
