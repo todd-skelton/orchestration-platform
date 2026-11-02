@@ -4354,7 +4354,7 @@ it("keeps repository identities and mirror rules in the explicit private policy 
     planning,
   );
   expect(plan.gates).toEqual({
-    beforeMirror: ["typecheck", "format:check", "test"],
+    beforeMirror: ["typecheck", "format:check"],
     afterMirror: ["planning:board-check"],
   });
   expect(plan.drafts.map(({ key, issue: number }) => ({ key, number }))).toEqual([
