@@ -1233,12 +1233,20 @@
       "blockedBy": ["ISS-268", "ISS-269"]
     },
     {
+      "key": "ISS-279",
+      "file": "planning/drafts/ISS-279.md",
+      "title": "[delivery] Publish a fresh self run without reusing a failed prior PR",
+      "summary": "Scope new ordinary self publications by run and absolute attempt, preserve legacy and continuation identities, and leave stale failed PRs untouched before the ISS-277 rerun.",
+      "milestone": "M1",
+      "blockedBy": []
+    },
+    {
       "key": "ISS-277",
       "file": "planning/drafts/ISS-277.md",
       "title": "[routing] Hold the author rung after environment or mechanical failures and skip registry-unadmitted efforts",
-      "summary": "Keep the author rung after a mechanical or environment-tooling author failure, skip family rungs whose effort the model registry does not admit, and preserve every count, charge, ceiling, refusal and legacy record.",
+      "summary": "After ISS-279 publication identity support: keep the author rung after a mechanical or environment-tooling author failure, skip family rungs whose effort the model registry does not admit, and preserve every count, charge, ceiling, refusal and legacy record.",
       "milestone": "M1",
-      "blockedBy": []
+      "blockedBy": ["ISS-279"]
     },
     {
       "key": "ISS-278",
