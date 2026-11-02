@@ -8,8 +8,10 @@ on this repository first and then on Chase Sets through an adapter.
 - [docs/model-selection.md](docs/model-selection.md): models the loop can dispatch.
 - `planning/roadmap.json` and `planning/drafts/`: the executable backlog.
 
-Verify locally:
+Verify the self-hosting executor's cheap local gates:
 
 ```sh
-pnpm typecheck && pnpm format:check && pnpm planning:check && pnpm test
+pnpm typecheck && pnpm format:check
 ```
+
+The full `pnpm test` suite runs in the hosted required checks on pull requests.
