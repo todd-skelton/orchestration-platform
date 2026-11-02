@@ -93,6 +93,39 @@ import { startCaseTiming, type CaseTiming } from "./fixtures/iss212-timing.js";
 
 let timing: CaseTiming | undefined;
 
+// ISS-278: count real children without replacing their arguments, results or errors.
+const childCensus = vi.hoisted(() => ({ observe: undefined as (() => void) | undefined }));
+vi.mock("node:child_process", async (original) => {
+  const actual = await original<typeof import("node:child_process")>();
+  const { promisify } = await import("node:util");
+  const execute = promisify(actual.execFile);
+  const counted = new Proxy(actual.execFile.bind(null), {
+    apply(target, receiver, args) {
+      childCensus.observe?.();
+      return Reflect.apply(target, receiver, args);
+    },
+  });
+  Object.defineProperty(counted, promisify.custom, {
+    value: (...args: Parameters<typeof execute>) => {
+      childCensus.observe?.();
+      return execute(...args);
+    },
+  });
+  return {
+    ...actual,
+    execFile: counted,
+    spawn: new Proxy(actual.spawn, {
+      apply(target, receiver, args) {
+        childCensus.observe?.();
+        return Reflect.apply(target, receiver, args);
+      },
+    }),
+  };
+});
+afterEach(() => {
+  childCensus.observe = undefined;
+});
+
 it("binds repair FAIL to its retained setup, source, review, author and complete history", async () => {
   const f = await repairFailureFixture();
   roots.push(f.root);
@@ -2156,14 +2189,18 @@ async function verificationOnlyFixture(cycleNumber = 1) {
     state: "OPEN",
     title: "Synthetic verification-only candidate",
   }));
-  const compose = (current = loop, observeGrant = authority) =>
+  const compose = (
+    current = loop,
+    observeGrant = authority,
+    validatedExecutor?: Awaited<ReturnType<typeof validateLoopExecutor>>,
+  ) =>
     queueConfigFromLoop(
       current,
       f.repository,
       f.selected,
       policy,
       history,
-      undefined,
+      validatedExecutor,
       observeGrant,
       undefined,
       observeIssue,
@@ -3126,6 +3163,37 @@ it.each([
   "ISS-235 / ISS-231 carries the verification charge past later cycles above 64: %s then retained %s",
   async (outcome, laterOutcome) => {
     const f = await verificationOnlyFixture(3);
+    // Census the exercised lifecycle, excluding fixture creation and cleanup.
+    // This also excludes the fixture's once-per-file Git executable lookup.
+    const children = { fixture: 0, validation: 0, setup: 0, delivery: 0, other: 0 };
+    const total = () => Object.values(children).reduce((sum, count) => sum + count, 0);
+    childCensus.observe = () => {
+      // Read raw call sites: source-map formatting on every child would add
+      // unrelated work to the lifecycle this census is intended to bound.
+      const prepare = Error.prepareStackTrace;
+      let stack: string;
+      try {
+        Error.prepareStackTrace = (_error, frames) =>
+          frames.map((frame) => `${frame.getFunctionName()} ${frame.getFileName()}`).join("\n");
+        stack = new Error().stack ?? "";
+      } finally {
+        Error.prepareStackTrace = prepare;
+      }
+      const source = stack.includes("validateLoopExecutor")
+        ? "validation"
+        : /setup-adapter\.[jt]s/.test(stack)
+          ? "setup"
+          : /delivery-adapter\.[jt]s/.test(stack)
+            ? "delivery"
+            : /git .*queue\.test\.ts/.test(stack)
+              ? "fixture"
+              : "other";
+      children[source]++;
+    };
+    // This lifecycle changes worktrees and records, not the fixture's executor.
+    const executor = await validateLoopExecutor(f.loop, f.repository);
+    const compose = () => f.compose(undefined, undefined, executor);
+    const validateExecutor = async () => executor;
     const closed = new Set<number>();
     const host: SupervisionAdapter = {
       ...f.supervisor,
@@ -3180,13 +3248,19 @@ it.each([
     else await completeCycle(f.loop, later, retainedHistory, host);
     const before = await snapshot(resolve(f.loop.stateRoot, f.loop.run));
 
-    const resumed = (await nextCycle(f.loop, f.repository, host, repositoryPolicy))!;
+    const resumed = (await nextCycle(
+      f.loop,
+      f.repository,
+      host,
+      repositoryPolicy,
+      validateExecutor,
+    ))!;
     expect(resumed.selection).toEqual(f.cycle.selection);
-    const q = await f.compose();
+    const q = await compose();
     expect(q.initialHistory).toEqual(retainedHistory);
     const adapter = f.adapter(q);
     expect((await queueStep(q, adapter)).status).toBe("observing-reviewer");
-    expect((await queueStep(await f.compose(), f.adapter(await f.compose()))).status).toBe(
+    expect((await queueStep(await compose(), f.adapter(await compose()))).status).toBe(
       "observing-reviewer",
     );
     f.finish(outcome === "review-fail");
@@ -3226,11 +3300,11 @@ it.each([
       }),
     };
     for (let replay = 0; replay < 2; replay++) {
-      const next = (await nextCycle(f.loop, f.repository, host, policy))!;
+      const next = (await nextCycle(f.loop, f.repository, host, policy, validateExecutor))!;
       expect(next.selection).toMatchObject({ cycle: 5, key: "cs-363" });
       expect(next.initialHistory).toEqual(charged);
     }
-    const next = (await nextCycle(f.loop, f.repository, host, policy))!;
+    const next = (await nextCycle(f.loop, f.repository, host, policy, validateExecutor))!;
     await persistCycle(f.loop, next);
     const { cycle: _cycle, ...selection } = next.selection;
     const successor = await queueConfigFromLoop(
@@ -3239,6 +3313,7 @@ it.each([
       selection,
       policy,
       next.initialHistory,
+      executor,
     );
     let successorRunning = true;
     const worker: Adapter = {
@@ -3282,6 +3357,12 @@ it.each([
     expect(f.launches).toEqual(["reviewer"]);
     expect(f.captures()).toBe(1);
     for (const [path, bytes] of before) expect(await readFile(path, "utf8"), path).toBe(bytes);
+    childCensus.observe = undefined;
+    console.info(
+      `ISS-278 child census ${JSON.stringify({ outcome, laterOutcome, total: total(), children })}`,
+    );
+    expect(total()).toBe(outcome === "complete" ? 384 : 277);
+    expect(children.validation).toBe(8);
   },
 );
 
