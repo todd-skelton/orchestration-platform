@@ -2,7 +2,54 @@
 import { QueueBlocked, readOptional } from "./flow.ts";
 import { readFile } from "node:fs/promises";
 import { resolve, isAbsolute } from "node:path";
-import type { Config, Role } from "./flow.js";
+import type { Config, Role, Terminal } from "./flow.js";
+
+type AuthorFailures = NonNullable<Config["authorFailures"]>;
+
+// ISS-277 changes placement only. The ordinary lifecycle still owns admission.
+export function holdAuthorFailure(terminal?: Terminal): boolean {
+  if (!terminal || terminal.modelRefused) return false;
+  if (terminal.status === "malformed" || terminal.status === "dead") return true;
+  return (
+    terminal.status === "failed" &&
+    [
+      "mechanical",
+      "environment-tooling",
+      "external-dependency",
+      "brief",
+      "slice",
+      "design",
+      "product-scope",
+    ].includes(terminal.defect?.defectClass ?? "")
+  );
+}
+
+export function applyAuthorFailure(
+  state: AuthorFailures | undefined,
+  id: string,
+  terminal?: Terminal,
+  diagnostics?: string,
+): AuthorFailures {
+  const failures = state ?? { count: 0, ids: [] };
+  if (failures.ids?.includes(id)) return failures;
+  return {
+    ...failures,
+    count: failures.count + 1,
+    ids: [...(failures.ids ?? []), id],
+    ...(holdAuthorFailure(terminal) ? { held: [...(failures.held ?? []), id] } : {}),
+    ...(diagnostics === undefined
+      ? {}
+      : {
+          diagnostics: { ...failures.diagnostics, [id]: diagnostics.slice(0, 200) },
+        }),
+  };
+}
+
+export function authorFailureRung(state: AuthorFailures | undefined): number {
+  const ids = new Set(state?.ids ?? []);
+  const held = new Set((state?.held ?? []).filter((id) => ids.has(id)));
+  return Math.max(0, (state?.count ?? 0) - held.size);
+}
 
 export interface ModelPlacement {
   model?: string;
@@ -114,10 +161,11 @@ interface Registry {
   generation: number;
   authorityDigest: string;
   families: Record<string, { current?: string | null }>;
+  models: Record<string, { admittedEfforts: string[] }>;
 }
 
-// ISS-249: read only the registry projection needed by this selection. Efforts
-// and routing policy remain platform-owned; unavailable families spend no launch.
+// ISS-249/277: resolve identities and admitted efforts in one snapshot;
+// unavailable families and efforts spend no launch.
 export async function resolveRole(
   config: Config,
   role: Role,
@@ -162,6 +210,19 @@ export async function resolveRole(
             (typeof entry.current !== "string" || !entry.current.trim()))
         )
           throw new Error("registry family");
+        if (entry.current !== undefined && entry.current !== null) {
+          const model = snapshot.models?.[entry.current];
+          if (
+            !snapshot.models ||
+            Array.isArray(snapshot.models) ||
+            !model ||
+            typeof model !== "object" ||
+            Array.isArray(model) ||
+            !Array.isArray(model.admittedEfforts) ||
+            model.admittedEfforts.some((effort) => typeof effort !== "string")
+          )
+            throw new Error("registry model");
+        }
       }
     } catch {
       throw new QueueBlocked("model-registry-unavailable");
@@ -173,6 +234,7 @@ export async function resolveRole(
     const p = ladder[rung]!;
     const model = p.model ?? snapshot?.families[p.family!]?.current;
     if (!model) continue;
+    if (p.family && !snapshot!.models[model]!.admittedEfforts.includes(p.effort)) continue;
     if (role === "reviewer" && authors.includes(model))
       throw new QueueBlocked("routing-reviewer-not-independent");
     return {
@@ -203,6 +265,12 @@ export async function retainedRouting(config: Config): Promise<Config> {
   )
     return config;
   const result = { ...config };
+  // ISS-277 derives legacy holds for new reservations, never a pinned seed.
+  if (pinned) {
+    if (Object.hasOwn(pinned.config, "authorFailures"))
+      result.authorFailures = pinned.config.authorFailures;
+    else delete result.authorFailures;
+  }
   for (const role of ["author", "reviewer"] as const) {
     if (pinned) result[role] = { ...pinned.config[role], prompt: config[role].prompt };
     else {

@@ -1,15 +1,69 @@
-import { readFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { resolve } from "node:path";
 import { expect, it } from "vitest";
+import type { Config } from "../../scripts/dogfood/flow.js";
+import registry from "./fixtures/model-registry.json" with { type: "json" };
 import { classifyStop, parksItem } from "../../scripts/dogfood/fault-class.js";
 import {
   parseRoutingMarker,
   resolveRouting,
+  resolveRole,
   SELF_ROUTING,
   validateRoutingRow,
   type RoutingRow,
 } from "../../scripts/dogfood/routing.mjs";
 
 const marker = '<!-- routing: {"version":1,"row":7,"review":11} -->';
+
+it("ISS-277 skips unadmitted Astra and Luna efforts, refuses exhausted families, and leaves literals/review unchanged", async () => {
+  const directory = await mkdtemp(resolve(tmpdir(), "iss277-routing-"));
+  try {
+    const modelRegistry = resolve(directory, "registry.json");
+    const snapshot = structuredClone(registry);
+    snapshot.models["gpt-6-astra"].admittedEfforts = ["medium", "high"];
+    snapshot.models["gpt-6-luna"].admittedEfforts = ["high"];
+    await writeFile(modelRegistry, JSON.stringify(snapshot));
+    const config = {
+      modelRegistry,
+      author: { ...SELF_ROUTING.author[0], ladder: SELF_ROUTING.author },
+      reviewer: { ...SELF_ROUTING.reviewer[0], ladder: SELF_ROUTING.reviewer },
+    } as Config;
+    expect(await resolveRole(config, "author", 1)).toMatchObject({
+      rung: 2,
+      placement: { family: "fable", model: "claude-fable-5-1", effort: "high" },
+    });
+    expect(await resolveRole(config, "reviewer", 0)).toMatchObject({
+      rung: 0,
+      placement: { family: "opus", effort: "high" },
+    });
+    const rows: RoutingRow[] = JSON.parse(
+      await readFile(new URL("../../adapters/chase-sets-routing.json", import.meta.url), "utf8"),
+    );
+    const row = rows.find((row) => row.row === 2 && row.review === 11)!;
+    expect(
+      await resolveRole(
+        {
+          ...config,
+          author: { ...config.author, ladder: row.author },
+          reviewer: { ...config.reviewer, ladder: row.reviewer },
+        },
+        "author",
+        1,
+      ),
+    ).toMatchObject({ rung: 2, placement: { family: "sol", effort: "medium" } });
+    for (const entry of Object.values(snapshot.models)) entry.admittedEfforts = [];
+    await writeFile(modelRegistry, JSON.stringify(snapshot));
+    await expect(resolveRole(config, "author", 0)).rejects.toThrow("provider-model-refused");
+    config.author.ladder = [{ model: "gpt-6-astra", effort: "xhigh" }];
+    expect(await resolveRole(config, "author", 0)).toEqual({
+      rung: 0,
+      placement: { model: "gpt-6-astra", effort: "xhigh" },
+    });
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
 
 it("ISS-249 registry observation failure is retry and never parks", () => {
   expect(classifyStop("model-registry-unavailable")).toEqual({

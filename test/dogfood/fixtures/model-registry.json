@@ -2,6 +2,16 @@
   "format": "model-registry/v2",
   "generation": 7,
   "authorityDigest": "synthetic-registry",
+  "models": {
+    "gpt-6-astra": { "admittedEfforts": ["medium", "high", "xhigh"] },
+    "gpt-6.1-sol": { "admittedEfforts": ["medium", "high"] },
+    "gpt-6-luna": { "admittedEfforts": ["high", "xhigh"] },
+    "claude-opus-5-5": { "admittedEfforts": ["medium", "high"] },
+    "claude-sonnet-5-5": { "admittedEfforts": ["medium", "high"] },
+    "claude-fable-5-1": { "admittedEfforts": ["high"] },
+    "synthetic-sol-successor": { "admittedEfforts": ["high"] },
+    "synthetic-new-astra": { "admittedEfforts": ["high", "xhigh"] }
+  },
   "families": {
     "astra": { "current": "gpt-6-astra" },
     "sol": { "current": "gpt-6.1-sol" },

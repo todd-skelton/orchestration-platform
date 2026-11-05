@@ -25,6 +25,9 @@ import {
   resolveRouting,
   retainedRouting,
   validateRoutingRow,
+  applyAuthorFailure,
+  authorFailureRung,
+  holdAuthorFailure,
   type RoutingRow,
 } from "./routing.mjs";
 import { assertControllerExecutor, githubDeliveryAdapter } from "./delivery-adapter.mjs";
@@ -2748,19 +2751,43 @@ export async function queueConfigFromLoop(
         ),
         reason,
       );
-      authorFailures =
-        failed.authorFailures ?? workerConfig.config.authorFailures ?? authorFailures;
+      authorFailures = await deriveAuthorHolds(
+        failed.authorFailures ?? workerConfig.config.authorFailures ?? authorFailures,
+        retainedHistory,
+        attempt.item,
+        [attemptDirectory],
+        config.nativeLaunchCeiling,
+      );
       // Older failure projections did not retain the counter. Count the terminal once,
       // in the new reservation only; never change that historical attempt.
+      const rawAuthors = await retainedAuthorEvidence(
+        retainedHistory.filter((p) => p.item === attempt.item && p.role === "author"),
+        [attemptDirectory],
+        config.nativeLaunchCeiling,
+      );
       for (const participant of retainedHistory.filter(
         (p) => p.item === attempt.item && p.role === "author" && p.outcome !== "passed",
       ))
-        if (!authorFailures.ids.includes(participant.id))
-          authorFailures = {
-            ...authorFailures,
-            count: authorFailures.count + 1,
-            ids: [...authorFailures.ids, participant.id],
-          };
+        if (!(authorFailures.ids ?? []).includes(participant.id)) {
+          const raw = rawAuthors.terminals.get(participant.id);
+          const terminal =
+            participant.id === failedAuthor.id
+              ? failedTerminal
+              : rawAuthors.witnesses.has(participant.id) && raw?.length === 1
+                ? raw[0]
+                : undefined;
+          authorFailures = applyAuthorFailure(authorFailures, participant.id, terminal);
+          if (!terminal)
+            authorFailures = {
+              ...authorFailures,
+              holdDiagnostics: {
+                ...authorFailures.holdDiagnostics,
+                [participant.id]: rawAuthors.unreadable
+                  ? "retained-author-terminal-unreadable"
+                  : "retained-author-terminal-unavailable",
+              },
+            };
+        }
       reviewerRung =
         initialHistory.findLast((p) => p.item === attempt.item && p.role === "reviewer")?.rung ??
         reviewerRung;
@@ -3000,7 +3027,15 @@ export async function queueConfigFromLoop(
         ? undefined
         : { directory: priorQueue, slug: priorSlug, attempt };
     initialHistory = runAccounting.retain(attempt.history);
-    authorFailures = attempt.authorFailures ?? authorFailures;
+    authorFailures = await deriveAuthorHolds(
+      attempt.authorFailures ?? authorFailures,
+      initialHistory,
+      attempt.item,
+      Array.from({ length: attempt.candidateAttempt }, (_, i) =>
+        resolve(runState, `${selected.key.toLowerCase()}-attempt-${i + 1}`),
+      ),
+      config.nativeLaunchCeiling,
+    );
     reviewerRung =
       attempt.history.findLast((p) => p.item === attempt.item && p.role === "reviewer")?.rung ?? 0;
     prescribedFindings = attempt.findings;
@@ -3008,12 +3043,9 @@ export async function queueConfigFromLoop(
       ? `Continue from rejected candidate ${attempt.head} after terminal repair-author FAIL. Predecessor attempt: ${priorQueue}; source author/reviewer records and traces: ${resolve(priorQueue, "source")}; failed repair author records and traces: ${resolve(priorQueue, "repair")}. Read their attempt and terminal files and the trace paths they name. The explicitly accepted current brief supplied after planning unpark governs changed guidance. Historical findings: ${JSON.stringify(attempt.findings)}. Do not restore a superseded prescription over that accepted brief repair; unchanged requirements and still-applicable findings remain binding. Explain how each prior blocker is resolved or superseded; there is no blanket findings waiver. Historical verdicts grant no acceptance: fresh independent exact-head review and all ordinary delivery gates remain required.`
       : "";
     if (conflict) {
-      if (!authorFailures.ids.includes(conflict.author.id))
-        authorFailures = {
-          ...authorFailures,
-          count: authorFailures.count + 1,
-          ids: [...authorFailures.ids, conflict.author.id],
-        };
+      if (!(authorFailures.ids ?? []).includes(conflict.author.id)) {
+        authorFailures = applyAuthorFailure(authorFailures, conflict.author.id, conflict.terminal);
+      }
       conflictContinuation = {
         directory: conflict.directory,
         correctionUsed: conflict.correctionUsed,
@@ -3135,8 +3167,8 @@ export async function queueConfigFromLoop(
   const routedAuthor = routing
     ? {
         ...author,
-        ...routing.author[Math.min(authorFailures.count, routing.author.length - 1)]!,
-        rung: Math.min(authorFailures.count, routing.author.length - 1),
+        ...routing.author[Math.min(authorFailureRung(authorFailures), routing.author.length - 1)]!,
+        rung: Math.min(authorFailureRung(authorFailures), routing.author.length - 1),
       }
     : author;
   const routedReviewer = routing
@@ -3560,6 +3592,7 @@ async function failedConflict(queue: string, attempt: AttemptRecord | typeof ABS
     directory,
     refresh,
     author,
+    terminal,
     sourceAuthor,
     retried,
     correctionUsed:
@@ -4196,6 +4229,121 @@ export async function readQueueHistory(
   }
   validateHistory(history, config.nativeLaunchCeiling);
   return history;
+}
+
+async function retainedAuthorEvidence(
+  rows: QueueParticipant[],
+  directories: string[],
+  nativeLaunchCeiling: number,
+) {
+  const witnesses = new Map<string, QueueParticipant>();
+  const terminals = new Map<string, any[]>();
+  let unreadable = false;
+  const scan = async (directory: string) => {
+    let entries;
+    try {
+      entries = await readdir(directory, { withFileTypes: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") unreadable = true;
+      return;
+    }
+    if (entries.some((entry) => /^participant-\d+-terminal\.json$/.test(entry.name))) {
+      const retained = await readQueueHistory({
+        stateDirectory: directory,
+        nativeLaunchCeiling,
+        initialHistory: [],
+      });
+      for (const row of retained) {
+        const expected = rows.find((p) => p.id === row.id);
+        if (expected && sameParticipantIdentity(expected, row)) witnesses.set(row.id, row);
+      }
+    }
+    if (entries.some((entry) => entry.name === "author-terminal.json")) {
+      try {
+        const raw = JSON.parse(await readFile(resolve(directory, "author-terminal.json"), "utf8"));
+        const attempt = JSON.parse(
+          await readFile(resolve(directory, "author-attempt.json"), "utf8"),
+        );
+        const row = rows.find((p) => p.id === raw.id);
+        if (
+          row &&
+          attempt.id === row.id &&
+          raw.status === row.outcome &&
+          ["rung", "placement", "models", "routing"].every(
+            (key) =>
+              queueDigest(attempt[key] ?? null) ===
+              queueDigest(row[key as keyof QueueParticipant] ?? null),
+          )
+        ) {
+          const values = terminals.get(row.id) ?? [];
+          values.push(raw);
+          terminals.set(row.id, values);
+        }
+      } catch {
+        unreadable = true;
+      }
+    }
+    for (const entry of entries)
+      if (
+        entry.isDirectory() &&
+        /^(source|repair|integration|spent-resolution|verification|gate-correction|gate-stop-continuation|refresh-[a-f0-9]{40}|planning-worker-\d+)$/.test(
+          entry.name,
+        )
+      )
+        await scan(resolve(directory, entry.name));
+  };
+  for (const directory of directories) await scan(directory);
+  return { witnesses, terminals, unreadable };
+}
+
+// Read-only compatibility for ISS-277. Count-only records recover identities
+// only when the failed-author census is unambiguous; raw terminals, not outcome
+// projections, determine holds. A present held set is authoritative.
+export async function deriveAuthorHolds(
+  failures: NonNullable<SourceConfig["authorFailures"]>,
+  history: QueueParticipant[],
+  item: string,
+  directories: string[],
+  nativeLaunchCeiling: number,
+): Promise<NonNullable<SourceConfig["authorFailures"]>> {
+  if (failures.held !== undefined || failures.count === 0) return failures;
+  const ids = [...new Set(failures.ids ?? [])];
+  const held: string[] = [];
+  const diagnostics = { ...failures.holdDiagnostics };
+  const issue = participantIssue(item);
+  const rows = history.filter((p) => participantIssue(p.item) === issue && p.role === "author");
+  const missing = failures.count - ids.length;
+  const unknown = rows.filter((p) => p.outcome !== "passed" && !ids.includes(p.id));
+  const targets = rows.filter((p) => ids.includes(p.id));
+  if (missing > 0) {
+    if (unknown.length === missing) targets.push(...unknown);
+    else diagnostics.count = "retained-author-terminal-unavailable: ambiguous count-only history";
+  }
+  const { witnesses, terminals, unreadable } = await retainedAuthorEvidence(
+    rows,
+    directories,
+    nativeLaunchCeiling,
+  );
+  for (const row of targets.sort((a, b) => a.ordinal - b.ordinal)) {
+    const raw = terminals.get(row.id);
+    if (!witnesses.has(row.id) || raw?.length !== 1) {
+      diagnostics[row.id] = unreadable
+        ? "retained-author-terminal-unreadable"
+        : "retained-author-terminal-unavailable";
+      continue;
+    }
+    if (!ids.includes(row.id)) ids.push(row.id);
+    if (holdAuthorFailure(raw[0])) held.push(row.id);
+  }
+  for (const id of ids)
+    if (!rows.some((p) => p.id === id) && !id.includes(":probe:"))
+      diagnostics[id] = "retained-author-terminal-unavailable";
+  return {
+    ...failures,
+    ...(ids.length ? { ids } : {}),
+    ...(held.length ? { held } : {}),
+    ...(Object.keys(diagnostics).length ? { holdDiagnostics: diagnostics } : {}),
+  };
 }
 async function record(directory: string, name: string, value: unknown) {
   // Worker observation may advance the ladder inside a queue step. Preserve that
@@ -5524,20 +5672,19 @@ export function repositoryQueueAdapter(
     );
   };
 
-  const failAuthor = async (id: string, diagnostics?: string) => {
+  const failAuthor = async (id: string, diagnostics?: string, terminal?: any) => {
     const attempt = await json(state, "attempt");
-    const failures = attempt.authorFailures ?? { count: 0, ids: [] };
-    if (failures.ids.includes(id)) return;
+    const failures = await deriveAuthorHolds(
+      attempt.authorFailures ?? { count: 0, ids: [] },
+      await readHistory(),
+      attempt.item,
+      [state],
+      config.nativeLaunchCeiling,
+    );
+    if (failures.ids?.includes(id)) return;
     await record(state, "attempt", {
       ...attempt,
-      authorFailures: {
-        ...failures,
-        count: failures.count + 1,
-        ids: [...failures.ids, id],
-        ...(diagnostics === undefined
-          ? {}
-          : { diagnostics: { ...failures.diagnostics, [id]: diagnostics.slice(0, 200) } }),
-      },
+      authorFailures: applyAuthorFailure(failures, id, terminal, diagnostics),
       history: await readHistory(),
     });
   };
@@ -5930,7 +6077,16 @@ export function repositoryQueueAdapter(
         }
       : {}),
     async authorRung() {
-      return (await json(state, "attempt")).authorFailures?.count ?? 0;
+      const attempt = await json(state, "attempt");
+      return authorFailureRung(
+        await deriveAuthorHolds(
+          attempt.authorFailures ?? { count: 0, ids: [] },
+          await readHistory(),
+          item.id,
+          [state],
+          config.nativeLaunchCeiling,
+        ),
+      );
     },
     async authorRefused(_current, identity, diagnostics) {
       await failAuthor(identity, diagnostics);
@@ -6053,12 +6209,17 @@ export function repositoryQueueAdapter(
       await record(state, `participant-${participant.ordinal}-terminal`, participant);
     }
     if (item.source.author.ladder && role === "author" && outcome !== "passed")
-      await failAuthor(attempt.id);
+      await failAuthor(
+        attempt.id,
+        undefined,
+        stage === "planning" && outcome === "failed" ? undefined : terminal,
+      );
     if (item.source.author.ladder && role === "reviewer" && outcome === "failed") {
       const author = history.findLast(
         (p) => p.item === item.id && p.role === "author" && p.ordinal < participant.ordinal,
       );
-      if (author) await failAuthor(author.id);
+      if (author)
+        await failAuthor(author.id, undefined, stage === "planning" ? undefined : terminal);
     }
   }
 

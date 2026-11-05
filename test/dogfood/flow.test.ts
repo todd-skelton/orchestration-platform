@@ -88,6 +88,39 @@ async function familyFixture() {
   return { ...f, registry, save, record };
 }
 
+it("ISS-277 persists only the admitted rung and resumes it without another registry read", async () => {
+  const f = await familyFixture();
+  f.config.author.rung = 1;
+  f.registry.models["gpt-6-astra"].admittedEfforts = ["medium", "high"];
+  await f.save();
+  await f.run();
+  expect(await f.record("author-intent")).toMatchObject({
+    rung: 2,
+    placement: { model: "claude-fable-5-1", effort: "high" },
+  });
+  expect(await f.record("author-attempt")).toMatchObject({ rung: 2 });
+  expect(f.launches).toEqual(["author"]);
+  await rm(f.config.modelRegistry!);
+  await f.run();
+  expect(f.launches).toEqual(["author"]);
+});
+
+it.each(["missing-model", "missing-models", "not-array", "not-string"])(
+  "ISS-277 refuses %s admitted-effort data before an intent or launch",
+  async (kind) => {
+    const f = await familyFixture();
+    const registry: any = f.registry;
+    if (kind === "missing-model") delete registry.models["gpt-6-astra"];
+    if (kind === "missing-models") delete registry.models;
+    if (kind === "not-array") registry.models["gpt-6-astra"].admittedEfforts = "high";
+    if (kind === "not-string") registry.models["gpt-6-astra"].admittedEfforts = [42];
+    await f.save();
+    await expect(f.run()).rejects.toThrow("model-registry-unavailable");
+    expect(await readdir(f.config.stateDirectory)).not.toContain("author-intent.json");
+    expect(f.launches).toEqual([]);
+  },
+);
+
 it("ISS-249 resolves the next new intent after a swap without changing config or retained attempts", async () => {
   const f = await familyFixture();
   f.config.reviewer.rung = 1;

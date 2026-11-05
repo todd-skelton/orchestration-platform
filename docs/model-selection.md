@@ -4,9 +4,8 @@ Native ladders name families, resolved through the shared model registry at
 launch selection (ISS-249, after ISS-202, ISS-203 and ISS-218 recorded the cost
 of literal selector replacement). Every worker still launches through the
 executor's Codex CLI against `account_pool`. The registry supplies model
-identity only: efforts, roles and rung order remain platform-owned. No
-incumbent routing-policy rows, account selection or `admittedEfforts` are
-imported.
+identity and admitted efforts (ISS-277), while efforts, roles, rung order and
+routing policy remain platform-owned and account selection remains pool-owned.
 
 | Family   | Efforts in native ladders | Native ladder roles |
 | -------- | ------------------------- | ------------------- |
@@ -54,8 +53,10 @@ The projection requires `format: "model-registry/v2"`, safe-integer
 `generation`, nonempty `authorityDigest`, and a `families` object.
 Used families have a nonempty string `current`, or null/absent current.
 Malformed or unreadable data stops as non-parking retry
-`model-registry-unavailable`. A null or absent current advances the ladder
-without a launch charge; exhaustion retains `provider-model-refused`.
+`model-registry-unavailable`. A null or absent current or an effort absent from
+`models[current].admittedEfforts` skips that family rung without intent or charge;
+missing or malformed admitted-effort arrays refuse as `model-registry-unavailable`,
+and exhaustion retains `provider-model-refused` (ISS-277).
 Reviewer-author disjointness covers every author rung in that snapshot
 and every recorded author model for the attempt. Aliased families count as
 duplicate models.
@@ -71,13 +72,15 @@ records are never rewritten or migrated. A first-use host capture remains a
 separately authorized observation, not a provider probe or live start granted
 by this implementation.
 
-After every author failure, try the next configured rung: normally more effort
-before changing model, with the other vendor last in every author ladder.
+ISS-277 holds the author rung for mechanical, environment-tooling,
+external-dependency, malformed, non-refused dead and non-model planning failures
+when existing routing admits another author, and advances for model-quality
+failures, refusal and attributed gate failure without granting another attempt.
 Row 10 retains ISS-158's Sol/xhigh skip; row 15 now skips Opus/max under
 ISS-203's benchmark-based exception. A model change need not increase capability.
 The recorded failed-launch counter carries across attempts, including corrective and gate
-correction authors, and clamps at the top. Refusal, death, review FAIL and
-attributed gate failure all advance it; PASS never descends. Reviewer ladders
+correction authors, and clamps at the top after subtracting unique held identities;
+PASS never descends. Reviewer ladders
 advance only on refusal. Launches record zero-based rungs; resume preserves
 the selected rung. Attempt ceilings and retry budgets are unchanged.
 

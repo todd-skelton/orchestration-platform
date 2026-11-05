@@ -943,7 +943,7 @@ it("names reviewer non-independence before creating a planning reviewer intent",
 });
 
 it.each(["malformed", "dead"] as const)(
-  "advances a literal planning author ladder on the shared %s retry",
+  "ISS-277 holds a literal planning author ladder on the shared %s retry",
   async (status) => {
     const f = await fixture();
     f.setStatus(status);
@@ -957,12 +957,12 @@ it.each(["malformed", "dead"] as const)(
     expect((await planningStep(f.operation)).status).toBe("planning-pending-host-review");
     expect(launched.map((row) => [row.model, row.effort, row.rung])).toEqual([
       ["gpt-6-astra", "high", 0],
-      ["gpt-6-astra", "xhigh", 1],
+      ["gpt-6-astra", "high", 0],
     ]);
     const state = await f.read();
     expect(state.retryUsed).toBe(true);
-    expect(state.workers[1]!.attempt.placement).toEqual({ model: "gpt-6-astra", effort: "xhigh" });
-    expect(state.workers[1]!.attempt.rung).toBe(1);
+    expect(state.workers[1]!.attempt.placement).toEqual({ model: "gpt-6-astra", effort: "high" });
+    expect(state.workers[1]!.attempt.rung).toBe(0);
   },
 );
 

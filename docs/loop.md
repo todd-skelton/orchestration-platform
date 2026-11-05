@@ -822,9 +822,11 @@ and `reviewer`, with ordered placement arrays (ISS-203 row 2 with ISS-218 select
 }
 ```
 
-Each unsuccessful author launch advances the author ladder, clamped at its
-last rung. Refusal, death before or after work, author non-PASS, independent
-review FAIL and an attributed gate failure count regardless of cause. A later
+ISS-277 keeps the author rung for raw mechanical, environment-tooling,
+external-dependency, malformed, non-refused dead and non-model planning failures
+when the existing route admits another author; implementation-known-remedy,
+model refusal and attributed gate failures advance, with legacy holds derived
+read-only from retained terminals and unavailable evidence left unheld. A later
 review or gate rejection counts the author once, without rewriting its PASS.
 The queue attempt retains the failed-launch counter and counted identities
 beside participant history. Corrective authors, including the verbatim third
@@ -939,7 +941,11 @@ ISS-202, ISS-203 and ISS-218 recorded repeated release-only edits. Literal
 snapshot from the absolute `modelRegistry` config path or
 `DOGFOOD_MODEL_REGISTRY`, exported by the attached launcher. Invalid or unreadable
 registry data stops as non-parking retry `model-registry-unavailable` before
-intent; null or absent current models advance without a charge. Resolved models
+intent; null or absent current models advance without a charge.
+ISS-277 also skips a family rung whose effort is absent from
+`models[current].admittedEfforts`, and missing or malformed admission data
+stops as `model-registry-unavailable` before intent or charge.
+Resolved models
 must remain independent across the full author ladder and all recorded authors
 of the attempt. Intents, attempts and participants retain exact model, family,
 generation and authority digest. Retained selections keep their recorded model;
