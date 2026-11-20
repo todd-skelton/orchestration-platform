@@ -1255,6 +1255,14 @@
       "summary": "Assert an exact per-row child-process census for the four ISS-235 verification-charge queue rows and remove their redundant executor re-validation through existing seams, keeping every assertion and the unchanged 30 s limits.",
       "milestone": "M1",
       "blockedBy": []
+    },
+    {
+      "key": "ISS-280",
+      "file": "planning/drafts/ISS-280.md",
+      "title": "[delivery] Retire the Chase Sets scoped static gate",
+      "summary": "Use Chase Sets' existing cheap pre-push checks, remove retired scoped-static attribution, and keep hosted exact-head static proof and attribution for remaining gates.",
+      "milestone": "M3",
+      "blockedBy": []
     }
   ]
 }
